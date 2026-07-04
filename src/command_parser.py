@@ -26,7 +26,7 @@ class ParsedCommand:
     target: str = ""
 
 
-_OPEN_PREFIXES = (
+OPEN_PREFIXES = (
     "открой",
     "открыть",
     "запусти",
@@ -34,7 +34,7 @@ _OPEN_PREFIXES = (
     "включи",
 )
 
-_CLOSE_PREFIXES = (
+CLOSE_PREFIXES = (
     "закрой",
     "закрыть",
     "выключи",
@@ -42,7 +42,7 @@ _CLOSE_PREFIXES = (
     "останови",
 )
 
-_SEARCH_PREFIXES = (
+SEARCH_PREFIXES = (
     "найди",
     "найти",
     "поищи",
@@ -51,7 +51,7 @@ _SEARCH_PREFIXES = (
     "загуглить",
 )
 
-_EXIT_COMMANDS = (
+EXIT_COMMANDS = (
     "стоп",
     "выход",
     "завершить работу",
@@ -60,14 +60,14 @@ _EXIT_COMMANDS = (
     "пока",
 )
 
-_TIME_COMMANDS = (
+TIME_COMMANDS = (
     "сколько время",
     "сколько времени",
     "который час",
     "текущее время",
 )
 
-_DATE_COMMANDS = (
+DATE_COMMANDS = (
     "какое сегодня число",
     "какая сегодня дата",
     "сегодняшняя дата",
@@ -75,7 +75,7 @@ _DATE_COMMANDS = (
     "какая дата",
 )
 
-_SITE_NAMES = (
+SITE_NAMES = (
     "ютуб",
     "ютюб",
     "youtube",
@@ -97,6 +97,18 @@ _SITE_NAMES = (
     "openai",
 )
 
+COMMAND_HINTS = (
+    *OPEN_PREFIXES,
+    *CLOSE_PREFIXES,
+    *SEARCH_PREFIXES,
+    *TIME_COMMANDS,
+    *DATE_COMMANDS,
+    *EXIT_COMMANDS,
+    "зайди",
+    "перейди",
+    "открой сайт",
+)
+
 _FILLER_WORDS = (
     "пожалуйста",
     "пж",
@@ -105,7 +117,7 @@ _FILLER_WORDS = (
 
 
 _whitespace_re = re.compile(r"\s+")
-_punctuation_re = re.compile(r"[,.!?;:()\[\]{}\"'«»]")
+_punctuation_re = re.compile(r"[,.!?;:()\[\]{}\"'«»\-]")
 
 
 def normalize_text(text: str) -> str:
@@ -120,6 +132,29 @@ def remove_filler_words(text: str) -> str:
     normalized = normalize_text(text)
     words = [word for word in normalized.split() if word not in _FILLER_WORDS]
     return " ".join(words)
+
+
+def is_command_like_text(text: str) -> bool:
+    """
+    Проверяет, похожа ли фраза на команду.
+
+    Использует границы слов, чтобы "приоткрой" не считалось совпадением
+    с командой "открой".
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+
+    hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
+    for hint in hints:
+        if not hint:
+            continue
+
+        pattern = rf"(?<!\w){re.escape(hint)}(?!\w)"
+        if re.search(pattern, normalized):
+            return True
+
+    return False
 
 
 def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedCommand:
@@ -161,32 +196,32 @@ def parse_command_text(text: str) -> ParsedCommand:
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
 
-    if normalized in _EXIT_COMMANDS:
+    if normalized in EXIT_COMMANDS:
         return ParsedCommand(CommandType.EXIT, text=normalized)
 
-    if normalized in _TIME_COMMANDS:
+    if normalized in TIME_COMMANDS:
         return ParsedCommand(CommandType.GET_TIME, text=normalized)
 
-    if normalized in _DATE_COMMANDS:
+    if normalized in DATE_COMMANDS:
         return ParsedCommand(CommandType.GET_DATE, text=normalized)
 
-    for prefix in _SEARCH_PREFIXES:
+    for prefix in SEARCH_PREFIXES:
         if normalized == prefix:
             return ParsedCommand(CommandType.WEB_SEARCH, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
             return ParsedCommand(CommandType.WEB_SEARCH, text=normalized, target=target)
 
-    for prefix in _OPEN_PREFIXES:
+    for prefix in OPEN_PREFIXES:
         if normalized == prefix:
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
-            if target in _SITE_NAMES or "." in target:
+            if target in SITE_NAMES or "." in target:
                 return ParsedCommand(CommandType.OPEN_URL, text=normalized, target=target)
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=target)
 
-    for prefix in _CLOSE_PREFIXES:
+    for prefix in CLOSE_PREFIXES:
         if normalized == prefix:
             return ParsedCommand(CommandType.CLOSE_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):

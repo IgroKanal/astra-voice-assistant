@@ -20,7 +20,9 @@ class Settings:
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
     allow_commands_without_wake: bool = True
-    allow_conversation_without_wake: bool = True
+    allow_text_conversation_without_wake: bool = True
+    allow_voice_conversation_without_wake: bool = False
+    router_cooldown_seconds: float = 2.0
 
     llm_enabled: bool = True
     llm_provider: str = "gemini"
@@ -177,9 +179,17 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "ALLOW_COMMANDS_WITHOUT_WAKE",
             True,
         ),
-        allow_conversation_without_wake=_bool_from_env(
-            "ALLOW_CONVERSATION_WITHOUT_WAKE",
+        allow_text_conversation_without_wake=_bool_from_env(
+            "ALLOW_TEXT_CONVERSATION_WITHOUT_WAKE",
             True,
+        ),
+        allow_voice_conversation_without_wake=_bool_from_env(
+            "ALLOW_VOICE_CONVERSATION_WITHOUT_WAKE",
+            False,
+        ),
+        router_cooldown_seconds=_float_from_env(
+            "ROUTER_COOLDOWN_SECONDS",
+            2.0,
         ),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),

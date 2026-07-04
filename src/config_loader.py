@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+
+class ConfigError(Exception):
+    """Ошибка конфигурации проекта."""
+
+
+@dataclass(frozen=True)
+class Settings:
+    assistant_name: str = "Астра"
+    wake_phrases: list[str] = field(default_factory=lambda: ["астра", "эй астра", "привет астра"])
+
+    llm_enabled: bool = True
+    llm_provider: str = "gemini"
+    llm_api_key: str = ""
+    llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    llm_model: str = "gemini-3.5-flash"
+    llm_system_prompt: str = (
+        "Ты голосовой ассистент для ПК. Твоё имя Астра. "
+        "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
+    )
+    llm_temperature: float = 0.4
+    llm_max_tokens: int = 300
+    llm_timeout_seconds: int = 30
+
+    speech_language: str = "ru-RU"
+    listen_timeout_seconds: int = 5
+    phrase_time_limit_seconds: int = 8
+    ambient_noise_duration_seconds: float = 0.5
+
+    tts_enabled: bool = True
+    tts_rate: int = 180
+    tts_volume: float = 1.0
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    name: str
+    aliases: list[str]
+    open_command: list[str]
+    process_name: str
+
+
+def _bool_from_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "да", "on"}
+
+
+def _int_from_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ConfigError(f"Переменная {name} должна быть числом, сейчас: {value!r}") from exc
+
+
+def _float_from_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return float(value.replace(",", "."))
+    except ValueError as exc:
+        raise ConfigError(f"Переменная {name} должна быть числом, сейчас: {value!r}") from exc
+
+
+def _list_from_env(name: str, default: list[str]) -> list[str]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def load_settings(env_path: str | Path = ".env") -> Settings:
+    """Загружает настройки из .env. Если .env нет, используются безопасные дефолты."""
+    load_dotenv(dotenv_path=env_path)
+
+    default_name = "Астра"
+    assistant_name = os.getenv("ASSISTANT_NAME", default_name).strip() or default_name
+
+    return Settings(
+        assistant_name=assistant_name,
+        wake_phrases=_list_from_env("WAKE_PHRASES", [assistant_name.lower(), f"эй {assistant_name.lower()}" ]),
+        llm_enabled=_bool_from_env("LLM_ENABLED", True),
+        llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
+        llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
+        llm_base_url=os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/").strip(),
+        llm_model=os.getenv("LLM_MODEL", "gemini-3.5-flash").strip(),
+        llm_system_prompt=os.getenv(
+            "LLM_SYSTEM_PROMPT",
+            f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. Отвечай кратко, понятно и по делу. Обычно 1–3 предложения.",
+        ).strip(),
+        llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.4),
+        llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 300),
+        llm_timeout_seconds=_int_from_env("LLM_TIMEOUT_SECONDS", 30),
+        speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
+        listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 5),
+        phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 8),
+        ambient_noise_duration_seconds=_float_from_env("AMBIENT_NOISE_DURATION_SECONDS", 0.5),
+        tts_enabled=_bool_from_env("TTS_ENABLED", True),
+        tts_rate=_int_from_env("TTS_RATE", 180),
+        tts_volume=_float_from_env("TTS_VOLUME", 1.0),
+    )
+
+
+def load_apps_config(path: str | Path = "config/apps.json") -> dict[str, AppConfig]:
+    """Загружает список разрешённых Windows-приложений из config/apps.json."""
+    config_path = Path(path)
+    if not config_path.exists():
+        raise ConfigError(f"Файл {config_path} не найден.")
+
+    try:
+        raw_data: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Файл {config_path} содержит неправильный JSON: {exc}") from exc
+
+    raw_apps = raw_data.get("apps")
+    if not isinstance(raw_apps, dict) or not raw_apps:
+        raise ConfigError("В config/apps.json должен быть непустой объект apps.")
+
+    apps: dict[str, AppConfig] = {}
+    for app_name, app_data in raw_apps.items():
+        if not isinstance(app_data, dict):
+            raise ConfigError(f"Приложение {app_name!r} должно быть объектом.")
+
+        aliases = app_data.get("aliases", [])
+        open_command = app_data.get("open_command")
+        process_name = app_data.get("process_name")
+
+        if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
+            raise ConfigError(f"У приложения {app_name!r} aliases должен быть списком строк.")
+        if isinstance(open_command, str):
+            open_command = [open_command]
+        if not isinstance(open_command, list) or not all(isinstance(x, str) for x in open_command):
+            raise ConfigError(f"У приложения {app_name!r} open_command должен быть строкой или списком строк.")
+        if not isinstance(process_name, str) or not process_name.strip():
+            raise ConfigError(f"У приложения {app_name!r} process_name должен быть строкой.")
+
+        clean_name = str(app_name).strip().lower()
+        all_aliases = sorted({clean_name, *(alias.strip().lower() for alias in aliases if alias.strip())})
+        apps[clean_name] = AppConfig(
+            name=clean_name,
+            aliases=all_aliases,
+            open_command=open_command,
+            process_name=process_name.strip(),
+        )
+
+    return apps

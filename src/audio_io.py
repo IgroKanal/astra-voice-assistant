@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import logging
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,7 +55,7 @@ class VoiceIO:
         self.tts_has_russian_voice = False
         self.edge_playback_command: str | None = None
         self.edge_tts_command: str | None = None
-        self.tts_cache_dir: Path | None = None
+        self.tts_cache_dir = self._resolve_tts_cache_dir()
 
         self._apply_recognizer_settings()
         self._init_microphone()
@@ -115,22 +115,20 @@ class VoiceIO:
         self._init_edge_tts()
 
     def _init_edge_tts(self) -> None:
-        self.edge_playback_command = self._find_cli_command("edge-playback")
-        self.edge_tts_command = self._find_cli_command("edge-tts")
+        playback_command = self._find_script_command("edge-playback")
+        tts_command = self._find_script_command("edge-tts")
 
-        if self.edge_playback_command is None:
+        if playback_command is None:
+            self.edge_playback_command = None
             self.logger.error(
                 "edge-playback не найден. Установи пакет: pip install edge-tts"
             )
             return
 
-        if self.settings.tts_cache_enabled and self.edge_tts_command is None:
-            self.logger.warning(
-                "edge-tts не найден. TTS-кэш будет отключён, но edge-playback останется."
-            )
+        self.edge_playback_command = playback_command
+        self.edge_tts_command = tts_command
 
-        self.tts_cache_dir = self._resolve_tts_cache_dir()
-        if self.settings.tts_cache_enabled and self.edge_tts_command is not None:
+        if self.settings.tts_cache_enabled:
             self.tts_cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.logger.info(
@@ -145,6 +143,12 @@ class VoiceIO:
             self.tts_cache_dir,
         )
 
+        if self.settings.tts_cache_enabled and self.edge_tts_command is None:
+            self.logger.warning(
+                "edge-tts не найден. TTS-кэш не сможет генерировать mp3, "
+                "но прямой edge-playback останется доступен."
+            )
+
         if (
             self.settings.tts_cache_enabled
             and self.settings.tts_cache_prewarm_enabled
@@ -152,59 +156,52 @@ class VoiceIO:
         ):
             self._prewarm_tts_cache()
 
-    def _find_cli_command(self, name: str) -> str | None:
-        command_from_path = shutil.which(name)
+    def _find_script_command(self, command_name: str) -> str | None:
+        command_from_path = shutil.which(command_name)
         if command_from_path:
             return command_from_path
 
         scripts_dir = Path(sys.executable).parent
-        candidates = [
-            scripts_dir / f"{name}.exe",
-            scripts_dir / name,
-        ]
-
-        for candidate in candidates:
+        for candidate in (
+            scripts_dir / f"{command_name}.exe",
+            scripts_dir / command_name,
+        ):
             if candidate.exists():
                 return str(candidate)
 
         return None
 
     def _resolve_tts_cache_dir(self) -> Path:
-        configured = self.settings.tts_cache_dir.strip()
+        configured = getattr(self.settings, "tts_cache_dir", "").strip()
         if configured:
-            return Path(configured).expanduser().resolve()
+            return Path(configured).expanduser()
 
         local_app_data = os.getenv("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data) / "AstraVoiceAssistant" / "tts_cache"
 
-        return Path(tempfile.gettempdir()) / "AstraVoiceAssistant" / "tts_cache"
+        return Path.home() / ".astra_voice_assistant" / "tts_cache"
 
     def _prewarm_tts_cache(self) -> None:
-        phrases = [
-            phrase.strip()
-            for phrase in self.settings.tts_cache_prewarm_phrases
-            if phrase.strip()
-        ]
-        if not phrases:
-            return
-
         start = time.perf_counter()
-        generated = 0
+        ready = 0
 
-        for phrase in phrases:
-            try:
-                media = self._ensure_edge_cached_media(phrase)
-                if media is not None:
-                    generated += 1
-            except Exception:
-                self.logger.exception("Не удалось подготовить TTS-кэш для: %r", phrase)
+        for phrase in self.settings.tts_cache_prewarm_phrases:
+            if not phrase.strip():
+                continue
+
+            cached = self._ensure_edge_cached_audio(
+                text=phrase.strip(),
+                voice=self.settings.tts_edge_voice,
+            )
+            if cached is not None and cached.exists():
+                ready += 1
 
         elapsed = time.perf_counter() - start
         self.logger.info(
             "TTS prewarm завершён: phrases=%s, ready=%s, elapsed=%.2fs",
-            len(phrases),
-            generated,
+            len(self.settings.tts_cache_prewarm_phrases),
+            ready,
             elapsed,
         )
 
@@ -291,7 +288,8 @@ class VoiceIO:
         if self.microphone is None:
             return ListenResult(False, error="Микрофон не доступен.")
 
-        listen_started = time.perf_counter()
+        start = time.perf_counter()
+
         try:
             with self.microphone as source:
                 print("Слушаю...")
@@ -302,36 +300,39 @@ class VoiceIO:
                 )
 
             alternatives = self._recognize_google_alternatives(audio)
-            elapsed = time.perf_counter() - listen_started
-
             if not alternatives:
-                self._log_timing("STT", elapsed, "no_alternatives")
                 return ListenResult(False, error="Не удалось распознать речь.")
 
             text = self._select_best_stt_alternative(alternatives)
             self.logger.info("Распознано: %s", text)
-            self._log_timing("STT", elapsed, "ok")
+
+            elapsed = time.perf_counter() - start
+            self.logger.info("STT timing: %.2fs [ok]", elapsed)
 
             if len(alternatives) > 1:
                 self.logger.info("STT варианты: %s", alternatives)
 
             return ListenResult(True, text=text, alternatives=alternatives)
         except sr.WaitTimeoutError:
-            self._log_timing("STT", time.perf_counter() - listen_started, "timeout")
+            elapsed = time.perf_counter() - start
+            self.logger.info("STT timing: %.2fs [timeout]", elapsed)
             return ListenResult(False, error="Не услышал речь.")
         except sr.UnknownValueError:
-            self._log_timing("STT", time.perf_counter() - listen_started, "unknown")
+            elapsed = time.perf_counter() - start
+            self.logger.info("STT timing: %.2fs [unknown]", elapsed)
             return ListenResult(False, error="Не удалось распознать речь.")
         except sr.RequestError:
+            elapsed = time.perf_counter() - start
+            self.logger.info("STT timing: %.2fs [request_error]", elapsed)
             self.logger.exception("Ошибка сервиса распознавания речи")
-            self._log_timing("STT", time.perf_counter() - listen_started, "request_error")
             return ListenResult(
                 False,
                 error="Сервис распознавания речи недоступен. Проверь интернет.",
             )
         except Exception:
+            elapsed = time.perf_counter() - start
+            self.logger.info("STT timing: %.2fs [error]", elapsed)
             self.logger.exception("Непредвиденная ошибка STT")
-            self._log_timing("STT", time.perf_counter() - listen_started, "error")
             return ListenResult(False, error="Произошла ошибка распознавания речи.")
 
     def _recognize_google_alternatives(self, audio: sr.AudioData) -> list[str]:
@@ -392,70 +393,69 @@ class VoiceIO:
         self._speak_sapi(text)
 
     def _speak_edge(self, text: str) -> None:
-        started = time.perf_counter()
+        start = time.perf_counter()
 
         if self.edge_playback_command is None:
             self.logger.error("Edge TTS недоступен: edge-playback не найден.")
             return
 
         if self.settings.tts_cache_enabled and self.edge_tts_command is not None:
-            media_path = self._ensure_edge_cached_media(text)
-            if media_path is not None and self._play_cached_media(media_path):
-                self._log_timing("TTS", time.perf_counter() - started, "cache")
+            cached = self._ensure_edge_cached_audio(
+                text=text,
+                voice=self.settings.tts_edge_voice,
+            )
+            if cached is not None and self._play_cached_audio(cached):
+                self._log_tts_timing(start, "cache")
                 return
+
+            fallback_voice = self.settings.tts_edge_fallback_voice.strip()
+            if fallback_voice:
+                cached_fallback = self._ensure_edge_cached_audio(
+                    text=text,
+                    voice=fallback_voice,
+                )
+                if cached_fallback is not None and self._play_cached_audio(
+                    cached_fallback
+                ):
+                    self._log_tts_timing(start, "cache_fallback_voice")
+                    return
 
             self.logger.warning("TTS cache fallback: использую edge-playback напрямую.")
 
-        self._speak_edge_direct(text)
-        self._log_timing("TTS", time.perf_counter() - started, "direct")
+        if self._speak_edge_direct(text, self.settings.tts_edge_voice):
+            self._log_tts_timing(start, "direct")
+            return
 
-    def _edge_voice_candidates(self) -> list[str]:
-        voices: list[str] = []
-        for voice in (
-            self.settings.tts_edge_voice,
-            self.settings.tts_edge_fallback_voice,
-        ):
-            clean = voice.strip()
-            if clean and clean not in voices:
-                voices.append(clean)
+        fallback_voice = self.settings.tts_edge_fallback_voice.strip()
+        if fallback_voice and fallback_voice != self.settings.tts_edge_voice:
+            self.logger.warning(
+                "Edge TTS primary voice failed. Пробую fallback voice: %s",
+                fallback_voice,
+            )
+            if self._speak_edge_direct(text, fallback_voice):
+                self._log_tts_timing(start, "direct_fallback_voice")
+                return
 
-        return voices
+        self._log_tts_timing(start, "failed")
 
-    def _ensure_edge_cached_media(self, text: str) -> Path | None:
-        if self.tts_cache_dir is None or self.edge_tts_command is None:
+    def _ensure_edge_cached_audio(self, text: str, voice: str) -> Path | None:
+        cache_path = self._edge_cache_path(text=text, voice=voice)
+        if cache_path.exists():
+            self.logger.info("TTS cache hit: %s", cache_path.name)
+            return cache_path
+
+        if self.edge_tts_command is None:
             return None
 
-        for voice in self._edge_voice_candidates():
-            media_path = self._cache_path(text=text, voice=voice)
-            if media_path.exists() and media_path.stat().st_size > 0:
-                self.logger.info("TTS cache hit: %s", media_path.name)
-                return media_path
+        self.logger.info("TTS cache miss: %s", cache_path.name)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-            self.logger.info("TTS cache miss: %s", media_path.name)
-            if self._generate_edge_media(text=text, voice=voice, output_path=media_path):
-                return media_path
+        tmp_path = cache_path.with_suffix(".tmp.mp3")
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
-        return None
-
-    def _cache_path(self, text: str, voice: str) -> Path:
-        if self.tts_cache_dir is None:
-            raise RuntimeError("TTS cache directory is not initialized.")
-
-        key_source = "|".join(
-            (
-                voice,
-                self.settings.tts_edge_rate,
-                self.settings.tts_edge_volume,
-                self.settings.tts_edge_pitch,
-                text,
-            )
-        )
-        digest = hashlib.sha256(key_source.encode("utf-8")).hexdigest()[:24]
-        return self.tts_cache_dir / f"{digest}.mp3"
-
-    def _generate_edge_media(self, text: str, voice: str, output_path: Path) -> bool:
         command = [
-            self.edge_tts_command or "edge-tts",
+            self.edge_tts_command,
             "--voice",
             voice,
             "--rate",
@@ -467,10 +467,9 @@ class VoiceIO:
             "--text",
             text,
             "--write-media",
-            str(output_path),
+            str(tmp_path),
         ]
 
-        started = time.perf_counter()
         try:
             subprocess.run(
                 command,
@@ -478,105 +477,118 @@ class VoiceIO:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            self._log_timing(
-                "TTS generate",
-                time.perf_counter() - started,
-                f"voice={voice}",
-            )
-            return output_path.exists() and output_path.stat().st_size > 0
+            tmp_path.replace(cache_path)
+            return cache_path
         except subprocess.CalledProcessError as exc:
-            self.logger.warning(
-                "Edge TTS generation failed for voice=%s: %s",
-                voice,
-                exc.stderr,
-            )
-            output_path.unlink(missing_ok=True)
-            return False
+            self.logger.warning("Не удалось создать TTS cache: %s", exc.stderr)
+            tmp_path.unlink(missing_ok=True)
+            return None
         except Exception:
-            self.logger.exception("Непредвиденная ошибка генерации Edge TTS")
-            output_path.unlink(missing_ok=True)
+            self.logger.exception("Непредвиденная ошибка создания TTS cache")
+            tmp_path.unlink(missing_ok=True)
+            return None
+
+    def _edge_cache_path(self, text: str, voice: str) -> Path:
+        cache_key = "|".join(
+            (
+                voice,
+                self.settings.tts_edge_rate,
+                self.settings.tts_edge_volume,
+                self.settings.tts_edge_pitch,
+                text,
+            )
+        )
+        digest = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:24]
+        return self.tts_cache_dir / f"{digest}.mp3"
+
+    def _play_cached_audio(self, path: Path) -> bool:
+        """
+        Воспроизводит mp3 из кэша через Windows MCI.
+
+        Это не использует PowerShell и не запускает отдельный плеер.
+        Поэтому нет ParserError и нет зависания на WMPlayer.OCX.
+        """
+        alias = "astra_tts_" + hashlib.md5(
+            f"{path}|{time.perf_counter()}".encode("utf-8")
+        ).hexdigest()[:10]
+
+        opened = False
+
+        try:
+            self._mci_send(f'open "{path}" type mpegvideo alias {alias}')
+            opened = True
+            self._mci_send(f"play {alias} wait")
+            return True
+        except Exception as exc:
+            self.logger.warning("Не удалось воспроизвести TTS cache через MCI: %s", exc)
+            return False
+        finally:
+            if opened:
+                try:
+                    self._mci_send(f"close {alias}")
+                except Exception:
+                    self.logger.debug("Не удалось закрыть MCI alias: %s", alias)
+
+    def _mci_send(self, command: str) -> None:
+        winmm = ctypes.windll.winmm
+        error_code = winmm.mciSendStringW(command, None, 0, None)
+
+        if error_code == 0:
+            return
+
+        buffer = ctypes.create_unicode_buffer(512)
+        winmm.mciGetErrorStringW(error_code, buffer, len(buffer))
+        raise RuntimeError(f"MCI error {error_code}: {buffer.value}; command={command}")
+
+    def _speak_edge_direct(self, text: str, voice: str) -> bool:
+        if self.edge_playback_command is None:
             return False
 
-    def _play_cached_media(self, media_path: Path) -> bool:
-        script = r'''
-Add-Type -AssemblyName PresentationCore
-$mediaPath = $args[0]
-$player = New-Object System.Windows.Media.MediaPlayer
-$player.Open([System.Uri]::new($mediaPath))
-$player.Play()
-$deadline = (Get-Date).AddSeconds(10)
-while (-not $player.NaturalDuration.HasTimeSpan -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 40
-}
-if ($player.NaturalDuration.HasTimeSpan) {
-    $durationMs = [int]$player.NaturalDuration.TimeSpan.TotalMilliseconds + 250
-    Start-Sleep -Milliseconds $durationMs
-} else {
-    Start-Sleep -Seconds 2
-}
-$player.Stop()
-$player.Close()
-'''.strip()
+        command = [
+            self.edge_playback_command,
+            "--voice",
+            voice,
+            "--rate",
+            self.settings.tts_edge_rate,
+            "--volume",
+            self.settings.tts_edge_volume,
+            "--pitch",
+            self.settings.tts_edge_pitch,
+            "--text",
+            text,
+        ]
 
         try:
             subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    script,
-                    str(media_path),
-                ],
+                command,
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             return True
         except subprocess.CalledProcessError as exc:
-            self.logger.warning("Не удалось воспроизвести TTS cache: %s", exc.stderr)
+            self.logger.error("Ошибка Edge TTS: %s", exc.stderr)
+            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
             return False
         except Exception:
-            self.logger.exception("Непредвиденная ошибка воспроизведения TTS cache")
+            self.logger.exception("Непредвиденная ошибка Edge TTS")
+            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
             return False
 
-    def _speak_edge_direct(self, text: str) -> None:
-        for voice in self._edge_voice_candidates():
-            command = [
-                self.edge_playback_command or "edge-playback",
-                "--voice",
-                voice,
-                "--rate",
-                self.settings.tts_edge_rate,
-                "--volume",
-                self.settings.tts_edge_volume,
-                "--pitch",
-                self.settings.tts_edge_pitch,
-                "--text",
-                text,
-            ]
+    def _log_tts_timing(self, start: float, mode: str) -> None:
+        if not self.settings.tts_log_timing:
+            return
 
-            try:
-                subprocess.run(
-                    command,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                return
-            except subprocess.CalledProcessError as exc:
-                self.logger.warning("Ошибка Edge TTS voice=%s: %s", voice, exc.stderr)
-            except Exception:
-                self.logger.exception("Непредвиденная ошибка Edge TTS voice=%s", voice)
-
-        print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
+        elapsed = time.perf_counter() - start
+        self.logger.info("TTS timing: %.2fs [%s]", elapsed, mode)
 
     def _speak_sapi(self, text: str) -> None:
         if self.tts_engine is None:
@@ -589,15 +601,9 @@ $player.Close()
             )
             return
 
-        started = time.perf_counter()
         try:
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
-            self._log_timing("TTS", time.perf_counter() - started, "sapi")
         except Exception:
             self.logger.exception("Ошибка SAPI TTS")
             print("[TTS ошибка] Не удалось озвучить ответ, но текст выведен.")
-
-    def _log_timing(self, label: str, seconds: float, mode: str) -> None:
-        if self.settings.tts_log_timing or label == "STT":
-            self.logger.info("%s timing: %.2fs [%s]", label, seconds, mode)

@@ -4,7 +4,7 @@ import logging
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ class ListenResult:
     ok: bool
     text: str = ""
     error: str = ""
+    alternatives: list[str] = field(default_factory=list)
 
 
 class VoiceIO:
@@ -49,8 +50,30 @@ class VoiceIO:
         self.tts_has_russian_voice = False
         self.edge_playback_command: str | None = None
 
+        self._apply_recognizer_settings()
         self._init_microphone()
         self._init_tts()
+
+    def _apply_recognizer_settings(self) -> None:
+        self.recognizer.dynamic_energy_threshold = (
+            self.settings.stt_dynamic_energy_threshold
+        )
+
+        if self.settings.stt_energy_threshold > 0:
+            self.recognizer.energy_threshold = self.settings.stt_energy_threshold
+
+        self.recognizer.pause_threshold = self.settings.stt_pause_threshold
+        self.recognizer.non_speaking_duration = (
+            self.settings.stt_non_speaking_duration
+        )
+
+        self.logger.info(
+            "STT настройки: dynamic_energy=%s, energy=%s, pause=%s, non_speaking=%s",
+            self.recognizer.dynamic_energy_threshold,
+            self.recognizer.energy_threshold,
+            self.recognizer.pause_threshold,
+            self.recognizer.non_speaking_duration,
+        )
 
     def _init_microphone(self) -> None:
         try:
@@ -90,7 +113,7 @@ class VoiceIO:
         if command is None:
             self.edge_playback_command = None
             self.logger.error(
-                "edge-playback не найден. Установи пакет командой: pip install edge-tts"
+                "edge-playback не найден. Установи пакет: pip install edge-tts"
             )
             return
 
@@ -150,12 +173,6 @@ class VoiceIO:
                 self.settings.tts_volume,
                 self.tts_has_russian_voice,
             )
-
-            if not self.tts_has_russian_voice:
-                self.logger.warning(
-                    "Русский SAPI-голос не найден. "
-                    "Кириллица может не озвучиваться английским голосом Windows."
-                )
         except Exception:
             self.tts_engine = None
             self.logger.exception("Не удалось инициализировать SAPI TTS")
@@ -185,11 +202,6 @@ class VoiceIO:
 
                 if requested_voice in voice_name or requested_voice in voice_id:
                     return voice
-
-            self.logger.warning(
-                "Голос из TTS_VOICE_NAME=%r не найден. Пробую выбрать русский.",
-                self.settings.tts_voice_name,
-            )
 
         for voice in voices:
             if self._is_russian_sapi_voice(voice):
@@ -222,13 +234,17 @@ class VoiceIO:
                     phrase_time_limit=self.settings.phrase_time_limit_seconds,
                 )
 
-            text = self.recognizer.recognize_google(
-                audio,
-                language=self.settings.speech_language,
-            )
-            text = text.strip()
+            alternatives = self._recognize_google_alternatives(audio)
+            if not alternatives:
+                return ListenResult(False, error="Не удалось распознать речь.")
+
+            text = self._select_best_stt_alternative(alternatives)
             self.logger.info("Распознано: %s", text)
-            return ListenResult(True, text=text)
+
+            if len(alternatives) > 1:
+                self.logger.info("STT варианты: %s", alternatives)
+
+            return ListenResult(True, text=text, alternatives=alternatives)
         except sr.WaitTimeoutError:
             return ListenResult(False, error="Не услышал речь.")
         except sr.UnknownValueError:
@@ -242,6 +258,46 @@ class VoiceIO:
         except Exception:
             self.logger.exception("Непредвиденная ошибка STT")
             return ListenResult(False, error="Произошла ошибка распознавания речи.")
+
+    def _recognize_google_alternatives(self, audio: sr.AudioData) -> list[str]:
+        if not self.settings.stt_show_alternatives:
+            text = self.recognizer.recognize_google(
+                audio,
+                language=self.settings.speech_language,
+            )
+            return [text.strip()] if text.strip() else []
+
+        raw_result = self.recognizer.recognize_google(
+            audio,
+            language=self.settings.speech_language,
+            show_all=True,
+        )
+
+        if not isinstance(raw_result, dict):
+            return []
+
+        alternatives: list[str] = []
+        for item in raw_result.get("alternative", []):
+            transcript = str(item.get("transcript", "")).strip()
+            if transcript:
+                alternatives.append(transcript)
+
+        return alternatives
+
+    def _select_best_stt_alternative(self, alternatives: list[str]) -> str:
+        if not alternatives:
+            return ""
+
+        if not self.settings.stt_prefer_cyrillic:
+            return alternatives[0].strip()
+
+        def score(text: str) -> tuple[int, int]:
+            cyrillic_count = sum(
+                1 for char in text if "а" <= char.lower() <= "я" or char == "ё"
+            )
+            return cyrillic_count, len(text)
+
+        return max(alternatives, key=score).strip()
 
     def speak(self, text: str) -> None:
         text = text.strip()

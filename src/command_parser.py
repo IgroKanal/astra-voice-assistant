@@ -10,9 +10,14 @@ class CommandType(str, Enum):
     WAKE_ONLY = "wake_only"
     OPEN_APP = "open_app"
     CLOSE_APP = "close_app"
+    OPEN_URL = "open_url"
+    WEB_SEARCH = "web_search"
+    GET_TIME = "get_time"
+    GET_DATE = "get_date"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
     EMPTY = "empty"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,21 @@ _CLOSE_PREFIXES = (
     "останови",
 )
 
+_SEARCH_PREFIXES = (
+    "найди в интернете",
+    "поищи в интернете",
+    "найди",
+    "поищи",
+    "загугли",
+)
+
+_OPEN_URL_PREFIXES = (
+    "открой сайт",
+    "открой страницу",
+    "перейди на",
+    "зайди на",
+)
+
 _EXIT_COMMANDS = (
     "стоп",
     "выход",
@@ -44,15 +64,50 @@ _EXIT_COMMANDS = (
     "пока",
 )
 
+_TIME_COMMANDS = (
+    "сколько времени",
+    "сколько время",
+    "сколько сейчас времени",
+    "который час",
+    "текущее время",
+    "время",
+)
+
+_DATE_COMMANDS = (
+    "какое сегодня число",
+    "какая сегодня дата",
+    "сегодняшняя дата",
+    "дата",
+    "число",
+)
+
 _FILLER_WORDS = (
     "пожалуйста",
     "пж",
     "ну",
 )
 
+_KNOWN_SITE_ALIASES = {
+    "ютуб",
+    "ютюб",
+    "youtube",
+    "гугл",
+    "google",
+    "гитхаб",
+    "github",
+    "вк",
+    "вконтакте",
+    "яндекс",
+    "yandex",
+    "чатгпт",
+    "чат гпт",
+    "chatgpt",
+    "openai",
+}
 
 _whitespace_re = re.compile(r"\s+")
 _punctuation_re = re.compile(r"[,.!?;:()\[\]{}\"'«»]")
+_domain_re = re.compile(r"^[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(/.*)?$", re.IGNORECASE)
 
 
 def normalize_text(text: str) -> str:
@@ -67,6 +122,18 @@ def remove_filler_words(text: str) -> str:
     normalized = normalize_text(text)
     words = [word for word in normalized.split() if word not in _FILLER_WORDS]
     return " ".join(words)
+
+
+def looks_like_site_target(target: str) -> bool:
+    """Понимает, что цель похожа на сайт, а не на приложение."""
+    normalized = normalize_text(target)
+    if not normalized:
+        return False
+    if normalized in _KNOWN_SITE_ALIASES:
+        return True
+    if normalized.startswith(("http://", "https://")):
+        return True
+    return bool(_domain_re.match(normalized))
 
 
 def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedCommand:
@@ -111,11 +178,31 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in _EXIT_COMMANDS:
         return ParsedCommand(CommandType.EXIT, text=normalized)
 
+    if normalized in _TIME_COMMANDS:
+        return ParsedCommand(CommandType.GET_TIME, text=normalized)
+
+    if normalized in _DATE_COMMANDS:
+        return ParsedCommand(CommandType.GET_DATE, text=normalized)
+
+    for prefix in _OPEN_URL_PREFIXES:
+        if normalized.startswith(prefix + " "):
+            target = normalized.removeprefix(prefix).strip()
+            return ParsedCommand(CommandType.OPEN_URL, text=normalized, target=target)
+
+    for prefix in _SEARCH_PREFIXES:
+        if normalized == prefix:
+            return ParsedCommand(CommandType.WEB_SEARCH, text=normalized, target="")
+        if normalized.startswith(prefix + " "):
+            target = normalized.removeprefix(prefix).strip()
+            return ParsedCommand(CommandType.WEB_SEARCH, text=normalized, target=target)
+
     for prefix in _OPEN_PREFIXES:
         if normalized == prefix:
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
+            if looks_like_site_target(target):
+                return ParsedCommand(CommandType.OPEN_URL, text=normalized, target=target)
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=target)
 
     for prefix in _CLOSE_PREFIXES:

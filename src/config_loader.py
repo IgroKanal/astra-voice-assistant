@@ -19,6 +19,7 @@ class Settings:
     wake_phrases: list[str] = field(
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
+    allow_commands_without_wake: bool = True
 
     llm_enabled: bool = True
     llm_provider: str = "gemini"
@@ -29,14 +30,24 @@ class Settings:
         "Ты голосовой ассистент для ПК. Твоё имя Астра. "
         "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
     )
-    llm_temperature: float = 0.4
+    llm_temperature: float = 0.2
     llm_max_tokens: int = 300
     llm_timeout_seconds: int = 30
 
+    llm_router_enabled: bool = True
+    llm_router_min_confidence: float = 0.55
+
     speech_language: str = "ru-RU"
-    listen_timeout_seconds: int = 5
-    phrase_time_limit_seconds: int = 8
-    ambient_noise_duration_seconds: float = 0.5
+    listen_timeout_seconds: int = 8
+    phrase_time_limit_seconds: int = 12
+    ambient_noise_duration_seconds: float = 1.0
+
+    stt_dynamic_energy_threshold: bool = True
+    stt_energy_threshold: int = 0
+    stt_pause_threshold: float = 0.9
+    stt_non_speaking_duration: float = 0.5
+    stt_show_alternatives: bool = True
+    stt_prefer_cyrillic: bool = True
 
     tts_enabled: bool = True
 
@@ -45,7 +56,7 @@ class Settings:
 
     # Edge TTS settings
     tts_edge_voice: str = "ru-RU-DmitryNeural"
-    tts_edge_rate: str = "+0%"
+    tts_edge_rate: str = "+10%"
     tts_edge_volume: str = "+0%"
     tts_edge_pitch: str = "+0Hz"
 
@@ -143,6 +154,10 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
     return Settings(
         assistant_name=assistant_name,
         wake_phrases=_list_from_env("WAKE_PHRASES", default_wake_phrases),
+        allow_commands_without_wake=_bool_from_env(
+            "ALLOW_COMMANDS_WITHOUT_WAKE",
+            True,
+        ),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
@@ -155,20 +170,37 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "LLM_SYSTEM_PROMPT",
             default_system_prompt,
         ).strip(),
-        llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.4),
+        llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.2),
         llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 300),
         llm_timeout_seconds=_int_from_env("LLM_TIMEOUT_SECONDS", 30),
+        llm_router_enabled=_bool_from_env("LLM_ROUTER_ENABLED", True),
+        llm_router_min_confidence=_float_from_env(
+            "LLM_ROUTER_MIN_CONFIDENCE",
+            0.55,
+        ),
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
-        listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 5),
-        phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 8),
+        listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 8),
+        phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 12),
         ambient_noise_duration_seconds=_float_from_env(
             "AMBIENT_NOISE_DURATION_SECONDS",
+            1.0,
+        ),
+        stt_dynamic_energy_threshold=_bool_from_env(
+            "STT_DYNAMIC_ENERGY_THRESHOLD",
+            True,
+        ),
+        stt_energy_threshold=_int_from_env("STT_ENERGY_THRESHOLD", 0),
+        stt_pause_threshold=_float_from_env("STT_PAUSE_THRESHOLD", 0.9),
+        stt_non_speaking_duration=_float_from_env(
+            "STT_NON_SPEAKING_DURATION",
             0.5,
         ),
+        stt_show_alternatives=_bool_from_env("STT_SHOW_ALTERNATIVES", True),
+        stt_prefer_cyrillic=_bool_from_env("STT_PREFER_CYRILLIC", True),
         tts_enabled=_bool_from_env("TTS_ENABLED", True),
         tts_engine=_str_from_env("TTS_ENGINE", "edge").lower(),
         tts_edge_voice=_str_from_env("TTS_EDGE_VOICE", "ru-RU-DmitryNeural"),
-        tts_edge_rate=_str_from_env("TTS_EDGE_RATE", "+0%"),
+        tts_edge_rate=_str_from_env("TTS_EDGE_RATE", "+10%"),
         tts_edge_volume=_str_from_env("TTS_EDGE_VOLUME", "+0%"),
         tts_edge_pitch=_str_from_env("TTS_EDGE_PITCH", "+0Hz"),
         tts_rate=_int_from_env("TTS_RATE", 180),

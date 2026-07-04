@@ -1,24 +1,48 @@
 {
   "apps": {
     "блокнот": {
-      "aliases": ["блокнот", "notepad", "ноутпад"],
-      "open_command": ["notepad.exe"],
+      "aliases": [
+        "notepad",
+        "ноутпад",
+        "заметки",
+        "текстовый редактор"
+      ],
+      "open_command": [
+        "notepad.exe"
+      ],
       "process_name": "notepad.exe"
     },
     "калькулятор": {
-      "aliases": ["калькулятор", "calc", "calculator"],
-      "open_command": ["calc.exe"],
+      "aliases": [
+        "calc",
+        "кальк",
+        "calculator"
+      ],
+      "open_command": [
+        "calc.exe"
+      ],
       "process_name": "CalculatorApp.exe"
     },
     "проводник": {
-      "aliases": ["проводник", "explorer", "файлы"],
-      "open_command": ["explorer.exe"],
+      "aliases": [
+        "explorer",
+        "файлы",
+        "папки"
+      ],
+      "open_command": [
+        "explorer.exe"
+      ],
       "process_name": "explorer.exe"
     },
-    "браузер": {
-      "aliases": ["браузер", "edge", "эдж", "microsoft edge"],
-      "open_command": ["cmd.exe", "/c", "start", "", "msedge"],
-      "process_name": "msedge.exe"
+    "командная строка": {
+      "aliases": [
+        "cmd",
+        "консоль"
+      ],
+      "open_command": [
+        "cmd.exe"
+      ],
+      "process_name": "cmd.exe"
     }
   }
 }

@@ -17,7 +17,11 @@ class AppActionResult:
 class WindowsAppManager:
     """Открывает и закрывает только приложения из config/apps.json."""
 
-    def __init__(self, apps: dict[str, AppConfig], logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        apps: dict[str, AppConfig],
+        logger: logging.Logger | None = None,
+    ) -> None:
         self.apps = apps
         self.logger = logger or logging.getLogger(__name__)
 
@@ -40,6 +44,14 @@ class WindowsAppManager:
 
         return None
 
+    def app_names_for_prompt(self) -> list[str]:
+        """Возвращает список приложений и alias для LLM-router."""
+        names: list[str] = []
+        for app in self.apps.values():
+            names.append(app.name)
+            names.extend(app.aliases)
+        return sorted(set(names))
+
     def open_app(self, user_target: str) -> AppActionResult:
         app = self.find_app(user_target)
         if app is None:
@@ -49,10 +61,13 @@ class WindowsAppManager:
             # Все команды берутся только из конфига, а не из речи пользователя.
             subprocess.Popen(app.open_command)
             self.logger.info("Запуск приложения: %s -> %s", app.name, app.open_command)
-            return AppActionResult(True, f"Открываю {app.name}.")
+            return AppActionResult(True, "Открываю.")
         except FileNotFoundError:
-            self.logger.exception("Файл запуска не найден для приложения: %s", app.name)
-            return AppActionResult(False, f"Не удалось открыть {app.name}: файл запуска не найден.")
+            self.logger.exception("Файл запуска не найден: %s", app.name)
+            return AppActionResult(
+                False,
+                f"Не удалось открыть {app.name}: файл запуска не найден.",
+            )
         except OSError as exc:
             self.logger.exception("Ошибка запуска приложения: %s", app.name)
             return AppActionResult(False, f"Не удалось открыть {app.name}: {exc}")
@@ -72,15 +87,26 @@ class WindowsAppManager:
                 timeout=10,
             )
             if result.returncode == 0:
-                self.logger.info("Закрытие приложения: %s -> %s", app.name, app.process_name)
-                return AppActionResult(True, f"Закрываю {app.name}.")
+                self.logger.info("Закрытие приложения: %s", app.name)
+                return AppActionResult(True, "Закрываю.")
 
             output = (result.stderr or result.stdout or "").strip()
-            self.logger.warning("taskkill вернул код %s для %s: %s", result.returncode, app.name, output)
-            return AppActionResult(False, f"Не удалось закрыть {app.name}. Возможно, оно не запущено.")
+            self.logger.warning(
+                "taskkill вернул код %s для %s: %s",
+                result.returncode,
+                app.name,
+                output,
+            )
+            return AppActionResult(
+                False,
+                f"Не удалось закрыть {app.name}. Возможно, оно не запущено.",
+            )
         except subprocess.TimeoutExpired:
             self.logger.exception("Таймаут закрытия приложения: %s", app.name)
-            return AppActionResult(False, f"Не удалось закрыть {app.name}: превышено время ожидания.")
+            return AppActionResult(
+                False,
+                f"Не удалось закрыть {app.name}: превышено время ожидания.",
+            )
         except OSError as exc:
             self.logger.exception("Ошибка закрытия приложения: %s", app.name)
             return AppActionResult(False, f"Не удалось закрыть {app.name}: {exc}")

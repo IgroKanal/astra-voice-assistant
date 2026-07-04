@@ -6,7 +6,6 @@ import platform
 import sys
 import webbrowser
 from datetime import datetime
-from urllib.parse import quote_plus
 
 from src.ai_client import AIClient
 from src.audio_io import VoiceIO
@@ -16,7 +15,7 @@ from src.command_parser import (
     extract_command_after_wake,
     parse_command_text,
 )
-from src.config_loader import AppConfig, ConfigError, load_apps_config, load_settings
+from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config, load_settings
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -37,6 +36,30 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.EXIT,
 }
 
+_ROUTER_HINT_WORDS = (
+    "открой",
+    "открыть",
+    "запусти",
+    "запустить",
+    "включи",
+    "закрой",
+    "закрыть",
+    "выключи",
+    "заверши",
+    "найди",
+    "найти",
+    "поищи",
+    "загугли",
+    "открой сайт",
+    "зайди",
+    "перейди",
+    "сколько время",
+    "сколько времени",
+    "который час",
+    "какое число",
+    "какая дата",
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Голосовой ассистент Астра для Windows")
@@ -51,8 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
 def ensure_windows(logger: logging.Logger) -> None:
     current_os = platform.system().lower()
     if current_os != "windows":
-        logger.warning("Проект рассчитан только на Windows. Текущая ОС: %s", platform.system())
+        logger.warning(
+            "Проект рассчитан только на Windows. Текущая ОС: %s",
+            platform.system(),
+        )
         print("Предупреждение: этот MVP рассчитан только на Windows 10/11.")
+
+
+def looks_like_command(text: str) -> bool:
+    normalized = text.strip().lower().replace("ё", "е")
+    return any(word in normalized for word in _ROUTER_HINT_WORDS)
 
 
 def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantAction:
@@ -86,8 +117,10 @@ def parse_without_wake_if_allowed(
 ) -> ParsedCommand:
     """
     Разрешает команды без имени ассистента только для явных системных команд.
-    Обычные вопросы без wake phrase не отправляются в LLM, чтобы ассистент
-    случайно не отвечал на любой посторонний разговор.
+
+    Обычные разговорные фразы не считаются командами на этом этапе.
+    Они позже уйдут в обычный LLM-диалог, если включён
+    ALLOW_CONVERSATION_WITHOUT_WAKE.
     """
     if not allow_without_wake:
         return ParsedCommand(CommandType.NO_WAKE, text=raw_text)
@@ -108,28 +141,28 @@ def resolve_action(
     had_wake: bool,
     apps: dict[str, AppConfig],
     ai_client: AIClient,
+    settings: Settings,
     logger: logging.Logger,
 ) -> AssistantAction:
     """
-    Решает, что делать с фразой:
-    1. Сначала локальный парсер.
-    2. Потом Gemini-router, если он включён и доступен.
-    3. В конце обычный LLM-вопрос или unknown.
+    Решает, что делать с фразой.
+
+    Правило v0.5.4:
+    - явные команды выполняются как команды;
+    - обычные вопросы/фразы идут в разговор с LLM;
+    - Gemini-router используется только для командоподобных фраз.
     """
     if parsed.type not in {CommandType.ASK_LLM, CommandType.NO_WAKE}:
         return parsed_to_action(parsed, source="local_parser")
 
-    # Если пользователь явно назвал ассистента и задал обычный вопрос,
-    # не гоняем его через JSON-router. Так меньше ошибок с битым JSON
-    # и модель отвечает как обычный собеседник.
-    if parsed.type == CommandType.ASK_LLM and had_wake:
+    if parsed.type == CommandType.ASK_LLM:
         return parsed_to_action(parsed, source="local_question")
 
-    settings = ai_client.settings
     can_use_router = (
         settings.llm_router_enabled
         and settings.llm_enabled
         and ai_client.is_available
+        and looks_like_command(raw_text)
     )
 
     if can_use_router:
@@ -138,15 +171,26 @@ def resolve_action(
             action = route.action
             logger.info("LLM-router: %s", action)
 
-            if action.confidence >= settings.llm_router_min_confidence:
-                if action.type != ActionType.UNKNOWN:
-                    return action
+            if (
+                action.confidence >= settings.llm_router_min_confidence
+                and action.type != ActionType.UNKNOWN
+            ):
+                return action
 
             logger.info(
-                "LLM-router confidence too low: %s < %s",
+                "LLM-router confidence too low or unknown: %s < %s",
                 action.confidence,
                 settings.llm_router_min_confidence,
             )
+
+    if settings.allow_conversation_without_wake or had_wake:
+        return AssistantAction(
+            type=ActionType.ASK_LLM,
+            text=raw_text,
+            query=raw_text,
+            confidence=1.0,
+            source="conversation_fallback",
+        )
 
     return AssistantAction(
         type=ActionType.UNKNOWN,
@@ -233,7 +277,6 @@ def handle_action(
         return True
 
     if action.type == ActionType.UNKNOWN:
-        # В голосовом режиме не болтаем на каждый шум.
         if voice is None:
             say("Не понял команду.")
         return True
@@ -242,7 +285,7 @@ def handle_action(
 
 
 def run_text_mode(
-    settings,
+    settings: Settings,
     apps: dict[str, AppConfig],
     app_manager: WindowsAppManager,
     ai_client: AIClient,
@@ -257,7 +300,10 @@ def run_text_mode(
     else:
         print(f"Сначала нужно назвать ассистента: {settings.assistant_name}")
 
-    print("Примеры новых задач: найди Python, открой ютуб, сколько времени")
+    if settings.allow_conversation_without_wake:
+        print("Разговорный режим: обычные фразы можно писать без имени.")
+
+    print("Примеры: найди Python, открой ютуб, сколько времени")
     print("Для выхода: Астра, стоп")
 
     while True:
@@ -277,7 +323,11 @@ def run_text_mode(
                 logger=logger,
             )
 
-            if parsed.type == CommandType.NO_WAKE and not settings.llm_router_enabled:
+            if (
+                parsed.type == CommandType.NO_WAKE
+                and not settings.llm_router_enabled
+                and not settings.allow_conversation_without_wake
+            ):
                 print(f"Астра: Сначала назови меня: {settings.assistant_name}.")
                 continue
 
@@ -293,6 +343,7 @@ def run_text_mode(
             had_wake=had_wake,
             apps=apps,
             ai_client=ai_client,
+            settings=settings,
             logger=logger,
         )
 
@@ -302,7 +353,7 @@ def run_text_mode(
 
 
 def run_voice_mode(
-    settings,
+    settings: Settings,
     apps: dict[str, AppConfig],
     app_manager: WindowsAppManager,
     ai_client: AIClient,
@@ -314,6 +365,10 @@ def run_voice_mode(
     if settings.allow_commands_without_wake:
         logger.info("Режим разработки: явные команды можно выполнять без wake phrase.")
         print("Режим разработки: можно говорить 'открой блокнот' без имени.")
+
+    if settings.allow_conversation_without_wake:
+        logger.info("Разговорный режим без wake phrase включён.")
+        print("Разговорный режим: можно говорить обычные фразы без имени.")
 
     while True:
         listen_result = voice.listen_once()
@@ -331,7 +386,11 @@ def run_voice_mode(
                 logger=logger,
             )
 
-            if parsed.type == CommandType.NO_WAKE and not settings.llm_router_enabled:
+            if (
+                parsed.type == CommandType.NO_WAKE
+                and not settings.llm_router_enabled
+                and not settings.allow_conversation_without_wake
+            ):
                 continue
 
         if parsed.type == CommandType.WAKE_ONLY:
@@ -352,6 +411,7 @@ def run_voice_mode(
             had_wake=had_wake,
             apps=apps,
             ai_client=ai_client,
+            settings=settings,
             logger=logger,
         )
 

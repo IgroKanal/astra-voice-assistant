@@ -20,18 +20,20 @@ class Settings:
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
     allow_commands_without_wake: bool = True
+    allow_conversation_without_wake: bool = True
 
     llm_enabled: bool = True
     llm_provider: str = "gemini"
     llm_api_key: str = ""
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     llm_model: str = "gemini-3.5-flash"
+    llm_fallback_model: str = ""
     llm_system_prompt: str = (
         "Ты голосовой ассистент для ПК. Твоё имя Астра. "
         "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
     )
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 300
+    llm_max_tokens: int = 500
     llm_timeout_seconds: int = 30
 
     llm_router_enabled: bool = True
@@ -133,6 +135,20 @@ def _str_from_env(name: str, default: str) -> str:
     return value.strip() or default
 
 
+def _gemini_api_key() -> str:
+    return os.getenv("GEMINI_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
+
+
+def _gemini_models() -> tuple[str, str]:
+    legacy_model = _str_from_env("LLM_MODEL", "gemini-3.5-flash")
+    legacy_fallback = _str_from_env("LLM_FALLBACK_MODEL", "")
+
+    primary = _str_from_env("GEMINI_MODEL", legacy_model)
+    fallback = _str_from_env("GEMINI_FALLBACK_MODEL", legacy_fallback)
+
+    return primary, fallback
+
+
 def load_settings(env_path: str | Path = ".env") -> Settings:
     """Загружает настройки из .env. Если .env нет, используются дефолты."""
     load_dotenv(dotenv_path=env_path)
@@ -148,8 +164,11 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
 
     default_system_prompt = (
         f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. "
-        "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
+        "Отвечай кратко, понятно и законченными фразами. "
+        "Обычно 1–3 предложения. Не используй markdown и черновики."
     )
+
+    gemini_model, gemini_fallback_model = _gemini_models()
 
     return Settings(
         assistant_name=assistant_name,
@@ -158,20 +177,25 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "ALLOW_COMMANDS_WITHOUT_WAKE",
             True,
         ),
+        allow_conversation_without_wake=_bool_from_env(
+            "ALLOW_CONVERSATION_WITHOUT_WAKE",
+            True,
+        ),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
-        llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
+        llm_api_key=_gemini_api_key(),
         llm_base_url=os.getenv(
             "LLM_BASE_URL",
             "https://generativelanguage.googleapis.com/v1beta/openai/",
         ).strip(),
-        llm_model=os.getenv("LLM_MODEL", "gemini-3.5-flash").strip(),
+        llm_model=gemini_model,
+        llm_fallback_model=gemini_fallback_model,
         llm_system_prompt=os.getenv(
             "LLM_SYSTEM_PROMPT",
             default_system_prompt,
         ).strip(),
         llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.2),
-        llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 300),
+        llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 500),
         llm_timeout_seconds=_int_from_env("LLM_TIMEOUT_SECONDS", 30),
         llm_router_enabled=_bool_from_env("LLM_ROUTER_ENABLED", True),
         llm_router_min_confidence=_float_from_env(

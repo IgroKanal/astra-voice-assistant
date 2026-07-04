@@ -45,7 +45,11 @@ _SITE_ALIASES = {
     "yandex": "https://ya.ru",
     "чатгпт": "https://chatgpt.com",
     "чат гпт": "https://chatgpt.com",
+    "чат джипити": "https://chatgpt.com",
+    "джипити": "https://chatgpt.com",
+    "гпт": "https://chatgpt.com",
     "chatgpt": "https://chatgpt.com",
+    "chat gpt": "https://chatgpt.com",
     "openai": "https://openai.com",
 }
 

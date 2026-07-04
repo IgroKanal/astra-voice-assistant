@@ -16,7 +16,9 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     assistant_name: str = "Астра"
-    wake_phrases: list[str] = field(default_factory=lambda: ["астра", "эй астра", "привет астра"])
+    wake_phrases: list[str] = field(
+        default_factory=lambda: ["астра", "эй астра", "привет астра"]
+    )
 
     llm_enabled: bool = True
     llm_provider: str = "gemini"
@@ -37,8 +39,21 @@ class Settings:
     ambient_noise_duration_seconds: float = 0.5
 
     tts_enabled: bool = True
+
+    # edge = Edge TTS neural voices; sapi = pyttsx3 / Windows SAPI5
+    tts_engine: str = "edge"
+
+    # Edge TTS settings
+    tts_edge_voice: str = "ru-RU-DmitryNeural"
+    tts_edge_rate: str = "+0%"
+    tts_edge_volume: str = "+0%"
+    tts_edge_pitch: str = "+0Hz"
+
+    # SAPI / pyttsx3 fallback settings
     tts_rate: int = 180
     tts_volume: float = 1.0
+    tts_voice_name: str = ""
+    tts_debug_voices: bool = True
 
 
 @dataclass(frozen=True)
@@ -53,54 +68,92 @@ def _bool_from_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "y", "да", "on"}
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "да",
+        "on",
+        "вкл",
+    }
 
 
 def _int_from_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or value.strip() == "":
         return default
+
     try:
         return int(value)
     except ValueError as exc:
-        raise ConfigError(f"Переменная {name} должна быть числом, сейчас: {value!r}") from exc
+        raise ConfigError(
+            f"Переменная {name} должна быть числом, сейчас: {value!r}"
+        ) from exc
 
 
 def _float_from_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value.strip() == "":
         return default
+
     try:
         return float(value.replace(",", "."))
     except ValueError as exc:
-        raise ConfigError(f"Переменная {name} должна быть числом, сейчас: {value!r}") from exc
+        raise ConfigError(
+            f"Переменная {name} должна быть числом, сейчас: {value!r}"
+        ) from exc
 
 
 def _list_from_env(name: str, default: list[str]) -> list[str]:
     value = os.getenv(name)
     if value is None or value.strip() == "":
         return default
+
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _str_from_env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    return value.strip() or default
+
+
 def load_settings(env_path: str | Path = ".env") -> Settings:
-    """Загружает настройки из .env. Если .env нет, используются безопасные дефолты."""
+    """Загружает настройки из .env. Если .env нет, используются дефолты."""
     load_dotenv(dotenv_path=env_path)
 
     default_name = "Астра"
     assistant_name = os.getenv("ASSISTANT_NAME", default_name).strip() or default_name
 
+    default_wake_phrases = [
+        assistant_name.lower(),
+        f"эй {assistant_name.lower()}",
+        f"привет {assistant_name.lower()}",
+    ]
+
+    default_system_prompt = (
+        f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. "
+        "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
+    )
+
     return Settings(
         assistant_name=assistant_name,
-        wake_phrases=_list_from_env("WAKE_PHRASES", [assistant_name.lower(), f"эй {assistant_name.lower()}" ]),
+        wake_phrases=_list_from_env("WAKE_PHRASES", default_wake_phrases),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
-        llm_base_url=os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/").strip(),
+        llm_base_url=os.getenv(
+            "LLM_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+        ).strip(),
         llm_model=os.getenv("LLM_MODEL", "gemini-3.5-flash").strip(),
         llm_system_prompt=os.getenv(
             "LLM_SYSTEM_PROMPT",
-            f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. Отвечай кратко, понятно и по делу. Обычно 1–3 предложения.",
+            default_system_prompt,
         ).strip(),
         llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.4),
         llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 300),
@@ -108,10 +161,20 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
         listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 5),
         phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 8),
-        ambient_noise_duration_seconds=_float_from_env("AMBIENT_NOISE_DURATION_SECONDS", 0.5),
+        ambient_noise_duration_seconds=_float_from_env(
+            "AMBIENT_NOISE_DURATION_SECONDS",
+            0.5,
+        ),
         tts_enabled=_bool_from_env("TTS_ENABLED", True),
+        tts_engine=_str_from_env("TTS_ENGINE", "edge").lower(),
+        tts_edge_voice=_str_from_env("TTS_EDGE_VOICE", "ru-RU-DmitryNeural"),
+        tts_edge_rate=_str_from_env("TTS_EDGE_RATE", "+0%"),
+        tts_edge_volume=_str_from_env("TTS_EDGE_VOLUME", "+0%"),
+        tts_edge_pitch=_str_from_env("TTS_EDGE_PITCH", "+0Hz"),
         tts_rate=_int_from_env("TTS_RATE", 180),
         tts_volume=_float_from_env("TTS_VOLUME", 1.0),
+        tts_voice_name=os.getenv("TTS_VOICE_NAME", "").strip(),
+        tts_debug_voices=_bool_from_env("TTS_DEBUG_VOICES", True),
     )
 
 
@@ -124,13 +187,16 @@ def load_apps_config(path: str | Path = "config/apps.json") -> dict[str, AppConf
     try:
         raw_data: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ConfigError(f"Файл {config_path} содержит неправильный JSON: {exc}") from exc
+        raise ConfigError(
+            f"Файл {config_path} содержит неправильный JSON: {exc}"
+        ) from exc
 
     raw_apps = raw_data.get("apps")
     if not isinstance(raw_apps, dict) or not raw_apps:
         raise ConfigError("В config/apps.json должен быть непустой объект apps.")
 
     apps: dict[str, AppConfig] = {}
+
     for app_name, app_data in raw_apps.items():
         if not isinstance(app_data, dict):
             raise ConfigError(f"Приложение {app_name!r} должно быть объектом.")
@@ -139,17 +205,37 @@ def load_apps_config(path: str | Path = "config/apps.json") -> dict[str, AppConf
         open_command = app_data.get("open_command")
         process_name = app_data.get("process_name")
 
-        if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
-            raise ConfigError(f"У приложения {app_name!r} aliases должен быть списком строк.")
+        if not isinstance(aliases, list) or not all(
+            isinstance(item, str) for item in aliases
+        ):
+            raise ConfigError(
+                f"У приложения {app_name!r} aliases должен быть списком строк."
+            )
+
         if isinstance(open_command, str):
             open_command = [open_command]
-        if not isinstance(open_command, list) or not all(isinstance(x, str) for x in open_command):
-            raise ConfigError(f"У приложения {app_name!r} open_command должен быть строкой или списком строк.")
+
+        if not isinstance(open_command, list) or not all(
+            isinstance(item, str) for item in open_command
+        ):
+            raise ConfigError(
+                f"У приложения {app_name!r} open_command должен быть строкой "
+                "или списком строк."
+            )
+
         if not isinstance(process_name, str) or not process_name.strip():
-            raise ConfigError(f"У приложения {app_name!r} process_name должен быть строкой.")
+            raise ConfigError(
+                f"У приложения {app_name!r} process_name должен быть строкой."
+            )
 
         clean_name = str(app_name).strip().lower()
-        all_aliases = sorted({clean_name, *(alias.strip().lower() for alias in aliases if alias.strip())})
+        all_aliases = sorted(
+            {
+                clean_name,
+                *(alias.strip().lower() for alias in aliases if alias.strip()),
+            }
+        )
+
         apps[clean_name] = AppConfig(
             name=clean_name,
             aliases=all_aliases,

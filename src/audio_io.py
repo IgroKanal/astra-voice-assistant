@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import pyttsx3
 import speech_recognition as sr
@@ -19,12 +24,30 @@ class ListenResult:
 class VoiceIO:
     """Распознавание речи и озвучка ответа."""
 
-    def __init__(self, settings: Settings, logger: logging.Logger | None = None) -> None:
+    _RUSSIAN_VOICE_MARKERS = (
+        "ru",
+        "ru-ru",
+        "russian",
+        "рус",
+        "irina",
+        "pavel",
+        "elena",
+        "dmitry",
+    )
+
+    def __init__(
+        self,
+        settings: Settings,
+        logger: logging.Logger | None = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(__name__)
         self.recognizer = sr.Recognizer()
         self.microphone: sr.Microphone | None = None
-        self.tts_engine = None
+
+        self.tts_engine: Any | None = None
+        self.tts_has_russian_voice = False
+        self.edge_playback_command: str | None = None
 
         self._init_microphone()
         self._init_tts()
@@ -47,15 +70,144 @@ class VoiceIO:
             self.logger.info("TTS отключён в настройках")
             return
 
+        if self.settings.tts_engine == "edge":
+            self._init_edge_tts()
+            return
+
+        if self.settings.tts_engine in {"sapi", "pyttsx3"}:
+            self._init_sapi_tts()
+            return
+
+        self.logger.warning(
+            "Неизвестный TTS_ENGINE=%r. Использую edge.",
+            self.settings.tts_engine,
+        )
+        self._init_edge_tts()
+
+    def _init_edge_tts(self) -> None:
+        command = self._find_edge_playback_command()
+
+        if command is None:
+            self.edge_playback_command = None
+            self.logger.error(
+                "edge-playback не найден. Установи пакет командой: pip install edge-tts"
+            )
+            return
+
+        self.edge_playback_command = command
+        self.logger.info(
+            "Edge TTS инициализирован. voice=%s, rate=%s, volume=%s, pitch=%s",
+            self.settings.tts_edge_voice,
+            self.settings.tts_edge_rate,
+            self.settings.tts_edge_volume,
+            self.settings.tts_edge_pitch,
+        )
+
+    def _find_edge_playback_command(self) -> str | None:
+        command_from_path = shutil.which("edge-playback")
+        if command_from_path:
+            return command_from_path
+
+        scripts_dir = Path(sys.executable).parent
+        windows_command = scripts_dir / "edge-playback.exe"
+        if windows_command.exists():
+            return str(windows_command)
+
+        plain_command = scripts_dir / "edge-playback"
+        if plain_command.exists():
+            return str(plain_command)
+
+        return None
+
+    def _init_sapi_tts(self) -> None:
         try:
             engine = pyttsx3.init()
+            voices = list(engine.getProperty("voices") or [])
+
+            self._log_available_voices(voices)
+
+            selected_voice = self._select_sapi_voice(voices)
+            if selected_voice is not None:
+                engine.setProperty("voice", selected_voice.id)
+                self.tts_has_russian_voice = self._is_russian_sapi_voice(
+                    selected_voice
+                )
+                self.logger.info(
+                    "Выбран SAPI TTS-голос: %s | %s",
+                    selected_voice.name,
+                    selected_voice.id,
+                )
+            else:
+                self.logger.warning("SAPI TTS-голоса не найдены.")
+
             engine.setProperty("rate", self.settings.tts_rate)
             engine.setProperty("volume", self.settings.tts_volume)
+
             self.tts_engine = engine
-            self.logger.info("TTS инициализирован")
+            self.logger.info(
+                "SAPI TTS инициализирован. rate=%s, volume=%s, russian_voice=%s",
+                self.settings.tts_rate,
+                self.settings.tts_volume,
+                self.tts_has_russian_voice,
+            )
+
+            if not self.tts_has_russian_voice:
+                self.logger.warning(
+                    "Русский SAPI-голос не найден. "
+                    "Кириллица может не озвучиваться английским голосом Windows."
+                )
         except Exception:
             self.tts_engine = None
-            self.logger.exception("Не удалось инициализировать TTS")
+            self.logger.exception("Не удалось инициализировать SAPI TTS")
+
+    def _log_available_voices(self, voices: list[Any]) -> None:
+        if not self.settings.tts_debug_voices:
+            return
+
+        self.logger.info("Доступно SAPI TTS-голосов: %s", len(voices))
+        for index, voice in enumerate(voices):
+            self.logger.info(
+                "SAPI voice #%s: name=%s | id=%s",
+                index,
+                getattr(voice, "name", ""),
+                getattr(voice, "id", ""),
+            )
+
+    def _select_sapi_voice(self, voices: list[Any]) -> Any | None:
+        if not voices:
+            return None
+
+        requested_voice = self.settings.tts_voice_name.strip().lower()
+        if requested_voice:
+            for voice in voices:
+                voice_name = str(getattr(voice, "name", "")).lower()
+                voice_id = str(getattr(voice, "id", "")).lower()
+
+                if requested_voice in voice_name or requested_voice in voice_id:
+                    return voice
+
+            self.logger.warning(
+                "Голос из TTS_VOICE_NAME=%r не найден. Пробую выбрать русский.",
+                self.settings.tts_voice_name,
+            )
+
+        for voice in voices:
+            if self._is_russian_sapi_voice(voice):
+                return voice
+
+        return voices[0]
+
+    def _is_russian_sapi_voice(self, voice: Any) -> bool:
+        voice_text = (
+            f"{getattr(voice, 'name', '')} "
+            f"{getattr(voice, 'id', '')} "
+            f"{getattr(voice, 'languages', '')}"
+        ).lower()
+
+        return any(marker in voice_text for marker in self._RUSSIAN_VOICE_MARKERS)
+
+    def _has_cyrillic(self, text: str) -> bool:
+        return any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in text)
 
     def listen_once(self) -> ListenResult:
         if self.microphone is None:
@@ -70,7 +222,10 @@ class VoiceIO:
                     phrase_time_limit=self.settings.phrase_time_limit_seconds,
                 )
 
-            text = self.recognizer.recognize_google(audio, language=self.settings.speech_language)
+            text = self.recognizer.recognize_google(
+                audio,
+                language=self.settings.speech_language,
+            )
             text = text.strip()
             self.logger.info("Распознано: %s", text)
             return ListenResult(True, text=text)
@@ -80,7 +235,10 @@ class VoiceIO:
             return ListenResult(False, error="Не удалось распознать речь.")
         except sr.RequestError:
             self.logger.exception("Ошибка сервиса распознавания речи")
-            return ListenResult(False, error="Сервис распознавания речи недоступен. Проверь интернет.")
+            return ListenResult(
+                False,
+                error="Сервис распознавания речи недоступен. Проверь интернет.",
+            )
         except Exception:
             self.logger.exception("Непредвиденная ошибка STT")
             return ListenResult(False, error="Произошла ошибка распознавания речи.")
@@ -93,12 +251,64 @@ class VoiceIO:
         print(f"Астра: {text}")
         self.logger.info("Ответ: %s", text)
 
+        if not self.settings.tts_enabled:
+            return
+
+        if self.settings.tts_engine == "edge":
+            self._speak_edge(text)
+            return
+
+        self._speak_sapi(text)
+
+    def _speak_edge(self, text: str) -> None:
+        if self.edge_playback_command is None:
+            self.logger.error("Edge TTS недоступен: edge-playback не найден.")
+            return
+
+        command = [
+            self.edge_playback_command,
+            "--voice",
+            self.settings.tts_edge_voice,
+            "--rate",
+            self.settings.tts_edge_rate,
+            "--volume",
+            self.settings.tts_edge_volume,
+            "--pitch",
+            self.settings.tts_edge_pitch,
+            "--text",
+            text,
+        ]
+
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.CalledProcessError as exc:
+            self.logger.error("Ошибка Edge TTS: %s", exc.stderr)
+            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
+        except Exception:
+            self.logger.exception("Непредвиденная ошибка Edge TTS")
+            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
+
+    def _speak_sapi(self, text: str) -> None:
         if self.tts_engine is None:
+            return
+
+        if self._has_cyrillic(text) and not self.tts_has_russian_voice:
+            self.logger.warning(
+                "Ответ содержит кириллицу, но русский SAPI-голос не найден. "
+                "Озвучка пропущена."
+            )
             return
 
         try:
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
         except Exception:
-            self.logger.exception("Ошибка TTS")
-            print("[TTS ошибка] Не удалось озвучить ответ, но текст выведен в консоль.")
+            self.logger.exception("Ошибка SAPI TTS")
+            print("[TTS ошибка] Не удалось озвучить ответ, но текст выведен.")

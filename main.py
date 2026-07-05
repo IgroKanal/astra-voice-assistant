@@ -20,6 +20,9 @@ from src.command_parser import (
     parse_command_text,
 )
 from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config, load_settings
+from src.folder_controller import FolderController
+from src.keyboard_controller import KeyboardController
+from src.system_controller import SystemController
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -34,11 +37,29 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.OPEN_APP,
     CommandType.CLOSE_APP,
     CommandType.OPEN_URL,
+    CommandType.OPEN_FOLDER,
     CommandType.WEB_SEARCH,
     CommandType.GET_TIME,
     CommandType.GET_DATE,
+    CommandType.KEYBOARD_SHORTCUT,
+    CommandType.HELP,
     CommandType.EXIT,
 }
+
+_WAKE_REQUIRED_TYPES = {
+    CommandType.TYPE_TEXT,
+    CommandType.SCREENSHOT,
+    CommandType.SYSTEM_INFO,
+}
+
+_ROUTER_BLOCKED_ACTION_TYPES = {
+    ActionType.KEYBOARD_SHORTCUT,
+    ActionType.TYPE_TEXT,
+    ActionType.SCREENSHOT,
+    ActionType.SYSTEM_INFO,
+}
+
+_REQUIRES_WAKE_TARGET = "__requires_wake__"
 
 
 @dataclass
@@ -51,6 +72,9 @@ class TurnContext:
     settings: Settings
     apps: dict[str, AppConfig]
     app_manager: WindowsAppManager
+    keyboard: KeyboardController
+    folders: FolderController
+    system: SystemController
     ai_client: AIClient
     logger: logging.Logger
     respond: Callable[[str], None]
@@ -85,9 +109,15 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.OPEN_APP: ActionType.OPEN_APP,
         CommandType.CLOSE_APP: ActionType.CLOSE_APP,
         CommandType.OPEN_URL: ActionType.OPEN_URL,
+        CommandType.OPEN_FOLDER: ActionType.OPEN_FOLDER,
         CommandType.WEB_SEARCH: ActionType.WEB_SEARCH,
         CommandType.GET_TIME: ActionType.GET_TIME,
         CommandType.GET_DATE: ActionType.GET_DATE,
+        CommandType.KEYBOARD_SHORTCUT: ActionType.KEYBOARD_SHORTCUT,
+        CommandType.TYPE_TEXT: ActionType.TYPE_TEXT,
+        CommandType.SCREENSHOT: ActionType.SCREENSHOT,
+        CommandType.SYSTEM_INFO: ActionType.SYSTEM_INFO,
+        CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
         CommandType.EMPTY: ActionType.EMPTY,
@@ -118,6 +148,18 @@ def parse_without_wake_if_allowed(
         return ParsedCommand(CommandType.NO_WAKE, text=raw_text)
 
     direct_command = parse_command_text(raw_text)
+
+    if direct_command.type in _WAKE_REQUIRED_TYPES:
+        if logger is not None:
+            logger.info(
+                "Команда требует wake phrase и пропущена без имени: %s",
+                direct_command,
+            )
+        return ParsedCommand(
+            CommandType.NO_WAKE,
+            text=raw_text,
+            target=_REQUIRES_WAKE_TARGET,
+        )
 
     if direct_command.type in _DIRECT_COMMAND_TYPES:
         if logger is not None:
@@ -160,6 +202,8 @@ def resolve_action(
         and not router_cooldown_active(ctx.settings, ctx.state)
     )
 
+    router_returned_unknown = False
+
     if can_use_router:
         ctx.state.last_router_call_at = time.monotonic()
         route = ctx.ai_client.route_command(raw_text, ctx.apps)
@@ -168,20 +212,37 @@ def resolve_action(
             action = route.action
             ctx.logger.info("LLM-router: %s", action)
 
-            if (
+            if action.type in _ROUTER_BLOCKED_ACTION_TYPES:
+                ctx.logger.warning(
+                    "LLM-router вернул локальное действие, заблокировано в v0.8.3: %s",
+                    action.type.value,
+                )
+                router_returned_unknown = True
+            elif (
                 action.confidence >= ctx.settings.llm_router_min_confidence
                 and action.type != ActionType.UNKNOWN
             ):
                 return action
-
-            ctx.logger.info(
-                "LLM-router confidence too low or unknown: %s < %s",
-                action.confidence,
-                ctx.settings.llm_router_min_confidence,
-            )
+            else:
+                ctx.logger.info(
+                    "LLM-router confidence too low or unknown: %s < %s",
+                    action.confidence,
+                    ctx.settings.llm_router_min_confidence,
+                )
+                if action.type == ActionType.UNKNOWN:
+                    router_returned_unknown = True
 
     elif command_like and router_cooldown_active(ctx.settings, ctx.state):
         ctx.logger.info("LLM-router пропущен: активен cooldown.")
+
+    if router_returned_unknown and command_like:
+        return AssistantAction(
+            type=ActionType.UNKNOWN,
+            text=raw_text,
+            confidence=0.0,
+            source="router_unknown_guard",
+            reason="Command-like phrase was rejected by router.",
+        )
 
     if ctx.allow_conversation_without_wake or had_wake:
         return AssistantAction(
@@ -197,6 +258,17 @@ def resolve_action(
         text=raw_text,
         confidence=0.0,
         source="fallback",
+    )
+
+
+def build_help_text() -> str:
+    return (
+        "Я умею открывать приложения, сайты и папки, искать в интернете, "
+        "управлять вкладками браузера, говорить время и дату. "
+        "Примеры: открой клод, открой чат гпт, закрой вкладку, новая вкладка. "
+        "Команды ввода текста, скриншота и статуса системы выполняю только после имени. "
+        "Ввод текста работает в активное окно: кликни в нужное поле и скажи "
+        "Астра, напиши привет."
     )
 
 
@@ -235,6 +307,11 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         ctx.respond("Открываю сайт.")
         return True
 
+    if action.type == ActionType.OPEN_FOLDER:
+        result = ctx.folders.open_folder(action.target or action.query)
+        ctx.respond(result.message)
+        return True
+
     if action.type == ActionType.WEB_SEARCH:
         query = action.query or action.target or action.text
         if not query:
@@ -242,6 +319,48 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             return True
         webbrowser.open(google_search_url(query))
         ctx.respond("Ищу.")
+        return True
+
+    if action.type == ActionType.KEYBOARD_SHORTCUT:
+        result = ctx.keyboard.send_shortcut(action.target or action.query)
+        ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.TYPE_TEXT:
+        text_to_type = action.target or action.query
+
+        if text_to_type.startswith("app=") and ";text=" in text_to_type:
+            app_part, text_part = text_to_type.split(";text=", 1)
+            app_name = app_part.removeprefix("app=").strip()
+            text_to_type = text_part.strip()
+
+            ctx.logger.info(
+                "Targeted typing is disabled in v0.8.3: app=%s text_len=%s",
+                app_name,
+                len(text_to_type),
+            )
+            ctx.respond(
+                "Пока я пишу только в активное окно. "
+                f"Кликни в {app_name} и скажи: Астра, напиши {text_to_type}"
+            )
+            return True
+
+        result = ctx.keyboard.type_text(text_to_type)
+        ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.SCREENSHOT:
+        result = ctx.system.take_screenshot()
+        ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.SYSTEM_INFO:
+        result = ctx.system.system_info(action.target or action.query)
+        ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.HELP:
+        ctx.respond(build_help_text())
         return True
 
     if action.type == ActionType.GET_TIME:
@@ -294,6 +413,11 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             logger=ctx.logger,
         )
 
+        if parsed.target == _REQUIRES_WAKE_TARGET:
+            if ctx.respond_to_unknown:
+                ctx.respond("Назови меня перед этой командой.")
+            return True
+
     if parsed.type == CommandType.WAKE_ONLY:
         ctx.respond("Слушаю.")
         follow_up = ctx.get_follow_up().strip()
@@ -327,6 +451,9 @@ def run_text_mode(
     settings: Settings,
     apps: dict[str, AppConfig],
     app_manager: WindowsAppManager,
+    keyboard: KeyboardController,
+    folders: FolderController,
+    system: SystemController,
     ai_client: AIClient,
     logger: logging.Logger,
 ) -> None:
@@ -342,7 +469,7 @@ def run_text_mode(
     if settings.allow_text_conversation_without_wake:
         print("Разговорный режим: обычные фразы можно писать без имени.")
 
-    print("Примеры: найди Python, открой ютуб, сколько времени")
+    print("Примеры: открой клод, закрой вкладку, Астра, напиши привет, помощь")
     print("Для выхода: Астра, стоп")
 
     state = TurnState()
@@ -360,6 +487,9 @@ def run_text_mode(
         settings=settings,
         apps=apps,
         app_manager=app_manager,
+        keyboard=keyboard,
+        folders=folders,
+        system=system,
         ai_client=ai_client,
         logger=logger,
         respond=respond,
@@ -385,6 +515,9 @@ def run_voice_mode(
     settings: Settings,
     apps: dict[str, AppConfig],
     app_manager: WindowsAppManager,
+    keyboard: KeyboardController,
+    folders: FolderController,
+    system: SystemController,
     ai_client: AIClient,
     logger: logging.Logger,
 ) -> None:
@@ -415,6 +548,9 @@ def run_voice_mode(
         settings=settings,
         apps=apps,
         app_manager=app_manager,
+        keyboard=keyboard,
+        folders=folders,
+        system=system,
         ai_client=ai_client,
         logger=logger,
         respond=respond,
@@ -451,13 +587,16 @@ def main() -> int:
         return 1
 
     app_manager = WindowsAppManager(apps=apps, logger=logger)
+    keyboard = KeyboardController(logger=logger)
+    folders = FolderController(logger=logger)
+    system = SystemController(logger=logger)
     ai_client = AIClient(settings=settings, logger=logger)
 
     try:
         if args.text:
-            run_text_mode(settings, apps, app_manager, ai_client, logger)
+            run_text_mode(settings, apps, app_manager, keyboard, folders, system, ai_client, logger)
         else:
-            run_voice_mode(settings, apps, app_manager, ai_client, logger)
+            run_voice_mode(settings, apps, app_manager, keyboard, folders, system, ai_client, logger)
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
         logger.info("Остановка по Ctrl+C")

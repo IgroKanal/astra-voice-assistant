@@ -61,6 +61,8 @@ class AIClient:
             return False
         if self.settings.llm_api_key.startswith("your_"):
             return False
+        if self.settings.llm_api_key.startswith("PASTE_"):
+            return False
         return True
 
     def ask(self, question: str) -> LLMResult:
@@ -88,7 +90,7 @@ class AIClient:
                     self.settings.llm_provider,
                     model,
                 )
-                response = self._create_chat_completion(
+                response = self._client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -100,7 +102,6 @@ class AIClient:
 
                 message = response.choices[0].message.content if response.choices else ""
                 clean_message = self._clean_llm_answer(message or "")
-
                 if clean_message:
                     return LLMResult(True, clean_message)
 
@@ -165,7 +166,7 @@ class AIClient:
         for model in self._models_to_try():
             try:
                 self.logger.info("LLM-router запрос: model=%s text=%s", model, user_text)
-                response = self._create_chat_completion(
+                response = self._client.chat.completions.create(
                     model=model,
                     messages=[
                         {"role": "system", "content": prompt},
@@ -226,7 +227,7 @@ class AIClient:
             )
 
         try:
-            response = self._create_chat_completion(
+            response = self._client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": self._build_router_prompt(apps)},
@@ -256,12 +257,6 @@ class AIClient:
                     reason="LLM router failed.",
                 ),
             )
-
-    def _create_chat_completion(self, **kwargs: Any) -> Any:
-        if self._client is None:
-            raise RuntimeError("LLM client is not configured.")
-
-        return self._client.chat.completions.create(**kwargs)
 
     def _models_to_try(self) -> list[str]:
         primary = getattr(self.settings, "llm_model", "").strip()
@@ -299,7 +294,7 @@ class AIClient:
 Запрещено выводить <thought>, <think>, Draft, Analysis и любые внутренние рассуждения.
 
 Разрешённые action:
-open_app, close_app, open_url, web_search, get_time, get_date, ask_llm, exit, unknown
+open_app, close_app, open_url, open_folder, web_search, get_time, get_date, help, ask_llm, exit, unknown
 
 Список разрешённых приложений:
 {apps_text}
@@ -307,15 +302,18 @@ open_app, close_app, open_url, web_search, get_time, get_date, ask_llm, exit, un
 Известные сайты:
 {sites_text}
 
-Правила:
-1. Для open_app и close_app target должен быть только названием из списка приложений.
+Правила безопасности:
+1. Для open_app и close_app target должен быть только названием или alias из списка приложений.
 2. Если пользователь просит открыть сайт или известный сайт, верни open_url.
 3. Если пользователь просит найти информацию, верни web_search.
 4. Если пользователь спрашивает время, верни get_time.
 5. Если пользователь спрашивает дату или число, верни get_date.
-6. Если пользователь задаёт обычный вопрос, верни ask_llm и положи вопрос в query.
-7. Никогда не возвращай shell, cmd, powershell или произвольные команды ОС.
-8. Если уверенность ниже 0.55, верни unknown.
+6. Если пользователь просит список возможностей, верни help.
+7. Не возвращай keyboard_shortcut, type_text, screenshot или system_info. Эти действия обрабатываются только локальным parser-ом.
+8. Если пользователь просит нажать клавиши, написать текст, сделать скриншот или показать статус системы, верни unknown.
+9. Если пользователь задаёт обычный вопрос, верни ask_llm и положи вопрос в query.
+10. Никогда не возвращай shell, cmd, powershell или произвольные команды ОС.
+11. Если уверенность ниже 0.55, верни unknown.
 
 Формат ответа строго такой:
 {{"action":"unknown","target":"","query":"","url":"","confidence":0.0,"reason":""}}
@@ -409,9 +407,8 @@ open_app, close_app, open_url, web_search, get_time, get_date, ask_llm, exit, un
 
         clean = self._remove_draft_sections(clean)
         clean = self._remove_final_answer_labels(clean)
-        clean = self._squash_spaces(clean)
-
-        return clean.strip()
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean
 
     def _strip_hidden_thoughts(self, text: str) -> str:
         clean = text.strip()
@@ -454,16 +451,13 @@ open_app, close_app, open_url, web_search, get_time, get_date, ask_llm, exit, un
             "финальный ответ:",
         )
         clean = text.strip()
-
         lowered = clean.lower()
+
         for label in labels:
             if lowered.startswith(label):
                 return clean[len(label) :].strip()
 
         return clean
-
-    def _squash_spaces(self, text: str) -> str:
-        return re.sub(r"\s+", " ", text).strip()
 
     def _safe_float(self, value: Any) -> float:
         try:

@@ -13,20 +13,6 @@ class ConfigError(Exception):
     """Ошибка конфигурации проекта."""
 
 
-_DEFAULT_TTS_PREWARM_PHRASES = [
-    "Астра запущена.",
-    "Слушаю.",
-    "Открываю.",
-    "Открываю сайт.",
-    "Закрываю.",
-    "Ищу.",
-    "Завершаю работу.",
-    "Не расслышал, повтори.",
-    "Что открыть?",
-    "Что закрыть?",
-]
-
-
 @dataclass(frozen=True)
 class Settings:
     assistant_name: str = "Астра"
@@ -68,27 +54,43 @@ class Settings:
     stt_prefer_cyrillic: bool = True
 
     tts_enabled: bool = True
-
-    # edge = Edge TTS neural voices; sapi = pyttsx3 / Windows SAPI5
     tts_engine: str = "edge"
 
-    # Edge TTS settings
     tts_edge_voice: str = "ru-RU-SvetlanaNeural"
     tts_edge_fallback_voice: str = "ru-RU-DmitryNeural"
     tts_edge_rate: str = "+10%"
     tts_edge_volume: str = "+0%"
     tts_edge_pitch: str = "+0Hz"
 
-    # Edge TTS cache settings
     tts_cache_enabled: bool = True
     tts_cache_dir: str = ""
     tts_cache_prewarm_enabled: bool = True
     tts_cache_prewarm_phrases: list[str] = field(
-        default_factory=lambda: list(_DEFAULT_TTS_PREWARM_PHRASES)
+        default_factory=lambda: [
+            "Астра запущена.",
+            "Слушаю.",
+            "Открываю.",
+            "Открываю сайт.",
+            "Закрываю.",
+            "Ищу.",
+            "Завершаю работу.",
+            "Не расслышал, повтори.",
+            "Что открыть?",
+            "Что закрыть?",
+            "Готово.",
+            "Пишу.",
+            "Закрываю вкладку.",
+            "Открываю новую вкладку.",
+            "Обновляю.",
+            "Открываю папку.",
+            "Скриншот сохранён.",
+            "Громче.",
+            "Тише.",
+            "Переключаю звук.",
+        ]
     )
     tts_log_timing: bool = True
 
-    # SAPI / pyttsx3 fallback settings
     tts_rate: int = 180
     tts_volume: float = 1.0
     tts_voice_name: str = ""
@@ -267,10 +269,13 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         tts_edge_pitch=_str_from_env("TTS_EDGE_PITCH", "+0Hz"),
         tts_cache_enabled=_bool_from_env("TTS_CACHE_ENABLED", True),
         tts_cache_dir=os.getenv("TTS_CACHE_DIR", "").strip(),
-        tts_cache_prewarm_enabled=_bool_from_env("TTS_CACHE_PREWARM_ENABLED", True),
+        tts_cache_prewarm_enabled=_bool_from_env(
+            "TTS_CACHE_PREWARM_ENABLED",
+            True,
+        ),
         tts_cache_prewarm_phrases=_list_from_env(
             "TTS_CACHE_PREWARM_PHRASES",
-            list(_DEFAULT_TTS_PREWARM_PHRASES),
+            Settings().tts_cache_prewarm_phrases,
         ),
         tts_log_timing=_bool_from_env("TTS_LOG_TIMING", True),
         tts_rate=_int_from_env("TTS_RATE", 180),

@@ -1,0 +1,54 @@
+{
+  "apps": {
+    "блокнот": {
+      "aliases": ["блокнот", "ноутпад", "notepad", "бло", "блок", "блакнот", "блог", "блонот", "блоу"],
+      "open_command": ["notepad.exe"],
+      "process_name": "notepad.exe"
+    },
+    "калькулятор": {
+      "aliases": ["калькулятор", "calc", "calculator", "калк", "кальк"],
+      "open_command": ["calc.exe"],
+      "process_name": "CalculatorApp.exe"
+    },
+    "проводник": {
+      "aliases": ["проводник", "explorer", "файлы", "папки", "эксплорер"],
+      "open_command": ["explorer.exe"],
+      "process_name": "explorer.exe"
+    },
+    "telegram": {
+      "aliases": ["telegram", "телеграм", "телега", "тг", "tg", "телегу"],
+      "open_command": ["cmd", "/c", "start", "", "tg://resolve"],
+      "process_name": "Telegram.exe"
+    },
+    "vscode": {
+      "aliases": ["vscode", "vs code", "visual studio code", "код", "вс код", "ви эс код"],
+      "open_command": ["code"],
+      "process_name": "Code.exe"
+    },
+    "edge": {
+      "aliases": ["edge", "эдж", "браузер", "microsoft edge", "майкрософт эдж"],
+      "open_command": ["cmd", "/c", "start", "", "msedge"],
+      "process_name": "msedge.exe"
+    },
+    "chrome": {
+      "aliases": ["chrome", "хром", "google chrome", "гугл хром"],
+      "open_command": ["cmd", "/c", "start", "", "chrome"],
+      "process_name": "chrome.exe"
+    },
+    "paint": {
+      "aliases": ["paint", "пейнт", "рисовалка"],
+      "open_command": ["mspaint.exe"],
+      "process_name": "mspaint.exe"
+    },
+    "диспетчер задач": {
+      "aliases": ["диспетчер задач", "task manager", "таск менеджер", "диспетчер"],
+      "open_command": ["taskmgr.exe"],
+      "process_name": "Taskmgr.exe"
+    },
+    "параметры": {
+      "aliases": ["параметры", "настройки windows", "settings", "настройки"],
+      "open_command": ["cmd", "/c", "start", "", "ms-settings:"],
+      "process_name": "SystemSettings.exe"
+    }
+  }
+}

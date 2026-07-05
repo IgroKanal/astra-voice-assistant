@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pyttsx3
 import speech_recognition as sr
@@ -56,10 +56,17 @@ class VoiceIO:
         self.edge_playback_command: str | None = None
         self.edge_tts_command: str | None = None
         self.tts_cache_dir = self._resolve_tts_cache_dir()
+        self.alternative_selector: Callable[[list[str]], str] | None = None
 
         self._apply_recognizer_settings()
         self._init_microphone()
         self._init_tts()
+
+    def set_alternative_selector(
+        self,
+        selector: Callable[[list[str]], str] | None,
+    ) -> None:
+        self.alternative_selector = selector
 
     def _apply_recognizer_settings(self) -> None:
         self.recognizer.dynamic_energy_threshold = (
@@ -311,15 +318,34 @@ class VoiceIO:
 
             if len(alternatives) > 1:
                 self.logger.info("STT варианты: %s", alternatives)
+                if text != alternatives[0].strip():
+                    self._log_stt_diagnostic(
+                        kind="alternative_selected",
+                        text=text,
+                        alternatives=alternatives,
+                        elapsed=elapsed,
+                    )
 
             return ListenResult(True, text=text, alternatives=alternatives)
         except sr.WaitTimeoutError:
             elapsed = time.perf_counter() - start
             self.logger.info("STT timing: %.2fs [timeout]", elapsed)
+            self._log_stt_diagnostic(
+                kind="timeout",
+                text="",
+                alternatives=[],
+                elapsed=elapsed,
+            )
             return ListenResult(False, error="Не услышал речь.")
         except sr.UnknownValueError:
             elapsed = time.perf_counter() - start
             self.logger.info("STT timing: %.2fs [unknown]", elapsed)
+            self._log_stt_diagnostic(
+                kind="unknown",
+                text="",
+                alternatives=[],
+                elapsed=elapsed,
+            )
             return ListenResult(False, error="Не удалось распознать речь.")
         except sr.RequestError:
             elapsed = time.perf_counter() - start
@@ -364,8 +390,23 @@ class VoiceIO:
         if not alternatives:
             return ""
 
+        cleaned = [item.strip() for item in alternatives if item.strip()]
+        if not cleaned:
+            return ""
+
+        if (
+            self.settings.stt_command_aware_alternatives
+            and self.alternative_selector is not None
+        ):
+            try:
+                selected = self.alternative_selector(cleaned).strip()
+                if selected:
+                    return selected
+            except Exception:
+                self.logger.exception("Ошибка command-aware выбора STT alternative")
+
         if not self.settings.stt_prefer_cyrillic:
-            return alternatives[0].strip()
+            return cleaned[0]
 
         def score(text: str) -> tuple[int, int]:
             cyrillic_count = sum(
@@ -373,7 +414,29 @@ class VoiceIO:
             )
             return cyrillic_count, len(text)
 
-        return max(alternatives, key=score).strip()
+        return max(cleaned, key=score).strip()
+
+    def _log_stt_diagnostic(
+        self,
+        kind: str,
+        text: str,
+        alternatives: list[str],
+        elapsed: float,
+    ) -> None:
+        if not self.settings.stt_mistake_log_enabled:
+            return
+
+        try:
+            path = Path(self.settings.stt_mistake_log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = (
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} | "
+                f"{kind} | elapsed={elapsed:.2f}s | "
+                f"selected={text!r} | alternatives={alternatives!r}\n"
+            )
+            path.open("a", encoding="utf-8").write(line)
+        except Exception:
+            self.logger.debug("Не удалось записать STT diagnostic log", exc_info=True)
 
     def speak(self, text: str) -> None:
         text = text.strip()

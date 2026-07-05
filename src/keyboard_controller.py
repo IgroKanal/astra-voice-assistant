@@ -121,8 +121,15 @@ class KeyboardController:
     - Russian text is inserted through Unicode clipboard + Ctrl+V.
     """
 
-    def __init__(self, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        browser_preferred: str = "",
+        browser_focus_missing_timeout_seconds: float = 0.35,
+    ) -> None:
         self.logger = logger or logging.getLogger(__name__)
+        self.browser_preferred = browser_preferred.strip().lower().removesuffix(".exe")
+        self.browser_focus_missing_timeout_seconds = max(0.05, browser_focus_missing_timeout_seconds)
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
         self._configure_ctypes()
@@ -237,12 +244,25 @@ class KeyboardController:
             return KeyboardActionResult(False, "Не удалось напечатать текст.")
 
     def focus_browser_window(self) -> bool:
-        for process_name in ("msedge", "chrome", "firefox", "browser"):
-            if self.focus_process(process_name):
+        candidates = ["msedge", "chrome", "firefox", "browser"]
+        if self.browser_preferred:
+            candidates = [self.browser_preferred] + [
+                item for item in candidates if item != self.browser_preferred
+            ]
+
+        for index, process_name in enumerate(candidates):
+            attempts = 1 if index > 0 else 2
+            delay = self.browser_focus_missing_timeout_seconds
+            if self.focus_process(process_name, attempts=attempts, delay=delay):
                 return True
         return False
 
-    def focus_process(self, process_name: str) -> bool:
+    def focus_process(
+        self,
+        process_name: str,
+        attempts: int = 8,
+        delay: float = 0.25,
+    ) -> bool:
         clean = process_name.strip().lower().removesuffix(".exe")
         if not clean:
             return False
@@ -250,11 +270,11 @@ class KeyboardController:
         process_info: tuple[int, int] | None = None
 
         # Give newly opened apps a short window to create MainWindowHandle.
-        for _ in range(8):
+        for _ in range(max(1, attempts)):
             process_info = self._find_process_window(clean)
             if process_info is not None:
                 break
-            time.sleep(0.25)
+            time.sleep(max(0.01, delay))
 
         if process_info is None:
             self.logger.info("Окно процесса не найдено: %s", clean)

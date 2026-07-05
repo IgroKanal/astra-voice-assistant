@@ -88,6 +88,11 @@ EXIT_COMMANDS = (
 TIME_COMMANDS = (
     "сколько время",
     "сколько времени",
+    "сколько сейчас время",
+    "сколько сейчас времени",
+    "какое сейчас время",
+    "какое время",
+    "сейчас время",
     "который час",
     "текущее время",
 )
@@ -142,7 +147,12 @@ KEYBOARD_COMMANDS = {
     # Browser tabs / navigation
     "закрой вкладку": "close_tab",
     "закрой текущую вкладку": "close_tab",
+    "закрой последнюю вкладку": "close_tab",
     "закрыть вкладку": "close_tab",
+    "закройте вкладку": "close_tab",
+    "закройте эту вкладку": "close_tab",
+    "закроет вкладку": "close_tab",
+    "закроет эту вкладку": "close_tab",
     "закрой сайт": "close_tab",
     "закрыть сайт": "close_tab",
     "закрой страницу": "close_tab",
@@ -359,6 +369,10 @@ APP_LIKE_NAMES = (
     "tg",
     "код",
     "vs code",
+    "vs cod",
+    "vs код",
+    "vs кот",
+    "vscode",
     "visual studio code",
     "браузер",
     "хром",
@@ -412,6 +426,9 @@ COMMAND_HINTS = (
     "обновить",
     "перезагрузи",
     "перезагрузить",
+    "закройте",
+    "закроет",
+    "закрывайте",
 )
 
 _FILLER_WORDS = (
@@ -502,26 +519,33 @@ def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
             target=KEYBOARD_COMMANDS[normalized],
         )
 
+    words = normalized.split()
+    first = words[0] if words else ""
+    second = words[1] if len(words) > 1 else ""
+
     # Фразы с уточнением сайта всё равно являются локальной командой
     # для активной вкладки, а не поводом отправлять запрос в LLM-router.
-    #
-    # STT может менять падеж: "обнови страницу ютуб" ->
-    # "обнови страница ютуб". Поэтому refresh-паттерн проверяется
-    # по основе слова, а не только по точной строке.
-    words = normalized.split()
-    if words:
-        first = words[0]
-        second = words[1] if len(words) > 1 else ""
+    # STT часто меняет падеж: "страницу" -> "страница".
+    refresh_verbs = {"обнови", "обновить", "перезагрузи", "перезагрузить"}
+    if first in refresh_verbs and (
+        len(words) == 1 or second.startswith("стран") or second.startswith("сайт")
+    ):
+        return ParsedCommand(
+            CommandType.KEYBOARD_SHORTCUT,
+            text=normalized,
+            target="refresh",
+        )
 
-        refresh_verbs = {"обнови", "обновить", "перезагрузи", "перезагрузить"}
-        if first in refresh_verbs and (
-            len(words) == 1 or second.startswith("стран") or second.startswith("сайт")
-        ):
-            return ParsedCommand(
-                CommandType.KEYBOARD_SHORTCUT,
-                text=normalized,
-                target="refresh",
-            )
+    # STT может распознать "закрой вкладку" как "закроет вкладку" или
+    # "закройте вкладку". Если во фразе есть корень вкладки и глагол закрытия,
+    # это безопасная локальная команда Ctrl+W.
+    close_stems = ("закрой", "закрыть", "закройте", "закроет", "закрывай")
+    if "вкладк" in normalized and any(stem in normalized for stem in close_stems):
+        return ParsedCommand(
+            CommandType.KEYBOARD_SHORTCUT,
+            text=normalized,
+            target="close_tab",
+        )
 
     prefix_commands = {
         "закрой вкладку ": "close_tab",
@@ -537,7 +561,6 @@ def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
             )
 
     return None
-
 
 def _parse_targeted_type_text(normalized: str) -> ParsedCommand | None:
     """
@@ -641,6 +664,11 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in HELP_COMMANDS:
         return ParsedCommand(CommandType.HELP, text=normalized)
+
+    # Частые голосовые команды без явного "открой".
+    # В голосе пользователь часто говорит просто "диспетчер задач".
+    if normalized in {"диспетчер", "диспетчер задач", "task manager", "таск менеджер"}:
+        return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="диспетчер задач")
 
     # v0.8.3: не делаем "включи/выключи звук" через mute-toggle,
     # потому что без чтения реального состояния это может дать обратный эффект.

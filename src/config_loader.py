@@ -24,12 +24,22 @@ class Settings:
     allow_voice_conversation_without_wake: bool = False
     router_cooldown_seconds: float = 2.0
 
+    stt_command_aware_alternatives: bool = True
+    stt_mistake_log_enabled: bool = True
+    stt_mistake_log_path: str = "logs/stt_mistakes.log"
+
+    browser_preferred: str = ""
+    browser_focus_missing_timeout_seconds: float = 0.35
+
+    voice_max_speak_chars: int = 180
+    voice_short_responses: bool = True
+
     llm_enabled: bool = True
     llm_provider: str = "gemini"
     llm_api_key: str = ""
     llm_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    llm_model: str = "gemini-3.5-flash"
-    llm_fallback_model: str = ""
+    llm_model: str = "gemma-4-31b-it"
+    llm_fallback_model: str = "gemini-3.5-flash"
     llm_system_prompt: str = (
         "Ты голосовой ассистент для ПК. Твоё имя Астра. "
         "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
@@ -168,8 +178,8 @@ def _gemini_api_key() -> str:
 
 
 def _gemini_models() -> tuple[str, str]:
-    legacy_model = _str_from_env("LLM_MODEL", "gemini-3.5-flash")
-    legacy_fallback = _str_from_env("LLM_FALLBACK_MODEL", "")
+    legacy_model = _str_from_env("LLM_MODEL", "gemma-4-31b-it")
+    legacy_fallback = _str_from_env("LLM_FALLBACK_MODEL", "gemini-3.5-flash")
 
     primary = _str_from_env("GEMINI_MODEL", legacy_model)
     fallback = _str_from_env("GEMINI_FALLBACK_MODEL", legacy_fallback)
@@ -217,6 +227,25 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "ROUTER_COOLDOWN_SECONDS",
             2.0,
         ),
+        stt_command_aware_alternatives=_bool_from_env(
+            "STT_COMMAND_AWARE_ALTERNATIVES",
+            True,
+        ),
+        stt_mistake_log_enabled=_bool_from_env(
+            "STT_MISTAKE_LOG_ENABLED",
+            True,
+        ),
+        stt_mistake_log_path=_str_from_env(
+            "STT_MISTAKE_LOG_PATH",
+            "logs/stt_mistakes.log",
+        ),
+        browser_preferred=_str_from_env("BROWSER_PREFERRED", ""),
+        browser_focus_missing_timeout_seconds=_float_from_env(
+            "BROWSER_FOCUS_MISSING_TIMEOUT_SECONDS",
+            0.35,
+        ),
+        voice_max_speak_chars=_int_from_env("VOICE_MAX_SPEAK_CHARS", 180),
+        voice_short_responses=_bool_from_env("VOICE_SHORT_RESPONSES", True),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
         llm_api_key=_gemini_api_key(),

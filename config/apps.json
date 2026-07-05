@@ -80,7 +80,14 @@
         "visual studio code",
         "код",
         "вс код",
-        "ви эс код"
+        "ви эс код",
+        "vs код",
+        "vs cod",
+        "vs кот",
+        "vs kot",
+        "vs god",
+        "вс кот",
+        "v s code"
       ],
       "open_command": [
         "code"
@@ -158,6 +165,27 @@
         "ms-settings:"
       ],
       "process_name": "SystemSettings.exe"
+    },
+    "firefox": {
+      "aliases": [
+        "firefox",
+        "файрфокс",
+        "фаерфокс",
+        "fairfox",
+        "fairfax",
+        "браузер firefox",
+        "браузер файрфокс",
+        "mozilla firefox",
+        "мозила"
+      ],
+      "open_command": [
+        "cmd",
+        "/c",
+        "start",
+        "",
+        "firefox"
+      ],
+      "process_name": "firefox.exe"
     }
   }
 }

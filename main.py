@@ -17,6 +17,7 @@ from src.command_parser import (
     ParsedCommand,
     extract_command_after_wake,
     is_command_like_text,
+    normalize_text,
     parse_command_text,
 )
 from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config, load_settings
@@ -27,6 +28,7 @@ from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
     AssistantAction,
+    find_site_url,
     google_search_url,
     normalize_url_or_site,
 )
@@ -91,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Текстовый режим для теста без микрофона.",
     )
+    parser.add_argument(
+        "--stt-test",
+        action="store_true",
+        help="Безопасная диагностика распознавания речи без выполнения команд.",
+    )
     return parser
 
 
@@ -103,6 +110,117 @@ def ensure_windows(logger: logging.Logger) -> None:
         )
         print("Предупреждение: этот MVP рассчитан только на Windows 10/11.")
 
+
+
+def _parsed_for_scoring(text: str, settings: Settings) -> tuple[ParsedCommand, bool]:
+    parsed = extract_command_after_wake(text, settings.wake_phrases)
+    had_wake = parsed.type != CommandType.NO_WAKE
+    if parsed.type == CommandType.NO_WAKE:
+        parsed = parse_command_text(text)
+    return parsed, had_wake
+
+
+def score_stt_alternative(
+    text: str,
+    settings: Settings,
+    app_manager: WindowsAppManager,
+) -> int:
+    parsed, had_wake = _parsed_for_scoring(text, settings)
+    normalized = normalize_text(text)
+    score = 0
+
+    if had_wake:
+        score += 15
+
+    local_types = _DIRECT_COMMAND_TYPES | _WAKE_REQUIRED_TYPES
+    if parsed.type in local_types:
+        score += 120
+    elif parsed.type == CommandType.ASK_LLM:
+        score += 20 if is_command_like_text(text) else 5
+    elif parsed.type in {CommandType.NO_WAKE, CommandType.EMPTY}:
+        score -= 50
+
+    if parsed.type in {CommandType.OPEN_APP, CommandType.CLOSE_APP}:
+        if parsed.target and app_manager.find_app(parsed.target) is not None:
+            score += 90
+        elif parsed.target:
+            score += 10
+        else:
+            score -= 60
+
+    if parsed.type == CommandType.OPEN_URL:
+        if find_site_url(parsed.target):
+            score += 90
+        elif parsed.target:
+            score += 10
+        else:
+            score -= 60
+
+    if parsed.type == CommandType.WEB_SEARCH:
+        if parsed.target:
+            score += 35
+        else:
+            score -= 40
+
+    if parsed.type == CommandType.KEYBOARD_SHORTCUT:
+        score += 80
+    if parsed.type in {CommandType.GET_TIME, CommandType.GET_DATE, CommandType.HELP}:
+        score += 70
+    if parsed.type in {CommandType.SCREENSHOT, CommandType.SYSTEM_INFO, CommandType.TYPE_TEXT}:
+        score += 60
+
+    # Мягкий бонус за внятные латинские технические названия.
+    for token in ("vs code", "vscode", "youtube", "chatgpt", "telegram", "firefox"):
+        if token in normalized:
+            score += 12
+
+    return score
+
+
+def choose_stt_alternative(
+    alternatives: list[str],
+    settings: Settings,
+    app_manager: WindowsAppManager,
+    logger: logging.Logger,
+) -> str:
+    if not alternatives:
+        return ""
+
+    scored = [
+        (score_stt_alternative(item, settings, app_manager), index, item.strip())
+        for index, item in enumerate(alternatives)
+        if item.strip()
+    ]
+    if not scored:
+        return ""
+
+    scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    selected = scored[0][2]
+
+    if selected != alternatives[0].strip():
+        logger.info("STT command-aware selected: %r from scored=%s", selected, scored)
+
+    return selected
+
+
+def shorten_voice_response(message: str, settings: Settings) -> str:
+    if not settings.voice_short_responses:
+        return message
+
+    limit = max(80, settings.voice_max_speak_chars)
+    clean = " ".join(message.strip().split())
+    if len(clean) <= limit:
+        return clean
+
+    sentence_end_positions = [
+        clean.find(marker) for marker in (". ", "! ", "? ") if clean.find(marker) != -1
+    ]
+    if sentence_end_positions:
+        end = min(sentence_end_positions) + 1
+        if 30 <= end <= limit:
+            return clean[:end] + " Подробности смотри в логах."
+
+    return clean[:limit].rstrip() + "... Подробности смотри в логах."
 
 def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantAction:
     mapping = {
@@ -123,16 +241,21 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.EMPTY: ActionType.EMPTY,
     }
 
+    # Для локальных команд нельзя подставлять полный текст в query,
+    # иначе "найди" без запроса превращается в поиск слова "найди".
+    query = parsed.target
+    if parsed.type == CommandType.ASK_LLM:
+        query = parsed.target or parsed.text
+
     return AssistantAction(
         type=mapping.get(parsed.type, ActionType.UNKNOWN),
         text=parsed.text,
         target=parsed.target,
-        query=parsed.target or parsed.text,
+        query=query,
         url=parsed.target,
         confidence=1.0,
         source=source,
     )
-
 
 def parse_without_wake_if_allowed(
     raw_text: str,
@@ -263,14 +386,11 @@ def resolve_action(
 
 def build_help_text() -> str:
     return (
-        "Я умею открывать приложения, сайты и папки, искать в интернете, "
-        "управлять вкладками браузера, говорить время и дату. "
-        "Примеры: открой клод, открой чат гпт, закрой вкладку, новая вкладка. "
-        "Команды ввода текста, скриншота и статуса системы выполняю только после имени. "
-        "Ввод текста работает в активное окно: кликни в нужное поле и скажи "
-        "Астра, напиши привет."
+        "Я умею открывать сайты, приложения и папки, управлять вкладками, "
+        "искать в интернете, делать скриншот и говорить статус системы. "
+        "Примеры: открой ютуб, закрой вкладку, Астра, сделай скриншот. "
+        "Текст пишу только в активное окно после имени."
     )
-
 
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
@@ -447,6 +567,41 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
     return handle_action(action, ctx)
 
 
+
+def run_stt_test_mode(
+    settings: Settings,
+    apps: dict[str, AppConfig],
+    app_manager: WindowsAppManager,
+    logger: logging.Logger,
+) -> None:
+    print("STT test mode. Команды НЕ выполняются. Ctrl+C для выхода.")
+    voice = VoiceIO(settings=settings, logger=logger)
+    voice.set_alternative_selector(
+        lambda alternatives: choose_stt_alternative(
+            alternatives,
+            settings,
+            app_manager,
+            logger,
+        )
+    )
+
+    while True:
+        result = voice.listen_once()
+        if not result.ok:
+            print(f"STT: {result.error}")
+            continue
+
+        parsed, had_wake = _parsed_for_scoring(result.text, settings)
+        print("-" * 60)
+        print(f"Выбрано: {result.text}")
+        print(f"Wake: {had_wake}")
+        print(f"Parser: {parsed.type.value} target={parsed.target!r}")
+        if result.alternatives:
+            print("Варианты:")
+            for index, item in enumerate(result.alternatives, start=1):
+                score = score_stt_alternative(item, settings, app_manager)
+                print(f"  {index}. [{score}] {item}")
+
 def run_text_mode(
     settings: Settings,
     apps: dict[str, AppConfig],
@@ -522,6 +677,14 @@ def run_voice_mode(
     logger: logging.Logger,
 ) -> None:
     voice = VoiceIO(settings=settings, logger=logger)
+    voice.set_alternative_selector(
+        lambda alternatives: choose_stt_alternative(
+            alternatives,
+            settings,
+            app_manager,
+            logger,
+        )
+    )
     voice.speak(f"{settings.assistant_name} запущена.")
 
     if settings.allow_commands_without_wake:
@@ -535,7 +698,10 @@ def run_voice_mode(
     state = TurnState()
 
     def respond(message: str) -> None:
-        voice.speak(message)
+        shortened = shorten_voice_response(message, settings)
+        if shortened != message:
+            logger.info("Voice response shortened. full=%r shortened=%r", message, shortened)
+        voice.speak(shortened)
 
     def get_follow_up() -> str:
         follow_up = voice.listen_once()
@@ -587,13 +753,19 @@ def main() -> int:
         return 1
 
     app_manager = WindowsAppManager(apps=apps, logger=logger)
-    keyboard = KeyboardController(logger=logger)
+    keyboard = KeyboardController(
+        logger=logger,
+        browser_preferred=settings.browser_preferred,
+        browser_focus_missing_timeout_seconds=settings.browser_focus_missing_timeout_seconds,
+    )
     folders = FolderController(logger=logger)
     system = SystemController(logger=logger)
     ai_client = AIClient(settings=settings, logger=logger)
 
     try:
-        if args.text:
+        if args.stt_test:
+            run_stt_test_mode(settings, apps, app_manager, logger)
+        elif args.text:
             run_text_mode(settings, apps, app_manager, keyboard, folders, system, ai_client, logger)
         else:
             run_voice_mode(settings, apps, app_manager, keyboard, folders, system, ai_client, logger)

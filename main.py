@@ -15,6 +15,7 @@ from src.audio_io import VoiceIO
 from src.command_parser import (
     CommandType,
     ParsedCommand,
+    UNSUPPORTED_CLOSE_TARGET,
     extract_command_after_wake,
     is_command_like_text,
     normalize_text,
@@ -414,6 +415,12 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         if not action.target:
             ctx.respond("Что закрыть?")
             return True
+        if action.target == UNSUPPORTED_CLOSE_TARGET:
+            ctx.respond(
+                "Закрытие активного окна пока отключено. "
+                "Скажи: закрой Firefox или закрой VS Code."
+            )
+            return True
         result = ctx.app_manager.close_app(action.target)
         ctx.respond(result.message)
         return True
@@ -752,7 +759,11 @@ def main() -> int:
         print(f"Ошибка конфигурации: {exc}")
         return 1
 
-    app_manager = WindowsAppManager(apps=apps, logger=logger)
+    app_manager = WindowsAppManager(
+        apps=apps,
+        logger=logger,
+        browser_preferred=settings.browser_preferred,
+    )
     keyboard = KeyboardController(
         logger=logger,
         browser_preferred=settings.browser_preferred,

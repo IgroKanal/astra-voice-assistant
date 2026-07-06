@@ -32,6 +32,13 @@ class ParsedCommand:
     target: str = ""
 
 
+# v0.9.3: sentinel-таргет для CLOSE_APP, когда команда явно про закрытие
+# активного/текущего окна, а не про конкретное приложение из whitelist.
+# Обрабатывается в main.py.handle_action фиксированным честным ответом,
+# без Alt+F4 и без похода в LLM-router.
+UNSUPPORTED_CLOSE_TARGET = "__unsupported_close__"
+
+
 OPEN_PREFIXES = (
     "открой",
     "открыть",
@@ -527,8 +534,12 @@ def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
     # для активной вкладки, а не поводом отправлять запрос в LLM-router.
     # STT часто меняет падеж: "страницу" -> "страница".
     refresh_verbs = {"обнови", "обновить", "перезагрузи", "перезагрузить"}
+    refresh_target = " ".join(words[1:]).strip()
     if first in refresh_verbs and (
-        len(words) == 1 or second.startswith("стран") or second.startswith("сайт")
+        len(words) == 1
+        or second.startswith("стран")
+        or second.startswith("сайт")
+        or _is_site_target(refresh_target)
     ):
         return ParsedCommand(
             CommandType.KEYBOARD_SHORTCUT,
@@ -667,7 +678,16 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     # Частые голосовые команды без явного "открой".
     # В голосе пользователь часто говорит просто "диспетчер задач".
-    if normalized in {"диспетчер", "диспетчер задач", "task manager", "таск менеджер"}:
+    if normalized in {
+        "диспетчер",
+        "диспетчер задач",
+        "диспетчер зада",
+        "диспетчер задо",
+        "диспетчер zada",
+        "диспетчер zado",
+        "task manager",
+        "таск менеджер",
+    }:
         return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="диспетчер задач")
 
     # v0.8.3: не делаем "включи/выключи звук" через mute-toggle,
@@ -675,9 +695,20 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in {"включи звук", "выключи звук", "без звука"}:
         return ParsedCommand(CommandType.ASK_LLM, text=normalized)
 
-    # Alt+F4 / close active window перенесено на v0.9 с подтверждением.
-    if normalized in {"закрой окно", "закрыть окно"}:
-        return ParsedCommand(CommandType.ASK_LLM, text=normalized)
+    # v0.9.3 hotfix: раньше это уходило как ASK_LLM, но is_command_like_text
+    # всё равно матчил "закрой" как хинт, и фраза улетала в LLM-router, где
+    # молча гасла (confidence=0, router_unknown_guard). Теперь это прямая
+    # локальная команда с sentinel-таргетом — router вообще не вызывается,
+    # Alt+F4 не выполняется, пользователь получает честный ответ.
+    if normalized in {
+        "закрой окно",
+        "закрыть окно",
+        "закрой это окно",
+        "закрой активное окно",
+        "закрой текущее окно",
+        "закрой данное окно",
+    }:
+        return ParsedCommand(CommandType.CLOSE_APP, text=normalized, target=UNSUPPORTED_CLOSE_TARGET)
 
     keyboard = _parse_keyboard_shortcut(normalized)
     if keyboard is not None:

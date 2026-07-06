@@ -5,6 +5,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -18,8 +19,9 @@ VK_SHIFT = 0x10
 VK_ALT = 0x12
 
 KEYEVENTF_KEYUP = 0x0002
-
 SW_RESTORE = 9
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 _SHORTCUTS: dict[str, tuple[list[int], int]] = {
     "close_tab": ([VK_CONTROL], ord("W")),
@@ -62,6 +64,8 @@ _BROWSER_SHORTCUTS = {
     "incognito",
     "fullscreen",
 }
+
+_KNOWN_BROWSERS = ("firefox", "msedge", "chrome", "browser")
 
 _VOLUME_KEYS = {
     "volume_mute": 0xAD,
@@ -113,12 +117,12 @@ _TITLE_FALLBACK_KEYWORDS: dict[str, tuple[str, ...]] = {
 class KeyboardController:
     """Безопасные клавиатурные действия для активного окна.
 
-    v0.8.3 hotfix5:
-    - targeted typing for Notepad uses title fallback:
-      Windows 10/11 Notepad may expose the visible window under another
-      process, so searching only ProcessName=notepad is not reliable.
-    - shortcuts still use WinAPI, not PowerShell SendKeys.
-    - Russian text is inserted through Unicode clipboard + Ctrl+V.
+    v0.9.1:
+    - browser shortcuts first check the current foreground app;
+    - browser focus uses WinAPI EnumWindows instead of slow PowerShell Get-Process;
+    - BROWSER_PREFERRED is tried before other browsers;
+    - shortcuts use WinAPI keybd_event;
+    - Russian text is inserted via Unicode clipboard + Ctrl+V.
     """
 
     def __init__(
@@ -129,7 +133,10 @@ class KeyboardController:
     ) -> None:
         self.logger = logger or logging.getLogger(__name__)
         self.browser_preferred = browser_preferred.strip().lower().removesuffix(".exe")
-        self.browser_focus_missing_timeout_seconds = max(0.05, browser_focus_missing_timeout_seconds)
+        self.browser_focus_missing_timeout_seconds = max(
+            0.05,
+            browser_focus_missing_timeout_seconds,
+        )
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
         self._configure_ctypes()
@@ -143,6 +150,17 @@ class KeyboardController:
         self.kernel32.GlobalUnlock.restype = ctypes.c_int
         self.kernel32.GetCurrentThreadId.argtypes = []
         self.kernel32.GetCurrentThreadId.restype = ctypes.c_ulong
+        self.kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        self.kernel32.OpenProcess.restype = ctypes.c_void_p
+        self.kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self.kernel32.CloseHandle.restype = ctypes.c_int
+        self.kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        self.kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
 
         self.user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
         self.user32.SetClipboardData.restype = ctypes.c_void_p
@@ -178,6 +196,16 @@ class KeyboardController:
         self.user32.SetActiveWindow.restype = ctypes.c_void_p
         self.user32.SetFocus.argtypes = [ctypes.c_void_p]
         self.user32.SetFocus.restype = ctypes.c_void_p
+        self.user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        self.user32.IsWindowVisible.restype = ctypes.c_int
+        self.user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+        self.user32.GetWindowTextLengthW.restype = ctypes.c_int
+        self.user32.GetWindowTextW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+        ]
+        self.user32.GetWindowTextW.restype = ctypes.c_int
 
     def send_shortcut(self, name: str) -> KeyboardActionResult:
         if name in _VOLUME_KEYS:
@@ -192,7 +220,7 @@ class KeyboardController:
 
         if name in _BROWSER_SHORTCUTS:
             self.focus_browser_window()
-            time.sleep(0.15)
+            time.sleep(0.08)
 
         modifiers, key_code = combo
         ok = self._press_combo(modifiers, key_code)
@@ -244,24 +272,32 @@ class KeyboardController:
             return KeyboardActionResult(False, "Не удалось напечатать текст.")
 
     def focus_browser_window(self) -> bool:
-        candidates = ["msedge", "chrome", "firefox", "browser"]
+        foreground = self._foreground_process_name()
+        browser_names = set(self._browser_candidates())
+        if foreground and foreground in browser_names:
+            self.logger.info("Браузер уже активен: %s", foreground)
+            return True
+
+        for process_name in self._browser_candidates():
+            if self.focus_process(process_name, attempts=1, delay=0.02):
+                return True
+
+        self.logger.info("Браузерное окно не найдено для фокуса.")
+        return False
+
+    def _browser_candidates(self) -> list[str]:
+        candidates = list(_KNOWN_BROWSERS)
         if self.browser_preferred:
             candidates = [self.browser_preferred] + [
                 item for item in candidates if item != self.browser_preferred
             ]
-
-        for index, process_name in enumerate(candidates):
-            attempts = 1 if index > 0 else 2
-            delay = self.browser_focus_missing_timeout_seconds
-            if self.focus_process(process_name, attempts=attempts, delay=delay):
-                return True
-        return False
+        return candidates
 
     def focus_process(
         self,
         process_name: str,
-        attempts: int = 8,
-        delay: float = 0.25,
+        attempts: int = 2,
+        delay: float = 0.05,
     ) -> bool:
         clean = process_name.strip().lower().removesuffix(".exe")
         if not clean:
@@ -269,7 +305,6 @@ class KeyboardController:
 
         process_info: tuple[int, int] | None = None
 
-        # Give newly opened apps a short window to create MainWindowHandle.
         for _ in range(max(1, attempts)):
             process_info = self._find_process_window(clean)
             if process_info is not None:
@@ -282,20 +317,20 @@ class KeyboardController:
 
         pid, hwnd = process_info
 
-        if self._activate_process_by_pid(pid):
-            time.sleep(0.15)
+        if self._force_foreground_window(hwnd):
+            time.sleep(0.08)
             self.logger.info(
-                "Focused process by AppActivate: %s pid=%s hwnd=%s",
+                "Focused process by WinAPI: %s pid=%s hwnd=%s",
                 clean,
                 pid,
                 hwnd,
             )
             return True
 
-        if self._force_foreground_window(hwnd):
-            time.sleep(0.15)
+        if self._activate_process_by_pid(pid):
+            time.sleep(0.08)
             self.logger.info(
-                "Focused process by WinAPI: %s pid=%s hwnd=%s",
+                "Focused process by AppActivate: %s pid=%s hwnd=%s",
                 clean,
                 pid,
                 hwnd,
@@ -311,66 +346,77 @@ class KeyboardController:
         return False
 
     def _find_process_window(self, process_name: str) -> tuple[int, int] | None:
-        safe_name = process_name.replace("'", "''")
-        title_keywords = self._title_keywords_for_process(process_name)
-        title_conditions = " -or ".join(
-            f"$_.MainWindowTitle -like '*{keyword.replace(chr(39), chr(39) + chr(39))}*'"
-            for keyword in title_keywords
-        )
+        wanted = process_name.strip().lower().removesuffix(".exe")
+        title_keywords = self._title_keywords_for_process(wanted)
 
-        # First preference: exact process name. Fallback: visible window title
-        # containing app-specific keyword, e.g. "Блокнот" / "Notepad".
-        script = f"""
-$ErrorActionPreference = 'SilentlyContinue'
+        for pid, hwnd, proc_name, title in self._visible_windows():
+            proc_clean = proc_name.lower().removesuffix(".exe")
+            title_clean = title.lower()
 
-$p = Get-Process |
-    Where-Object {{
-        $_.ProcessName -ieq '{safe_name}' -and
-        $_.MainWindowHandle -ne 0
-    }} |
-    Sort-Object StartTime -Descending |
-    Select-Object -First 1
+            if proc_clean == wanted:
+                return pid, hwnd
 
-if ($null -eq $p) {{
-    $p = Get-Process |
-        Where-Object {{
-            $_.MainWindowHandle -ne 0 -and
-            ({title_conditions})
-        }} |
-        Sort-Object StartTime -Descending |
-        Select-Object -First 1
-}}
+            if any(keyword.lower() in title_clean for keyword in title_keywords):
+                return pid, hwnd
 
-if ($null -ne $p) {{
-    [Console]::Write("$($p.Id)|$($p.MainWindowHandle)")
-}}
-"""
+        return None
+
+    def _visible_windows(self) -> list[tuple[int, int, str, str]]:
+        windows: list[tuple[int, int, str, str]] = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        def enum_proc(hwnd: int, _lparam: int) -> bool:
+            hwnd_value = ctypes.c_void_p(hwnd)
+            if not self.user32.IsWindowVisible(hwnd_value):
+                return True
+
+            title_len = self.user32.GetWindowTextLengthW(hwnd_value)
+            title = ""
+            if title_len > 0:
+                buffer = ctypes.create_unicode_buffer(title_len + 1)
+                self.user32.GetWindowTextW(hwnd_value, buffer, title_len + 1)
+                title = buffer.value
+
+            pid = ctypes.c_ulong()
+            self.user32.GetWindowThreadProcessId(hwnd_value, ctypes.byref(pid))
+            process_name = self._process_name_from_pid(pid.value)
+
+            if process_name and title:
+                windows.append((int(pid.value), int(hwnd), process_name, title))
+
+            return True
+
+        self.user32.EnumWindows(enum_proc, 0)
+        return windows
+
+    def _foreground_process_name(self) -> str:
+        hwnd = self.user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+
+        pid = ctypes.c_ulong()
+        self.user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        return self._process_name_from_pid(pid.value).lower().removesuffix(".exe")
+
+    def _process_name_from_pid(self, pid: int) -> str:
+        if not pid:
+            return ""
+
+        handle = self.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, int(pid))
+        if not handle:
+            return ""
+
         try:
-            result = subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    script,
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=3,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            value = (result.stdout or "").strip()
-            if not value or "|" not in value:
-                return None
-
-            pid_text, hwnd_text = value.split("|", 1)
-            return int(pid_text), int(hwnd_text)
+            size = ctypes.c_ulong(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            ok = self.kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size))
+            if not ok:
+                return ""
+            return Path(buffer.value).name
         except Exception:
-            self.logger.debug("Не удалось найти окно процесса: %s", process_name)
-            return None
+            return ""
+        finally:
+            self.kernel32.CloseHandle(handle)
 
     def _title_keywords_for_process(self, process_name: str) -> tuple[str, ...]:
         keywords = _TITLE_FALLBACK_KEYWORDS.get(process_name)
@@ -380,6 +426,8 @@ if ($null -ne $p) {{
         return (process_name,)
 
     def _activate_process_by_pid(self, pid: int) -> bool:
+        # Kept as fallback. It is slower than WinAPI EnumWindows, but useful when
+        # Windows foreground-lock rules reject SetForegroundWindow.
         script = f"""
 $ErrorActionPreference = 'SilentlyContinue'
 $ws = New-Object -ComObject WScript.Shell
@@ -400,7 +448,7 @@ if ($result) {{ [Console]::Write('1') }} else {{ [Console]::Write('0') }}
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=3,
+                timeout=1.2,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             return (result.stdout or "").strip() == "1"

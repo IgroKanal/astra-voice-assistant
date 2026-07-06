@@ -20,6 +20,7 @@ class CommandType(str, Enum):
     SCREENSHOT = "screenshot"
     SYSTEM_INFO = "system_info"
     VPN_CONTROL = "vpn_control"
+    WINDOW_CONTROL = "window_control"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -182,6 +183,45 @@ VPN_STATUS_WORDS = (
     "подключен",
     "подключен",
     "состояние",
+)
+
+WINDOW_LIST_COMMANDS = (
+    "какие окна открыты",
+    "какие открыты окна",
+    "что открыто",
+    "покажи окна",
+    "покажи открытые окна",
+    "список окон",
+    "открытые окна",
+    "какие приложения открыты",
+    "что сейчас открыто",
+)
+
+ACTIVE_WINDOW_COMMANDS = (
+    "активное окно",
+    "какое окно активно",
+    "что активно",
+    "текущее окно",
+    "какое сейчас окно",
+    "где я сейчас",
+)
+
+WINDOW_FOCUS_PREFIXES = (
+    "переключись на",
+    "переключиться на",
+    "перейди в",
+    "перейти в",
+    "сфокусируй",
+    "сфокусируйся на",
+    "активируй окно",
+    "активировать окно",
+    "покажи окно",
+)
+
+WINDOW_CONTROL_HINTS = (
+    *WINDOW_LIST_COMMANDS,
+    *ACTIVE_WINDOW_COMMANDS,
+    *WINDOW_FOCUS_PREFIXES,
 )
 
 SCREENSHOT_COMMANDS = (
@@ -487,6 +527,7 @@ COMMAND_HINTS = (
     *VPN_CONNECT_WORDS,
     *VPN_DISCONNECT_WORDS,
     *VPN_STATUS_WORDS,
+    *WINDOW_CONTROL_HINTS,
     *KEYBOARD_COMMANDS.keys(),
     "открой сайт",
     "закрой сайт",
@@ -639,6 +680,28 @@ def _parse_vpn_control(normalized: str) -> ParsedCommand | None:
         return ParsedCommand(CommandType.VPN_CONTROL, text=normalized, target="status")
 
     return None
+
+def _parse_window_control(normalized: str) -> ParsedCommand | None:
+    if normalized in WINDOW_LIST_COMMANDS:
+        return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target="list")
+
+    if normalized in ACTIVE_WINDOW_COMMANDS:
+        return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target="active")
+
+    for prefix in WINDOW_FOCUS_PREFIXES:
+        if normalized == prefix:
+            return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target="focus:")
+        if normalized.startswith(prefix + " "):
+            target = normalized.removeprefix(prefix).strip()
+            if target:
+                return ParsedCommand(
+                    CommandType.WINDOW_CONTROL,
+                    text=normalized,
+                    target=f"focus:{target}",
+                )
+
+    return None
+
 
 def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
     if normalized in KEYBOARD_COMMANDS:
@@ -806,6 +869,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in HELP_COMMANDS:
         return ParsedCommand(CommandType.HELP, text=normalized)
+
+    window_control = _parse_window_control(normalized)
+    if window_control is not None:
+        return window_control
 
     # Частые голосовые команды без явного "открой".
     # В голосе пользователь часто говорит просто "диспетчер задач".

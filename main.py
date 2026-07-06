@@ -27,6 +27,7 @@ from src.folder_controller import FolderController
 from src.keyboard_controller import KeyboardController
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
+from src.window_controller import WindowController
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -49,6 +50,7 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.KEYBOARD_SHORTCUT,
     CommandType.HELP,
     CommandType.VPN_CONTROL,
+    CommandType.WINDOW_CONTROL,
     CommandType.EXIT,
 }
 
@@ -64,6 +66,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.SCREENSHOT,
     ActionType.SYSTEM_INFO,
     ActionType.VPN_CONTROL,
+    ActionType.WINDOW_CONTROL,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
@@ -83,6 +86,7 @@ class TurnContext:
     folders: FolderController
     system: SystemController
     vpn: VpnController
+    windows: WindowController
     ai_client: AIClient
     logger: logging.Logger
     respond: Callable[[str], None]
@@ -176,6 +180,8 @@ def score_stt_alternative(
         score += 60
     if parsed.type == CommandType.VPN_CONTROL:
         score += 85
+    if parsed.type == CommandType.WINDOW_CONTROL:
+        score += 75
 
     # Мягкий бонус за внятные латинские технические названия.
     for token in ("vs code", "vscode", "youtube", "chatgpt", "telegram", "firefox", "vpn", "впн"):
@@ -244,6 +250,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.SCREENSHOT: ActionType.SCREENSHOT,
         CommandType.SYSTEM_INFO: ActionType.SYSTEM_INFO,
         CommandType.VPN_CONTROL: ActionType.VPN_CONTROL,
+        CommandType.WINDOW_CONTROL: ActionType.WINDOW_CONTROL,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -506,6 +513,19 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         ctx.respond(result.message)
         return True
 
+    if action.type == ActionType.WINDOW_CONTROL:
+        window_action = action.target or action.query
+        if window_action == "list":
+            result = ctx.windows.describe_open_windows()
+        elif window_action == "active":
+            result = ctx.windows.describe_active_window()
+        elif window_action.startswith("focus:"):
+            result = ctx.windows.focus_target(window_action.removeprefix("focus:"))
+        else:
+            result = ctx.windows.describe_open_windows()
+        ctx.respond(result.message)
+        return True
+
     if action.type == ActionType.HELP:
         ctx.respond(build_help_text())
         return True
@@ -637,6 +657,7 @@ def run_text_mode(
     folders: FolderController,
     system: SystemController,
     vpn: VpnController,
+    windows: WindowController,
     ai_client: AIClient,
     logger: logging.Logger,
 ) -> None:
@@ -674,6 +695,7 @@ def run_text_mode(
         folders=folders,
         system=system,
         vpn=vpn,
+        windows=windows,
         ai_client=ai_client,
         logger=logger,
         respond=respond,
@@ -703,6 +725,7 @@ def run_voice_mode(
     folders: FolderController,
     system: SystemController,
     vpn: VpnController,
+    windows: WindowController,
     ai_client: AIClient,
     logger: logging.Logger,
 ) -> None:
@@ -748,6 +771,7 @@ def run_voice_mode(
         folders=folders,
         system=system,
         vpn=vpn,
+        windows=windows,
         ai_client=ai_client,
         logger=logger,
         respond=respond,
@@ -796,15 +820,19 @@ def main() -> int:
     folders = FolderController(logger=logger)
     system = SystemController(logger=logger)
     vpn = VpnController(settings=settings, logger=logger)
+    windows = WindowController(
+        logger=logger,
+        browser_preferred=settings.browser_preferred,
+    )
     ai_client = AIClient(settings=settings, logger=logger)
 
     try:
         if args.stt_test:
             run_stt_test_mode(settings, apps, app_manager, logger)
         elif args.text:
-            run_text_mode(settings, apps, app_manager, keyboard, folders, system, vpn, ai_client, logger)
+            run_text_mode(settings, apps, app_manager, keyboard, folders, system, vpn, windows, ai_client, logger)
         else:
-            run_voice_mode(settings, apps, app_manager, keyboard, folders, system, vpn, ai_client, logger)
+            run_voice_mode(settings, apps, app_manager, keyboard, folders, system, vpn, windows, ai_client, logger)
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
         logger.info("Остановка по Ctrl+C")

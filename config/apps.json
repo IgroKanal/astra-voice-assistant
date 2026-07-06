@@ -75,19 +75,24 @@
     },
     "vscode": {
       "aliases": [
-        "vscode",
-        "vs code",
+        "v s code",
         "visual studio code",
-        "код",
-        "вс код",
-        "ви эс код",
-        "vs код",
+        "voice c o",
+        "voice c-o",
+        "voice co",
+        "vs co",
         "vs cod",
-        "vs кот",
-        "vs kot",
+        "vs code",
         "vs god",
+        "vs kot",
+        "vs код",
+        "vs кот",
+        "vsco",
+        "vscode",
+        "ви эс код",
+        "вс код",
         "вс кот",
-        "v s code"
+        "код"
       ],
       "open_command": [
         "code"

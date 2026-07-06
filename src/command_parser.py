@@ -37,6 +37,7 @@ class ParsedCommand:
 # Обрабатывается в main.py.handle_action фиксированным честным ответом,
 # без Alt+F4 и без похода в LLM-router.
 UNSUPPORTED_CLOSE_TARGET = "__unsupported_close__"
+UNSUPPORTED_OPEN_TARGET = "__unsupported_open__"
 
 
 OPEN_PREFIXES = (
@@ -235,6 +236,8 @@ SITE_NAMES = (
     "чат гпт",
     "чат джипити",
     "чат gpt",
+    "чат gp",
+    "chat gp",
     "чатт gpt",
     "чат кпт",
     "чатт джипити",
@@ -695,6 +698,23 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in {"включи звук", "выключи звук", "без звука"}:
         return ParsedCommand(CommandType.ASK_LLM, text=normalized)
 
+    # v0.9.5: не даём "открой окно" попадать в fuzzy app matching.
+    # Раньше target="окно" частично совпадал с alias "блокнот" и случайно
+    # запускал Notepad. Открытие/создание активных окон пока не поддерживаем.
+    if normalized in {
+        "открой окно",
+        "открыть окно",
+        "открой новое окно",
+        "открыть новое окно",
+        "открой активное окно",
+        "открой последнее окно",
+        "открой последнее",
+        "открой последние",
+        "открой последнии",
+        "открой posledniy",
+    }:
+        return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=UNSUPPORTED_OPEN_TARGET)
+
     # v0.9.3 hotfix: раньше это уходило как ASK_LLM, но is_command_like_text
     # всё равно матчил "закрой" как хинт, и фраза улетала в LLM-router, где
     # молча гасла (confidence=0, router_unknown_guard). Теперь это прямая
@@ -707,6 +727,19 @@ def parse_command_text(text: str) -> ParsedCommand:
         "закрой активное окно",
         "закрой текущее окно",
         "закрой данное окно",
+        "закрой последнее",
+        "закрой последние",
+        "закрой последнии",
+        "закрой последний",
+        "закрой posledniy",
+        "закрыть последнее",
+        "закрыть последние",
+        "закрой последнее окно",
+        "закрой последние окно",
+        "закрой последнии окно",
+        "Закрой posledniy окно".lower(),
+        "закрой последнее акно",
+        "закрыть последнее окно",
     }:
         return ParsedCommand(CommandType.CLOSE_APP, text=normalized, target=UNSUPPORTED_CLOSE_TARGET)
 

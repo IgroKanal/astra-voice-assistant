@@ -22,15 +22,27 @@ class AppActionResult:
 class WindowsAppManager:
     """Открывает и закрывает только приложения из config/apps.json.
 
-    v0.9.2:
+    v0.9.4:
     - generic target "браузер" respects BROWSER_PREFERRED;
-    - VS Code launch is resolved dynamically instead of relying on one hardcoded path.
+    - VS Code launch resolves direct Code.exe and avoids code.cmd wrappers;
+    - VS Code stdout/stderr are detached from Astra console.
     """
 
     _FUZZY_CUTOFF = 0.62
     _FUZZY_MARGIN = 0.08
     _BROWSER_GENERIC_TARGETS = {"браузер", "browser"}
     _BROWSER_APP_NAMES = {"firefox", "chrome", "edge", "msedge"}
+    _FUZZY_BLOCKLIST = {
+        "окно",
+        "акно",
+        "последнее",
+        "последние",
+        "последнии",
+        "последний",
+        "posledniy",
+        "ча",
+        "чат",
+    }
 
     def __init__(
         self,
@@ -56,6 +68,10 @@ class WindowsAppManager:
                     preferred.name,
                 )
                 return preferred
+
+        if target in self._FUZZY_BLOCKLIST:
+            self.logger.info("Fuzzy app lookup skipped for generic target: %r", target)
+            return None
 
         candidates = self._candidate_aliases()
 
@@ -203,9 +219,16 @@ class WindowsAppManager:
         try:
             # Все команды берутся только из конфига/локального resolver-а, а не из речи пользователя.
             if app.name == "vscode":
-                # Code.exe — GUI-приложение, но на всякий случай явно просим
-                # не поднимать консоль, если что-то в системе поведёт себя иначе.
-                subprocess.Popen(command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                # VS Code иногда пишет Electron-логи в stdout/stderr. Если не
+                # отделить потоки, эти строки попадают в окно Astra/PowerShell.
+                # Запускаем только прямой Code.exe и гасим его консольные потоки.
+                subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             else:
                 subprocess.Popen(command)
             self.logger.info("Запуск приложения: %s -> %s", app.name, command)
@@ -228,7 +251,7 @@ class WindowsAppManager:
 
     def _resolve_vscode_command(self) -> list[str] | None:
         """
-        v0.9.3 hotfix. Раньше первым делом брался code.cmd/code, найденный
+        v0.9.4 hotfix. Раньше первым делом брался code.cmd/code, найденный
         через PATH (shutil.which), и запускался как ["cmd", "/c", "start", "",
         <путь>.cmd] — это открывало лишнее видимое cmd-окно и у некоторых
         пользователей падало с "Недостаточно ресурсов памяти для обработки
@@ -241,7 +264,9 @@ class WindowsAppManager:
         4. Если нашли только code.cmd/code.bat через PATH — пробуем вычислить
            соседний Code.exe из структуры каталогов VS Code (bin/code.cmd ->
            ../Code.exe), а не запускать сам .cmd.
-        5. Если Code.exe нигде не нашёлся — возвращаем None. Вызывающий код
+        5. Жёстко заданные пользовательские пути не хардкодятся: нестандартная
+           установка должна находиться через PATH/bin/code.cmd или ASTRA_VSCODE_PATH.
+        6. Если Code.exe нигде не нашёлся — возвращаем None. Вызывающий код
            уже честно говорит "Не нашёл Code.exe...", никакого cmd-окна.
         """
         direct_candidates: list[Path] = []
@@ -265,8 +290,6 @@ class WindowsAppManager:
             direct_candidates.append(Path(program_files) / "Microsoft VS Code" / "Code.exe")
         if program_files_x86:
             direct_candidates.append(Path(program_files_x86) / "Microsoft VS Code" / "Code.exe")
-        # Известный нестандартный путь на этой машине (кастомная установка не на C:).
-        direct_candidates.append(Path(r"E:\vscode\Microsoft VS Code\Code.exe"))
 
         for candidate in direct_candidates:
             if candidate.suffix.lower() == ".exe" and candidate.exists():

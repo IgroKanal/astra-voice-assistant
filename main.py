@@ -16,6 +16,7 @@ from src.command_parser import (
     CommandType,
     ParsedCommand,
     UNSUPPORTED_CLOSE_TARGET,
+    UNSUPPORTED_OPEN_TARGET,
     extract_command_after_wake,
     is_command_like_text,
     normalize_text,
@@ -407,6 +408,9 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         if not action.target:
             ctx.respond("Что открыть?")
             return True
+        if action.target == UNSUPPORTED_OPEN_TARGET:
+            ctx.respond("Открытие окна отключено. Скажи: открой Firefox или открой VS Code.")
+            return True
         result = ctx.app_manager.open_app(action.target)
         ctx.respond(result.message)
         return True
@@ -417,7 +421,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             return True
         if action.target == UNSUPPORTED_CLOSE_TARGET:
             ctx.respond(
-                "Закрытие активного окна пока отключено. "
+                "Закрытие окна отключено. "
                 "Скажи: закрой Firefox или закрой VS Code."
             )
             return True

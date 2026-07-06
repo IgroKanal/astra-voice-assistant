@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.command_parser import CommandType, UNSUPPORTED_CLOSE_TARGET, parse_command_text
+from src.command_parser import CommandType, UNSUPPORTED_CLOSE_TARGET, UNSUPPORTED_OPEN_TARGET, parse_command_text
 from src.config_loader import load_apps_config
 from src.windows_app_manager import WindowsAppManager
 from src.task_router import find_site_url
@@ -110,6 +110,12 @@ def main() -> None:
     assert_cmd("закрой окно", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
     assert_cmd("закрыть окно", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
     assert_cmd("закрой активное окно", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
+    assert_cmd("закрой последнее", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
+    assert_cmd("закрой последние", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
+    assert_cmd("закрой последнее окно", CommandType.CLOSE_APP, UNSUPPORTED_CLOSE_TARGET)
+    assert_cmd("открой окно", CommandType.OPEN_APP, UNSUPPORTED_OPEN_TARGET)
+    assert_cmd("открой последнее окно", CommandType.OPEN_APP, UNSUPPORTED_OPEN_TARGET)
+    assert_cmd("открой чат gp", CommandType.OPEN_URL, "чат gp")
 
     apps = load_apps_config()
     manager = WindowsAppManager(apps=apps)
@@ -119,6 +125,8 @@ def main() -> None:
     assert browser_app is not None and browser_app.name == "firefox", browser_app
     vscode_app = preferred_manager.find_app("vsco")
     assert vscode_app is not None and vscode_app.name == "vscode", vscode_app
+    assert preferred_manager.find_app("окно") is None
+    assert preferred_manager.find_app("последнее") is None
 
     alternatives = ["Открой vs кот", "Открой vs code", "Открой vs cod"]
     selected = max(alternatives, key=lambda item: score_for_test(item, manager))

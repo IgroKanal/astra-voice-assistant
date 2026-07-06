@@ -117,6 +117,13 @@ def main() -> None:
     assert_cmd("открой последнее окно", CommandType.OPEN_APP, UNSUPPORTED_OPEN_TARGET)
     assert_cmd("открой чат gp", CommandType.OPEN_URL, "чат gp")
 
+    # v0.9.6: повторный stop должен завершать локально, без router/LLM.
+    assert_cmd("стоп стоп", CommandType.EXIT)
+    assert_cmd("стоп стоп стоп", CommandType.EXIT)
+    assert_cmd("Stop Stop", CommandType.EXIT)
+    assert_cmd("стап стоп", CommandType.EXIT)
+    assert_cmd("стаб стоп", CommandType.EXIT)
+
     apps = load_apps_config()
     manager = WindowsAppManager(apps=apps)
 

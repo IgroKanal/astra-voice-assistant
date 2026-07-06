@@ -465,6 +465,23 @@ def remove_filler_words(text: str) -> str:
     return " ".join(words)
 
 
+def _is_repeated_exit_command(normalized: str) -> bool:
+    """
+    Распознаёт аварийный выход даже если STT услышал повтор:
+    "стоп стоп", "стоп стоп стоп", "Stop Stop", "стап стоп".
+
+    Важно: правило срабатывает только когда вся фраза состоит
+    из stop-слов, чтобы случайная фраза со словом "стоп" внутри
+    не завершала ассистента.
+    """
+    words = normalized.split()
+    if not words:
+        return False
+
+    stop_words = {"стоп", "stop", "стап", "стаб"}
+    return all(word in stop_words for word in words)
+
+
 def is_command_like_text(text: str) -> bool:
     """
     Проверяет, похожа ли фраза на команду.
@@ -675,6 +692,11 @@ def parse_command_text(text: str) -> ParsedCommand:
     normalized = remove_filler_words(text)
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
+
+    # v0.9.6: аварийный выход должен оставаться локальным даже при
+    # повторном распознавании: "стоп стоп стоп".
+    if _is_repeated_exit_command(normalized):
+        return ParsedCommand(CommandType.EXIT, text=normalized)
 
     if normalized in HELP_COMMANDS:
         return ParsedCommand(CommandType.HELP, text=normalized)

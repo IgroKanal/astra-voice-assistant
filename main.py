@@ -409,7 +409,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             ctx.respond("Что открыть?")
             return True
         if action.target == UNSUPPORTED_OPEN_TARGET:
-            ctx.respond("Открытие окна отключено. Скажи: открой Firefox или открой VS Code.")
+            ctx.respond("Открытие окна отключено.")
             return True
         result = ctx.app_manager.open_app(action.target)
         ctx.respond(result.message)
@@ -420,10 +420,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             ctx.respond("Что закрыть?")
             return True
         if action.target == UNSUPPORTED_CLOSE_TARGET:
-            ctx.respond(
-                "Закрытие окна отключено. "
-                "Скажи: закрой Firefox или закрой VS Code."
-            )
+            ctx.respond("Закрытие окна отключено.")
             return True
         result = ctx.app_manager.close_app(action.target)
         ctx.respond(result.message)

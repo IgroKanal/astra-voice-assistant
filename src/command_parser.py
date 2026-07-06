@@ -19,6 +19,7 @@ class CommandType(str, Enum):
     TYPE_TEXT = "type_text"
     SCREENSHOT = "screenshot"
     SYSTEM_INFO = "system_info"
+    VPN_CONTROL = "vpn_control"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -124,6 +125,63 @@ HELP_COMMANDS = (
     "возможности",
     "твои возможности",
     "как пользоваться",
+)
+
+VPN_CONTROL_ACTIONS = {
+    "connect": "connect",
+    "disconnect": "disconnect",
+    "status": "status",
+}
+
+VPN_WORDS = (
+    "vpn",
+    "впн",
+    "впнку",
+    "в п н",
+    "ви пи эн",
+    "випиэн",
+    "амнезия",
+    "амнезия впн",
+    "amnezia",
+    "amneziawg",
+    "wireguard",
+    "вайргард",
+)
+
+VPN_CONNECT_WORDS = (
+    "включи",
+    "включить",
+    "подключи",
+    "подключить",
+    "запусти",
+    "запустить",
+    "активируй",
+    "активировать",
+    "соедини",
+)
+
+VPN_DISCONNECT_WORDS = (
+    "выключи",
+    "выключить",
+    "отключи",
+    "отключить",
+    "останови",
+    "остановить",
+    "отруби",
+    "выруби",
+    "разорви",
+)
+
+VPN_STATUS_WORDS = (
+    "статус",
+    "проверь",
+    "проверить",
+    "работает",
+    "включен",
+    "включен",
+    "подключен",
+    "подключен",
+    "состояние",
 )
 
 SCREENSHOT_COMMANDS = (
@@ -425,6 +483,10 @@ COMMAND_HINTS = (
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
     *SYSTEM_INFO_COMMANDS.keys(),
+    *VPN_WORDS,
+    *VPN_CONNECT_WORDS,
+    *VPN_DISCONNECT_WORDS,
+    *VPN_STATUS_WORDS,
     *KEYBOARD_COMMANDS.keys(),
     "открой сайт",
     "закрой сайт",
@@ -537,6 +599,46 @@ def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedComm
 
     return ParsedCommand(CommandType.NO_WAKE, text=normalized)
 
+
+
+def _contains_vpn_word(normalized: str) -> bool:
+    padded = f" {normalized} "
+    for word in VPN_WORDS:
+        clean = normalize_text(word)
+        if not clean:
+            continue
+        if f" {clean} " in padded:
+            return True
+    return False
+
+
+def _has_any_word(normalized: str, words: tuple[str, ...]) -> bool:
+    padded = f" {normalized} "
+    for word in words:
+        clean = normalize_text(word)
+        if f" {clean} " in padded:
+            return True
+    return False
+
+
+def _parse_vpn_control(normalized: str) -> ParsedCommand | None:
+    if not _contains_vpn_word(normalized):
+        return None
+
+    if _has_any_word(normalized, VPN_DISCONNECT_WORDS):
+        return ParsedCommand(CommandType.VPN_CONTROL, text=normalized, target="disconnect")
+
+    if _has_any_word(normalized, VPN_CONNECT_WORDS):
+        return ParsedCommand(CommandType.VPN_CONTROL, text=normalized, target="connect")
+
+    if _has_any_word(normalized, VPN_STATUS_WORDS) or normalized in {"vpn", "впн"}:
+        return ParsedCommand(CommandType.VPN_CONTROL, text=normalized, target="status")
+
+    # Короткая фраза только про VPN без действия безопаснее трактуется как статус.
+    if len(normalized.split()) <= 3:
+        return ParsedCommand(CommandType.VPN_CONTROL, text=normalized, target="status")
+
+    return None
 
 def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
     if normalized in KEYBOARD_COMMANDS:
@@ -697,6 +799,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     # повторном распознавании: "стоп стоп стоп".
     if _is_repeated_exit_command(normalized):
         return ParsedCommand(CommandType.EXIT, text=normalized)
+
+    vpn_control = _parse_vpn_control(normalized)
+    if vpn_control is not None:
+        return vpn_control
 
     if normalized in HELP_COMMANDS:
         return ParsedCommand(CommandType.HELP, text=normalized)

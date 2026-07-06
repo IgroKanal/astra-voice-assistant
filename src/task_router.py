@@ -19,6 +19,7 @@ class ActionType(str, Enum):
     TYPE_TEXT = "type_text"
     SCREENSHOT = "screenshot"
     SYSTEM_INFO = "system_info"
+    VPN_CONTROL = "vpn_control"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"

@@ -34,6 +34,12 @@ class Settings:
     voice_max_speak_chars: int = 180
     voice_short_responses: bool = True
 
+    vpn_enabled: bool = True
+    vpn_provider: str = "amneziawg"
+    vpn_tunnel_service_name: str = "AmneziaWGTunnel$pc-awg-2"
+    vpn_manager_service_name: str = "AmneziaWGManager"
+    vpn_command_timeout_seconds: float = 15.0
+
     llm_enabled: bool = True
     llm_provider: str = "gemini"
     llm_api_key: str = ""
@@ -246,6 +252,21 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         ),
         voice_max_speak_chars=_int_from_env("VOICE_MAX_SPEAK_CHARS", 180),
         voice_short_responses=_bool_from_env("VOICE_SHORT_RESPONSES", True),
+
+        vpn_enabled=_bool_from_env("VPN_ENABLED", True),
+        vpn_provider=_str_from_env("VPN_PROVIDER", "amneziawg"),
+        vpn_tunnel_service_name=_str_from_env(
+            "VPN_TUNNEL_SERVICE_NAME",
+            "AmneziaWGTunnel$pc-awg-2",
+        ),
+        vpn_manager_service_name=_str_from_env(
+            "VPN_MANAGER_SERVICE_NAME",
+            "AmneziaWGManager",
+        ),
+        vpn_command_timeout_seconds=_float_from_env(
+            "VPN_COMMAND_TIMEOUT_SECONDS",
+            15.0,
+        ),
         llm_enabled=_bool_from_env("LLM_ENABLED", True),
         llm_provider=os.getenv("LLM_PROVIDER", "gemini").strip().lower(),
         llm_api_key=_gemini_api_key(),

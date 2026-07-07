@@ -21,6 +21,7 @@ class ActionType(str, Enum):
     SYSTEM_INFO = "system_info"
     VPN_CONTROL = "vpn_control"
     WINDOW_CONTROL = "window_control"
+    VOICE_FEEDBACK = "voice_feedback"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -46,6 +47,8 @@ _SITE_ALIASES = {
     "чат гпт": "https://chatgpt.com",
     "чат джипити": "https://chatgpt.com",
     "чат gpt": "https://chatgpt.com",
+    "чат gp": "https://chatgpt.com",
+    "chat gp": "https://chatgpt.com",
     "чатт gpt": "https://chatgpt.com",
     "чат кпт": "https://chatgpt.com",
     "джипити": "https://chatgpt.com",

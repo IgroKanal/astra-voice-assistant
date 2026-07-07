@@ -4,6 +4,7 @@ import base64
 import ctypes
 import logging
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -69,6 +70,8 @@ try {{
             return self._memory_info()
         if target == "disk":
             return self._disk_info()
+        if target == "internet":
+            return self._internet_info()
 
         parts = [self._memory_info().message, self._disk_info().message]
         battery = self._battery_info()
@@ -128,6 +131,22 @@ if ($null -eq $battery) {
         except Exception:
             self.logger.exception("Disk info failed")
             return SystemActionResult(False, "Не удалось узнать место на диске.")
+
+
+    def _internet_info(self) -> SystemActionResult:
+        checks = (
+            ("1.1.1.1", 53),
+            ("8.8.8.8", 53),
+        )
+
+        for host, port in checks:
+            try:
+                with socket.create_connection((host, port), timeout=2.0):
+                    return SystemActionResult(True, "Интернет доступен.")
+            except OSError:
+                continue
+
+        return SystemActionResult(False, "Интернет не отвечает.")
 
     def _run_powershell(self, script: str, timeout: int) -> SystemActionResult:
         command = [

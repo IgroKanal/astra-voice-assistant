@@ -22,6 +22,10 @@ class WindowActionResult:
 
 
 SW_RESTORE = 9
+SW_MINIMIZE = 6
+SW_MAXIMIZE = 3
+VK_LWIN = 0x5B
+KEYEVENTF_KEYUP = 0x0002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
@@ -74,6 +78,8 @@ class WindowController:
         self.user32.SetActiveWindow.restype = ctypes.c_void_p
         self.user32.SetFocus.argtypes = [ctypes.c_void_p]
         self.user32.SetFocus.restype = ctypes.c_void_p
+        self.user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte, ctypes.c_ulong, ctypes.c_void_p]
+        self.user32.keybd_event.restype = None
 
         self.kernel32.GetCurrentThreadId.argtypes = []
         self.kernel32.GetCurrentThreadId.restype = ctypes.c_ulong
@@ -104,6 +110,33 @@ class WindowController:
             return WindowActionResult(False, "Активное окно не найдено.")
 
         return WindowActionResult(True, f"Активное окно: {self._short_window_label(info)}.")
+
+    def minimize_active_window(self) -> WindowActionResult:
+        hwnd = self.user32.GetForegroundWindow()
+        if not hwnd:
+            return WindowActionResult(False, "Активное окно не найдено.")
+
+        self.user32.ShowWindow(ctypes.c_void_p(hwnd), SW_MINIMIZE)
+        return WindowActionResult(True, "Сворачиваю окно.")
+
+    def maximize_active_window(self) -> WindowActionResult:
+        hwnd = self.user32.GetForegroundWindow()
+        if not hwnd:
+            return WindowActionResult(False, "Активное окно не найдено.")
+
+        self.user32.ShowWindow(ctypes.c_void_p(hwnd), SW_MAXIMIZE)
+        return WindowActionResult(True, "Разворачиваю окно.")
+
+    def show_desktop(self) -> WindowActionResult:
+        try:
+            self.user32.keybd_event(VK_LWIN, 0, 0, None)
+            self.user32.keybd_event(ord("D"), 0, 0, None)
+            self.user32.keybd_event(ord("D"), 0, KEYEVENTF_KEYUP, None)
+            self.user32.keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, None)
+            return WindowActionResult(True, "Показываю рабочий стол.")
+        except Exception:
+            self.logger.exception("Show desktop failed")
+            return WindowActionResult(False, "Не удалось показать рабочий стол.")
 
     def focus_target(self, target: str) -> WindowActionResult:
         target = (target or "").strip()

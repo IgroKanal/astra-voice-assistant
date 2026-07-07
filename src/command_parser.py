@@ -21,6 +21,7 @@ class CommandType(str, Enum):
     SYSTEM_INFO = "system_info"
     VPN_CONTROL = "vpn_control"
     WINDOW_CONTROL = "window_control"
+    VOICE_FEEDBACK = "voice_feedback"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -40,6 +41,8 @@ class ParsedCommand:
 # без Alt+F4 и без похода в LLM-router.
 UNSUPPORTED_CLOSE_TARGET = "__unsupported_close__"
 UNSUPPORTED_OPEN_TARGET = "__unsupported_open__"
+AMBIGUOUS_CHAT_TARGET = "__ambiguous_chat__"
+MIXED_COMMAND_TARGET = "__mixed_command__"
 
 
 OPEN_PREFIXES = (
@@ -128,6 +131,36 @@ HELP_COMMANDS = (
     "как пользоваться",
 )
 
+
+VOICE_FEEDBACK_COMMANDS = {
+    "repeat_last": (
+        "повтори",
+        "повтори ответ",
+        "повтори еще раз",
+        "повтори ещё раз",
+        "повтори что сказала",
+        "что ты сказала",
+        "скажи еще раз",
+        "скажи ещё раз",
+        "повтори последний ответ",
+        "последний ответ",
+    ),
+    "last_heard": (
+        "что ты услышала",
+        "что услышала",
+        "что ты распознала",
+        "что распознала",
+        "что я сказал",
+        "что я сказала",
+        "последняя фраза",
+        "что было распознано",
+        "что ты услышал",
+        "что услышал",
+        "что я говорил",
+        "какая последняя фраза",
+    ),
+}
+
 VPN_CONTROL_ACTIONS = {
     "connect": "connect",
     "disconnect": "disconnect",
@@ -175,6 +208,8 @@ VPN_DISCONNECT_WORDS = (
 
 VPN_STATUS_WORDS = (
     "статус",
+    "status",
+    "statues",
     "проверь",
     "проверить",
     "работает",
@@ -206,10 +241,35 @@ ACTIVE_WINDOW_COMMANDS = (
     "где я сейчас",
 )
 
+
+WINDOW_STATE_COMMANDS = {
+    "minimize": (
+        "сверни окно",
+        "сверни активное окно",
+        "сверни текущее окно",
+        "сверни",
+    ),
+    "maximize": (
+        "разверни окно",
+        "разверни активное окно",
+        "разверни текущее окно",
+        "разверни",
+    ),
+    "show_desktop": (
+        "покажи рабочий стол",
+        "сверни все окна",
+        "рабочий стол",
+    ),
+}
+
 WINDOW_FOCUS_PREFIXES = (
     "переключись на",
+    "переключись no",
+    "переключись в",
     "переключиться на",
+    "переключиться no",
     "перейди в",
+    "перейди no",
     "перейти в",
     "сфокусируй",
     "сфокусируйся на",
@@ -247,6 +307,19 @@ SYSTEM_INFO_COMMANDS = {
     "сколько места": "disk",
     "место на диске": "disk",
     "свободное место": "disk",
+    "статус интернета": "internet",
+    "интернет": "internet",
+    "проверь интернет": "internet",
+    "работает интернет": "internet",
+    "status internet": "internet",
+    "internet status": "internet",
+    "status inter": "internet",
+    "status enter": "internet",
+    "статус inter": "internet",
+    "статус интер": "internet",
+    "статус энтер": "internet",
+    "интернет статус": "internet",
+    "проверка интернета": "internet",
 }
 
 KEYBOARD_COMMANDS = {
@@ -317,6 +390,30 @@ KEYBOARD_COMMANDS = {
     "прокрути вверх": "page_up",
     "в начало": "home",
     "в конец": "end",
+    "покажи рабочий стол": "show_desktop",
+    "рабочий стол": "show_desktop",
+    "сверни все окна": "show_desktop",
+    "открой загрузки браузера": "browser_downloads",
+    "загрузки браузера": "browser_downloads",
+    "история загрузок": "browser_downloads",
+    "открой историю браузера": "browser_history",
+    "история браузера": "browser_history",
+    "новое окно браузера": "browser_new_window",
+    "открой новое окно браузера": "browser_new_window",
+    "создай новое окно браузера": "browser_new_window",
+    "открой приватное окно": "incognito",
+    "приватное окно": "incognito",
+    "приватная вкладка": "incognito",
+    "открой приватную вкладку": "incognito",
+    "открой буфер обмена": "clipboard_history",
+    "открой буфер up": "clipboard_history",
+    "открой буфер ап": "clipboard_history",
+    "открой буфер об": "clipboard_history",
+    "открой буфер оп": "clipboard_history",
+    "открой буфер ab": "clipboard_history",
+    "буфер обмена": "clipboard_history",
+    "история буфера": "clipboard_history",
+    "история буфера обмена": "clipboard_history",
     # Volume
     "громче": "volume_up",
     "сделай громче": "volume_up",
@@ -520,6 +617,7 @@ COMMAND_HINTS = (
     *TIME_COMMANDS,
     *DATE_COMMANDS,
     *HELP_COMMANDS,
+    *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
     *SYSTEM_INFO_COMMANDS.keys(),
@@ -528,6 +626,7 @@ COMMAND_HINTS = (
     *VPN_DISCONNECT_WORDS,
     *VPN_STATUS_WORDS,
     *WINDOW_CONTROL_HINTS,
+    *(item for values in WINDOW_STATE_COMMANDS.values() for item in values),
     *KEYBOARD_COMMANDS.keys(),
     "открой сайт",
     "закрой сайт",
@@ -585,6 +684,31 @@ def _is_repeated_exit_command(normalized: str) -> bool:
     return all(word in stop_words for word in words)
 
 
+
+
+def _is_mixed_open_close_command(normalized: str) -> bool:
+    """Блокирует фразы вида "открой и закрой VS Code".
+
+    Без этого parser может взять первый глагол "открой" и выполнить
+    неожиданное действие с target="и закрой ...".
+    """
+    words = normalized.split()
+    if not words:
+        return False
+
+    has_open = any(word in words for word in {"открой", "открыть", "запусти", "запустить"})
+    has_close = any(
+        word in words
+        for word in {"закрой", "закрыть", "выключи", "выключить", "заверши", "останови"}
+    )
+    return has_open and has_close
+
+
+def _is_ambiguous_chat_target(target: str) -> bool:
+    clean = normalize_text(target)
+    return clean in {"чат", "ча", "chat", "chad", "chat bot", "чат бот"}
+
+
 def is_command_like_text(text: str) -> bool:
     """
     Проверяет, похожа ли фраза на команду.
@@ -640,6 +764,15 @@ def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedComm
 
     return ParsedCommand(CommandType.NO_WAKE, text=normalized)
 
+
+
+
+def _parse_voice_feedback(normalized: str) -> ParsedCommand | None:
+    for target, phrases in VOICE_FEEDBACK_COMMANDS.items():
+        if normalized in phrases:
+            return ParsedCommand(CommandType.VOICE_FEEDBACK, text=normalized, target=target)
+
+    return None
 
 
 def _contains_vpn_word(normalized: str) -> bool:
@@ -700,6 +833,10 @@ def _parse_window_control(normalized: str) -> ParsedCommand | None:
                     target=f"focus:{target}",
                 )
 
+    for target, phrases in WINDOW_STATE_COMMANDS.items():
+        if normalized in phrases:
+            return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target=target)
+
     return None
 
 
@@ -709,6 +846,15 @@ def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
             CommandType.KEYBOARD_SHORTCUT,
             text=normalized,
             target=KEYBOARD_COMMANDS[normalized],
+        )
+
+    # STT часто обрезает конец "обмена": "открой буфер up/ап/об".
+    # Любая фраза "открой буфер ..." безопасно открывает Win+V.
+    if normalized.startswith("открой буфер") or normalized.startswith("покажи буфер"):
+        return ParsedCommand(
+            CommandType.KEYBOARD_SHORTCUT,
+            text=normalized,
+            target="clipboard_history",
         )
 
     words = normalized.split()
@@ -863,6 +1009,14 @@ def parse_command_text(text: str) -> ParsedCommand:
     if _is_repeated_exit_command(normalized):
         return ParsedCommand(CommandType.EXIT, text=normalized)
 
+    # v0.10.5: смешанные команды не выполняем автоматически.
+    if _is_mixed_open_close_command(normalized):
+        return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=MIXED_COMMAND_TARGET)
+
+    voice_feedback = _parse_voice_feedback(normalized)
+    if voice_feedback is not None:
+        return voice_feedback
+
     vpn_control = _parse_vpn_control(normalized)
     if vpn_control is not None:
         return vpn_control
@@ -892,6 +1046,9 @@ def parse_command_text(text: str) -> ParsedCommand:
     # потому что без чтения реального состояния это может дать обратный эффект.
     if normalized in {"включи звук", "выключи звук", "без звука"}:
         return ParsedCommand(CommandType.ASK_LLM, text=normalized)
+
+    if normalized in {"открой чат", "открой ча", "открыть чат", "запусти чат"}:
+        return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=AMBIGUOUS_CHAT_TARGET)
 
     # v0.9.5: не даём "открой окно" попадать в fuzzy app matching.
     # Раньше target="окно" частично совпадал с alias "блокнот" и случайно
@@ -934,6 +1091,11 @@ def parse_command_text(text: str) -> ParsedCommand:
         "закрой последнии окно",
         "Закрой posledniy окно".lower(),
         "закрой последнее акно",
+        "закрой последнее ок",
+        "закрой последние ок",
+        "закрой последнии ок",
+        "закрой последнее ак",
+        "закрой последнее аг",
         "закрыть последнее окно",
     }:
         return ParsedCommand(CommandType.CLOSE_APP, text=normalized, target=UNSUPPORTED_CLOSE_TARGET)
@@ -978,6 +1140,9 @@ def parse_command_text(text: str) -> ParsedCommand:
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
+
+            if _is_ambiguous_chat_target(target):
+                return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=AMBIGUOUS_CHAT_TARGET)
 
             if _is_folder_target(target):
                 return ParsedCommand(

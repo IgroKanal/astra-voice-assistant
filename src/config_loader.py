@@ -58,14 +58,14 @@ class Settings:
     llm_router_min_confidence: float = 0.55
 
     speech_language: str = "ru-RU"
-    listen_timeout_seconds: int = 8
-    phrase_time_limit_seconds: int = 12
-    ambient_noise_duration_seconds: float = 1.0
+    listen_timeout_seconds: int = 10
+    phrase_time_limit_seconds: int = 16
+    ambient_noise_duration_seconds: float = 0.6
 
     stt_dynamic_energy_threshold: bool = True
     stt_energy_threshold: int = 0
-    stt_pause_threshold: float = 0.9
-    stt_non_speaking_duration: float = 0.5
+    stt_pause_threshold: float = 1.15
+    stt_non_speaking_duration: float = 0.8
     stt_show_alternatives: bool = True
     stt_prefer_cyrillic: bool = True
 
@@ -81,6 +81,7 @@ class Settings:
     tts_cache_enabled: bool = True
     tts_cache_dir: str = ""
     tts_cache_prewarm_enabled: bool = True
+    tts_cache_prewarm_max_new_phrases: int = 4
     tts_cache_prewarm_phrases: list[str] = field(
         default_factory=lambda: [
             "Астра запущена.",
@@ -103,6 +104,17 @@ class Settings:
             "Громче.",
             "Тише.",
             "Переключаю звук.",
+            "VPN включён.",
+            "VPN выключен.",
+            "Открытие окна отключено.",
+            "Закрытие окна отключено.",
+            "Показываю рабочий стол.",
+            "Сворачиваю окно.",
+            "Разворачиваю окно.",
+            "Пока нечего повторять.",
+            "Интернет доступен.",
+            "Открываю загрузки.",
+            "Открываю историю.",
         ]
     )
     tts_log_timing: bool = True
@@ -289,21 +301,21 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             0.55,
         ),
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
-        listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 8),
-        phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 12),
+        listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 10),
+        phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 16),
         ambient_noise_duration_seconds=_float_from_env(
             "AMBIENT_NOISE_DURATION_SECONDS",
-            1.0,
+            0.6,
         ),
         stt_dynamic_energy_threshold=_bool_from_env(
             "STT_DYNAMIC_ENERGY_THRESHOLD",
             True,
         ),
         stt_energy_threshold=_int_from_env("STT_ENERGY_THRESHOLD", 0),
-        stt_pause_threshold=_float_from_env("STT_PAUSE_THRESHOLD", 0.9),
+        stt_pause_threshold=_float_from_env("STT_PAUSE_THRESHOLD", 1.15),
         stt_non_speaking_duration=_float_from_env(
             "STT_NON_SPEAKING_DURATION",
-            0.5,
+            0.8,
         ),
         stt_show_alternatives=_bool_from_env("STT_SHOW_ALTERNATIVES", True),
         stt_prefer_cyrillic=_bool_from_env("STT_PREFER_CYRILLIC", True),
@@ -322,6 +334,10 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         tts_cache_prewarm_enabled=_bool_from_env(
             "TTS_CACHE_PREWARM_ENABLED",
             True,
+        ),
+        tts_cache_prewarm_max_new_phrases=_int_from_env(
+            "TTS_CACHE_PREWARM_MAX_NEW_PHRASES",
+            4,
         ),
         tts_cache_prewarm_phrases=_list_from_env(
             "TTS_CACHE_PREWARM_PHRASES",

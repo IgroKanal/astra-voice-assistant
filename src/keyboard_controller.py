@@ -17,6 +17,7 @@ class KeyboardActionResult:
 VK_CONTROL = 0x11
 VK_SHIFT = 0x10
 VK_ALT = 0x12
+VK_LWIN = 0x5B
 
 KEYEVENTF_KEYUP = 0x0002
 SW_RESTORE = 9
@@ -48,6 +49,11 @@ _SHORTCUTS: dict[str, tuple[list[int], int]] = {
     "page_up": ([], 0x21),
     "home": ([], 0x24),
     "end": ([], 0x23),
+    "show_desktop": ([VK_LWIN], ord("D")),
+    "browser_downloads": ([VK_CONTROL], ord("J")),
+    "browser_history": ([VK_CONTROL], ord("H")),
+    "browser_new_window": ([VK_CONTROL], ord("N")),
+    "clipboard_history": ([VK_LWIN], ord("V")),
 }
 
 _BROWSER_SHORTCUTS = {
@@ -63,6 +69,9 @@ _BROWSER_SHORTCUTS = {
     "browser_forward",
     "incognito",
     "fullscreen",
+    "browser_new_window",
+    "browser_downloads",
+    "browser_history",
 }
 
 _KNOWN_BROWSERS = ("firefox", "msedge", "chrome", "browser")
@@ -98,6 +107,11 @@ _SHORTCUT_MESSAGES = {
     "page_up": "Листаю вверх.",
     "home": "В начало.",
     "end": "В конец.",
+    "show_desktop": "Показываю рабочий стол.",
+    "browser_downloads": "Открываю загрузки.",
+    "browser_history": "Открываю историю.",
+    "browser_new_window": "Открываю новое окно.",
+    "clipboard_history": "Открываю буфер обмена.",
     "volume_up": "Громче.",
     "volume_down": "Тише.",
     "volume_mute": "Переключаю звук.",

@@ -15,6 +15,8 @@ from src.audio_io import VoiceIO
 from src.command_parser import (
     CommandType,
     ParsedCommand,
+    AMBIGUOUS_CHAT_TARGET,
+    MIXED_COMMAND_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
     UNSUPPORTED_OPEN_TARGET,
     extract_command_after_wake,
@@ -51,6 +53,7 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.HELP,
     CommandType.VPN_CONTROL,
     CommandType.WINDOW_CONTROL,
+    CommandType.VOICE_FEEDBACK,
     CommandType.EXIT,
 }
 
@@ -67,14 +70,20 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.SYSTEM_INFO,
     ActionType.VPN_CONTROL,
     ActionType.WINDOW_CONTROL,
+    ActionType.VOICE_FEEDBACK,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
+_PENDING_TTL_SECONDS = 20.0
 
 
 @dataclass
 class TurnState:
     last_router_call_at: float = 0.0
+    last_recognized_text: str = ""
+    last_assistant_response: str = ""
+    pending_kind: str = ""
+    pending_created_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -182,6 +191,8 @@ def score_stt_alternative(
         score += 85
     if parsed.type == CommandType.WINDOW_CONTROL:
         score += 75
+    if parsed.type == CommandType.VOICE_FEEDBACK:
+        score += 75
 
     # Мягкий бонус за внятные латинские технические названия.
     for token in ("vs code", "vscode", "youtube", "chatgpt", "telegram", "firefox", "vpn", "впн"):
@@ -236,6 +247,110 @@ def shorten_voice_response(message: str, settings: Settings) -> str:
 
     return clean[:limit].rstrip() + "... Подробности смотри в логах."
 
+def clear_pending(state: TurnState) -> None:
+    state.pending_kind = ""
+    state.pending_created_at = 0.0
+
+
+def set_pending(state: TurnState, kind: str) -> None:
+    state.pending_kind = kind
+    state.pending_created_at = time.monotonic()
+
+
+def pending_is_active(state: TurnState) -> bool:
+    if not state.pending_kind:
+        return False
+    return time.monotonic() - state.pending_created_at <= _PENDING_TTL_SECONDS
+
+
+def _clean_follow_up_target(raw_text: str) -> str:
+    value = normalize_text(raw_text)
+    for prefix in ("на ", "no ", "в ", "к ", "ко "):
+        if value.startswith(prefix):
+            return value.removeprefix(prefix).strip()
+    return value.strip()
+
+
+def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantAction | None:
+    """Обрабатывает короткий ответ пользователя после уточнения Астры.
+
+    Примеры:
+    - Астра: "Что открыть?" -> пользователь: "ютуб" -> открыть YouTube.
+    - Астра: "На какое окно переключиться?" -> "на Firefox" -> focus:firefox.
+    - Астра: "Какой чат открыть?" -> "чат gpt" -> открыть ChatGPT.
+
+    Это закрывает часть STT-проблем, когда длинная команда распалась на два
+    распознавания и конец фразы пришёл отдельным turn-ом.
+    """
+    if not pending_is_active(ctx.state):
+        clear_pending(ctx.state)
+        return None
+
+    direct = parse_command_text(raw_text)
+    if direct.type == CommandType.EXIT:
+        return None
+
+    # Если пользователь сказал полноценную новую локальную команду, она важнее
+    # старого уточнения. Bare target вроде "чат gpt" обычно остаётся ASK_LLM.
+    if direct.type in _DIRECT_COMMAND_TYPES and direct.type != CommandType.VOICE_FEEDBACK:
+        if direct.target and direct.target not in {
+            AMBIGUOUS_CHAT_TARGET,
+            MIXED_COMMAND_TARGET,
+            UNSUPPORTED_OPEN_TARGET,
+            UNSUPPORTED_CLOSE_TARGET,
+        }:
+            return None
+
+    target = _clean_follow_up_target(raw_text)
+    if not target:
+        return None
+
+    kind = ctx.state.pending_kind
+
+    if kind == "ambiguous_chat":
+        if any(token in target for token in ("gpt", "гпт", "джипити", "чат")):
+            parsed = parse_command_text("открой чат gpt")
+            return parsed_to_action(parsed, source="pending_followup")
+        if any(token in target for token in ("telegram", "телеграм", "телега", "тг")):
+            parsed = parse_command_text("открой телеграм")
+            return parsed_to_action(parsed, source="pending_followup")
+
+    if kind == "window_focus":
+        return AssistantAction(
+            type=ActionType.WINDOW_CONTROL,
+            text=raw_text,
+            target=f"focus:{target}",
+            confidence=1.0,
+            source="pending_followup",
+        )
+
+    if kind == "open":
+        parsed = parse_command_text(f"открой {target}")
+        if parsed.type in {CommandType.OPEN_APP, CommandType.OPEN_URL, CommandType.OPEN_FOLDER}:
+            return parsed_to_action(parsed, source="pending_followup")
+
+    if kind == "close":
+        parsed = parse_command_text(f"закрой {target}")
+        if parsed.type in {CommandType.CLOSE_APP, CommandType.KEYBOARD_SHORTCUT}:
+            return parsed_to_action(parsed, source="pending_followup")
+
+    if kind == "open_url":
+        parsed = parse_command_text(f"открой {target}")
+        if parsed.type == CommandType.OPEN_URL:
+            return parsed_to_action(parsed, source="pending_followup")
+
+    if kind == "search":
+        return AssistantAction(
+            type=ActionType.WEB_SEARCH,
+            text=raw_text,
+            query=target,
+            confidence=1.0,
+            source="pending_followup",
+        )
+
+    return None
+
+
 def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantAction:
     mapping = {
         CommandType.OPEN_APP: ActionType.OPEN_APP,
@@ -251,6 +366,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.SYSTEM_INFO: ActionType.SYSTEM_INFO,
         CommandType.VPN_CONTROL: ActionType.VPN_CONTROL,
         CommandType.WINDOW_CONTROL: ActionType.WINDOW_CONTROL,
+        CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -403,8 +519,8 @@ def resolve_action(
 def build_help_text() -> str:
     return (
         "Я умею открывать сайты, приложения и папки, управлять вкладками, "
-        "искать в интернете, делать скриншот, говорить статус системы и управлять VPN. "
-        "Примеры: открой ютуб, закрой вкладку, включи VPN, статус VPN. "
+        "VPN, окнами, громкостью и рабочим столом. "
+        "Примеры: открой ютуб, закрой вкладку, включи VPN, какие окна открыты. "
         "Текст пишу только в активное окно после имени."
     )
 
@@ -420,10 +536,18 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.OPEN_APP:
         if not action.target:
+            set_pending(ctx.state, "open")
             ctx.respond("Что открыть?")
             return True
         if action.target == UNSUPPORTED_OPEN_TARGET:
             ctx.respond("Открытие окна отключено.")
+            return True
+        if action.target == AMBIGUOUS_CHAT_TARGET:
+            set_pending(ctx.state, "ambiguous_chat")
+            ctx.respond("Какой чат открыть: ChatGPT или Telegram?")
+            return True
+        if action.target == MIXED_COMMAND_TARGET:
+            ctx.respond("Смешанные команды отключены.")
             return True
         result = ctx.app_manager.open_app(action.target)
         ctx.respond(result.message)
@@ -431,10 +555,14 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.CLOSE_APP:
         if not action.target:
+            set_pending(ctx.state, "close")
             ctx.respond("Что закрыть?")
             return True
         if action.target == UNSUPPORTED_CLOSE_TARGET:
             ctx.respond("Закрытие окна отключено.")
+            return True
+        if action.target == MIXED_COMMAND_TARGET:
+            ctx.respond("Смешанные команды отключены.")
             return True
         result = ctx.app_manager.close_app(action.target)
         ctx.respond(result.message)
@@ -443,6 +571,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.OPEN_URL:
         url = normalize_url_or_site(action.url or action.target or action.query)
         if not url:
+            set_pending(ctx.state, "open_url")
             ctx.respond("Какой сайт открыть?")
             return True
         webbrowser.open(url)
@@ -457,6 +586,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.WEB_SEARCH:
         query = action.query or action.target or action.text
         if not query:
+            set_pending(ctx.state, "search")
             ctx.respond("Что найти?")
             return True
         webbrowser.open(google_search_url(query))
@@ -519,11 +649,40 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             result = ctx.windows.describe_open_windows()
         elif window_action == "active":
             result = ctx.windows.describe_active_window()
+        elif window_action == "minimize":
+            result = ctx.windows.minimize_active_window()
+        elif window_action == "maximize":
+            result = ctx.windows.maximize_active_window()
+        elif window_action == "show_desktop":
+            result = ctx.windows.show_desktop()
+        elif window_action == "focus:":
+            set_pending(ctx.state, "window_focus")
+            ctx.respond("На какое окно переключиться?")
+            return True
         elif window_action.startswith("focus:"):
             result = ctx.windows.focus_target(window_action.removeprefix("focus:"))
         else:
             result = ctx.windows.describe_open_windows()
         ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.VOICE_FEEDBACK:
+        feedback_target = action.target or action.query
+        if feedback_target == "repeat_last":
+            if ctx.state.last_assistant_response:
+                ctx.respond(ctx.state.last_assistant_response)
+            else:
+                ctx.respond("Пока нечего повторять.")
+            return True
+
+        if feedback_target == "last_heard":
+            if ctx.state.last_recognized_text:
+                ctx.respond(f"Я услышала: {ctx.state.last_recognized_text}.")
+            else:
+                ctx.respond("Пока ничего не услышала.")
+            return True
+
+        ctx.respond("Готово.")
         return True
 
     if action.type == ActionType.HELP:
@@ -570,6 +729,20 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         ctx.respond("Не расслышал, повтори.")
         return True
 
+    pending_action = resolve_pending_follow_up(raw_text, ctx)
+    if pending_action is not None:
+        clear_pending(ctx.state)
+        ctx.logger.info(
+            "decision_source=%s action=%s confidence=%.2f",
+            pending_action.source,
+            pending_action.type.value,
+            pending_action.confidence,
+        )
+        should_continue = handle_action(pending_action, ctx)
+        if pending_action.type != ActionType.VOICE_FEEDBACK and raw_text:
+            ctx.state.last_recognized_text = raw_text
+        return should_continue
+
     parsed = extract_command_after_wake(raw_text, ctx.settings.wake_phrases)
     had_wake = parsed.type != CommandType.NO_WAKE
 
@@ -611,7 +784,13 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         action.confidence,
     )
 
-    return handle_action(action, ctx)
+    clear_pending(ctx.state)
+    should_continue = handle_action(action, ctx)
+
+    if action.type != ActionType.VOICE_FEEDBACK and raw_text:
+        ctx.state.last_recognized_text = raw_text
+
+    return should_continue
 
 
 
@@ -679,6 +858,7 @@ def run_text_mode(
     state = TurnState()
 
     def respond(message: str) -> None:
+        state.last_assistant_response = message
         print(f"Астра: {message}")
 
     def get_follow_up() -> str:
@@ -754,6 +934,7 @@ def run_voice_mode(
         shortened = shorten_voice_response(message, settings)
         if shortened != message:
             logger.info("Voice response shortened. full=%r shortened=%r", message, shortened)
+        state.last_assistant_response = shortened
         voice.speak(shortened)
 
     def get_follow_up() -> str:

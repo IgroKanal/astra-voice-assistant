@@ -75,6 +75,52 @@ def main() -> None:
     assert_cmd("перейди в телеграм", CommandType.WINDOW_CONTROL, "focus:телеграм")
     assert_window_is_direct_without_wake()
 
+    # v0.10.4 voice UX and practical local commands.
+    assert_cmd("повтори", CommandType.VOICE_FEEDBACK, "repeat_last")
+    assert_cmd("повтори еще раз", CommandType.VOICE_FEEDBACK, "repeat_last")
+    assert_cmd("что ты услышала", CommandType.VOICE_FEEDBACK, "last_heard")
+    assert_cmd("что я сказал", CommandType.VOICE_FEEDBACK, "last_heard")
+
+    assert_cmd("покажи рабочий стол", CommandType.WINDOW_CONTROL, "show_desktop")
+    assert_cmd("сверни все окна", CommandType.WINDOW_CONTROL, "show_desktop")
+    assert_cmd("сверни окно", CommandType.WINDOW_CONTROL, "minimize")
+    assert_cmd("разверни окно", CommandType.WINDOW_CONTROL, "maximize")
+
+    assert_cmd("открой загрузки браузера", CommandType.KEYBOARD_SHORTCUT, "browser_downloads")
+    assert_cmd("история загрузок", CommandType.KEYBOARD_SHORTCUT, "browser_downloads")
+    assert_cmd("открой историю браузера", CommandType.KEYBOARD_SHORTCUT, "browser_history")
+
+    assert_cmd("статус интернета", CommandType.SYSTEM_INFO, "internet")
+
+    # v0.10.5 voice UX / parser safety regressions.
+    assert_cmd("открой ча", CommandType.OPEN_APP, "__ambiguous_chat__")
+    assert_cmd("открой чат", CommandType.OPEN_APP, "__ambiguous_chat__")
+    assert_cmd("открой чат gp", CommandType.OPEN_URL, "чат gp")
+    assert_cmd("переключись no firefox", CommandType.WINDOW_CONTROL, "focus:firefox")
+    assert_cmd("открой и закрой vs code", CommandType.OPEN_APP, "__mixed_command__")
+    assert_cmd("новое окно браузера", CommandType.KEYBOARD_SHORTCUT, "browser_new_window")
+    assert_cmd("открой приватное окно", CommandType.KEYBOARD_SHORTCUT, "incognito")
+    assert_cmd("открой буфер обмена", CommandType.KEYBOARD_SHORTCUT, "clipboard_history")
+    assert_cmd("status vpn", CommandType.VPN_CONTROL, "status")
+    assert_cmd("status internet", CommandType.SYSTEM_INFO, "internet")
+
+
+    # v0.10.6 STT clipping / follow-up safety regressions.
+    assert_cmd("открой буфер up", CommandType.KEYBOARD_SHORTCUT, "clipboard_history")
+    assert_cmd("открой буфер ап", CommandType.KEYBOARD_SHORTCUT, "clipboard_history")
+    assert_cmd("закрой последнее ок", CommandType.CLOSE_APP, "__unsupported_close__")
+    assert_cmd("статус интер", CommandType.SYSTEM_INFO, "internet")
+    assert_cmd("статус inter", CommandType.SYSTEM_INFO, "internet")
+    assert_cmd("status inter", CommandType.SYSTEM_INFO, "internet")
+
+    main_py = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "resolve_pending_follow_up" in main_py
+    assert "pending_kind" in main_py
+
+    assert (PROJECT_ROOT / "start_astra_hidden.vbs").exists()
+    assert (PROJECT_ROOT / "start_astra_debug.bat").exists()
+    assert (PROJECT_ROOT / "tools" / "install_autostart.ps1").exists()
+
     print("v0.10 VPN/window parser smoke tests passed")
 
 

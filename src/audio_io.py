@@ -192,23 +192,47 @@ class VoiceIO:
     def _prewarm_tts_cache(self) -> None:
         start = time.perf_counter()
         ready = 0
+        generated = 0
+        skipped_missing = 0
+        max_new = max(0, self.settings.tts_cache_prewarm_max_new_phrases)
 
         for phrase in self.settings.tts_cache_prewarm_phrases:
-            if not phrase.strip():
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+
+            cache_path = self._edge_cache_path(
+                text=phrase,
+                voice=self.settings.tts_edge_voice,
+            )
+            if cache_path.exists():
+                self.logger.info("TTS cache hit: %s", cache_path.name)
+                ready += 1
+                continue
+
+            # v0.10.6: не генерируем десятки новых фраз синхронно при старте.
+            # Иначе запуск голосового режима может висеть 40-60 секунд.
+            if generated >= max_new:
+                skipped_missing += 1
+                self.logger.info("TTS prewarm skip missing: %s", cache_path.name)
                 continue
 
             cached = self._ensure_edge_cached_audio(
-                text=phrase.strip(),
+                text=phrase,
                 voice=self.settings.tts_edge_voice,
             )
             if cached is not None and cached.exists():
                 ready += 1
+                generated += 1
 
         elapsed = time.perf_counter() - start
         self.logger.info(
-            "TTS prewarm завершён: phrases=%s, ready=%s, elapsed=%.2fs",
+            "TTS prewarm завершён: phrases=%s, ready=%s, generated=%s, "
+            "skipped_missing=%s, elapsed=%.2fs",
             len(self.settings.tts_cache_prewarm_phrases),
             ready,
+            generated,
+            skipped_missing,
             elapsed,
         )
 

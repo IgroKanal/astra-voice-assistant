@@ -13,7 +13,7 @@ from src.config_loader import load_settings
 def main() -> None:
     settings = load_settings()
 
-    print("Astra v0.10 config validation")
+    print("Astra v0.11 config validation")
     print(f"vpn_enabled={settings.vpn_enabled}")
     print(f"vpn_provider={settings.vpn_provider}")
     print(f"vpn_tunnel_service_name={settings.vpn_tunnel_service_name}")
@@ -31,6 +31,8 @@ def main() -> None:
     print(f"wake_phrase_time_limit_seconds={settings.wake_phrase_time_limit_seconds}")
     print(f"command_listen_timeout_seconds={settings.command_listen_timeout_seconds}")
     print(f"command_phrase_time_limit_seconds={settings.command_phrase_time_limit_seconds}")
+    print(f"wake_response_enabled={settings.wake_response_enabled}")
+    print(f"wake_allow_direct_command={settings.wake_allow_direct_command}")
 
     assert hasattr(settings, "vpn_enabled")
     assert hasattr(settings, "vpn_provider")
@@ -49,8 +51,10 @@ def main() -> None:
     assert settings.wake_phrase_time_limit_seconds >= 2
     assert settings.command_listen_timeout_seconds >= 5
     assert settings.command_phrase_time_limit_seconds >= 8
+    assert isinstance(settings.wake_response_enabled, bool)
+    assert isinstance(settings.wake_allow_direct_command, bool)
 
-    print("v0.10 config validation passed")
+    print("v0.11 config validation passed")
 
 
 if __name__ == "__main__":

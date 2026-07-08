@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import platform
+import re
 import sys
 import time
 import webbrowser
@@ -271,6 +272,32 @@ def _clean_follow_up_target(raw_text: str) -> str:
     return value.strip()
 
 
+def _strip_wake_prefix_for_follow_up(raw_text: str, settings: Settings) -> str:
+    """Возвращает follow-up без имени ассистента, если пользователь повторил wake phrase.
+
+    В wake-only режиме после уточнения пользователь может сказать как "ютуб", так и
+    "Астра, ютуб". Pending-follow-up должен понимать оба варианта.
+    """
+    clean_text = raw_text.strip()
+    if not clean_text:
+        return ""
+
+    lowered = clean_text.lower().replace("ё", "е")
+    wake_phrases = sorted(settings.wake_phrases, key=len, reverse=True)
+
+    for phrase in wake_phrases:
+        normalized_phrase = normalize_text(phrase)
+        if not normalized_phrase:
+            continue
+        phrase_pattern = r"\s+".join(re.escape(part) for part in normalized_phrase.split())
+        pattern = rf"^\s*{phrase_pattern}(?=\s|[,.:;!?-]|$)"
+        match = re.match(pattern, lowered, flags=re.IGNORECASE)
+        if match:
+            return clean_text[match.end():].strip(" \t\r\n,.!?;:-")
+
+    return clean_text
+
+
 def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantAction | None:
     """Обрабатывает короткий ответ пользователя после уточнения Астры.
 
@@ -286,7 +313,9 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
         clear_pending(ctx.state)
         return None
 
-    direct = parse_command_text(raw_text)
+    follow_up_text = _strip_wake_prefix_for_follow_up(raw_text, ctx.settings)
+
+    direct = parse_command_text(follow_up_text)
     if direct.type == CommandType.EXIT:
         return None
 
@@ -301,7 +330,7 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
         }:
             return None
 
-    target = _clean_follow_up_target(raw_text)
+    target = _clean_follow_up_target(follow_up_text)
     if not target:
         return None
 
@@ -891,10 +920,16 @@ def run_text_mode(
         print(f"Сначала нужно назвать ассистента: {settings.assistant_name}")
 
     if settings.allow_text_conversation_without_wake:
-        print("Разговорный режим: обычные фразы можно писать без имени.")
+        print("Разговорный режим: обычные вопросы можно писать без имени.")
 
-    print("Примеры: открой клод, закрой вкладку, включи VPN, статус VPN, помощь")
-    print("Для выхода: Астра, стоп")
+    if settings.allow_commands_without_wake:
+        print("Примеры: открой клод, закрой вкладку, включи VPN, статус VPN, помощь")
+    else:
+        print(
+            "Примеры: Астра, открой клод; Астра, закрой вкладку; "
+            "Астра, включи VPN; Астра, статус VPN; Астра, помощь"
+        )
+    print(f"Для выхода: {settings.assistant_name}, стоп")
 
     state = TurnState()
 
@@ -945,6 +980,37 @@ def _wake_only_voice_enabled(settings: Settings) -> bool:
 
 def _voice_command_text_with_wake(settings: Settings, command_text: str) -> str:
     return f"{settings.assistant_name}, {command_text.strip()}"
+
+
+def _listen_pending_voice_follow_up(
+    voice: VoiceIO,
+    ctx: TurnContext,
+    settings: Settings,
+    logger: logging.Logger,
+) -> bool:
+    """Даёт один короткий follow-up turn после уточняющего вопроса Астры.
+
+    Это сохраняет удобный UX в wake-only режиме: после "Астра, открой" и ответа
+    "Что открыть?" пользователь может сказать "ютуб" без повторного wake phrase.
+    Окно follow-up существует только если предыдущее действие явно выставило pending.
+    """
+    if not pending_is_active(ctx.state):
+        return True
+
+    follow_up = voice.listen_once(
+        timeout_seconds=settings.command_listen_timeout_seconds,
+        phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
+        prompt="Слушаю уточнение...",
+    )
+
+    if not follow_up.ok:
+        logger.info("Pending command session timeout/unknown: %s", follow_up.error)
+        clear_pending(ctx.state)
+        ctx.respond("Не расслышал, повтори.")
+        return True
+
+    logger.info("pending_command_session_text=%r", follow_up.text)
+    return process_turn(follow_up.text, ctx)
 
 
 def run_voice_mode(
@@ -1064,10 +1130,47 @@ def run_voice_mode(
                 )
                 if not should_continue:
                     return
+
+                should_continue = _listen_pending_voice_follow_up(
+                    voice=voice,
+                    ctx=ctx,
+                    settings=settings,
+                    logger=logger,
+                )
+                if not should_continue:
+                    return
                 continue
 
             logger.info("wake_detected: direct_command text=%r", wake_result.text)
-            should_continue = process_turn(wake_result.text, ctx)
+            if not settings.wake_allow_direct_command:
+                logger.info("Direct wake command disabled by WAKE_ALLOW_DIRECT_COMMAND=false")
+                if settings.wake_response_enabled:
+                    respond(settings.wake_response_text)
+                command_result = voice.listen_once(
+                    timeout_seconds=settings.command_listen_timeout_seconds,
+                    phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
+                    prompt="Слушаю команду...",
+                )
+                if not command_result.ok:
+                    logger.info("Command session timeout/unknown: %s", command_result.error)
+                    respond("Не расслышал, повтори.")
+                    continue
+                should_continue = process_turn(
+                    _voice_command_text_with_wake(settings, command_result.text),
+                    ctx,
+                )
+            else:
+                should_continue = process_turn(wake_result.text, ctx)
+
+            if not should_continue:
+                return
+
+            should_continue = _listen_pending_voice_follow_up(
+                voice=voice,
+                ctx=ctx,
+                settings=settings,
+                logger=logger,
+            )
             if not should_continue:
                 return
 

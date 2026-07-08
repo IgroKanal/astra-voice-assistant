@@ -214,7 +214,7 @@ class VoiceIO:
             # Иначе запуск голосового режима может висеть 40-60 секунд.
             if generated >= max_new:
                 skipped_missing += 1
-                self.logger.info("TTS prewarm skip missing: %s", cache_path.name)
+                self.logger.debug("TTS prewarm skip missing: %s", cache_path.name)
                 continue
 
             cached = self._ensure_edge_cached_audio(
@@ -566,12 +566,23 @@ class VoiceIO:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=max(5, self.settings.tts_cache_generation_timeout_seconds),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             tmp_path.replace(cache_path)
             return cache_path
+        except subprocess.TimeoutExpired:
+            self.logger.warning(
+                "Не удалось создать TTS cache: timeout after %ss",
+                max(5, self.settings.tts_cache_generation_timeout_seconds),
+            )
+            tmp_path.unlink(missing_ok=True)
+            return None
         except subprocess.CalledProcessError as exc:
-            self.logger.warning("Не удалось создать TTS cache: %s", exc.stderr)
+            error_text = (exc.stderr or "").strip()
+            if not error_text:
+                error_text = "edge-tts вернул ошибку без текста stderr"
+            self.logger.warning("Не удалось создать TTS cache: %s", error_text)
             tmp_path.unlink(missing_ok=True)
             return None
         except Exception:

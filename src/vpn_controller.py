@@ -90,11 +90,23 @@ class VpnController:
             return VpnActionResult(True, "VPN выключен.", "stopped")
         return result
 
+    def _clean_powershell_stream(self, value: str) -> str:
+        clean = (value or "").strip()
+        if not clean:
+            return ""
+
+        # PowerShell can write CLIXML progress records to stderr even when
+        # the command succeeds. That noise makes logs huge and unreadable.
+        if clean.startswith("#< CLIXML"):
+            return ""
+
+        return clean
+
     def _get_service_status(self, service_name: str) -> str:
         script = self._service_status_script(service_name)
         result = self._run_powershell(script, timeout=5)
-        output = result.stdout.strip().lower()
-        error = result.stderr.strip()
+        output = self._clean_powershell_stream(result.stdout).lower()
+        error = self._clean_powershell_stream(result.stderr)
 
         if result.returncode != 0:
             self.logger.warning(
@@ -123,17 +135,25 @@ class VpnController:
             timeout_seconds=self.timeout_seconds,
         )
         result = self._run_powershell(script, timeout=int(self.timeout_seconds) + 5)
-        output = result.stdout.strip().lower()
-        error = result.stderr.strip()
+        output = self._clean_powershell_stream(result.stdout).lower()
+        error = self._clean_powershell_stream(result.stderr)
 
-        self.logger.info(
-            "VPN service state change: service=%s desired=%s code=%s stdout=%r stderr=%r",
-            service_name,
-            desired,
-            result.returncode,
-            output,
-            error,
-        )
+        if result.returncode == 0 and output == desired:
+            self.logger.info(
+                "VPN service state change: service=%s desired=%s result=%s",
+                service_name,
+                desired,
+                output,
+            )
+        else:
+            self.logger.warning(
+                "VPN service state change failed: service=%s desired=%s code=%s stdout=%r stderr=%r",
+                service_name,
+                desired,
+                result.returncode,
+                output,
+                error,
+            )
 
         if result.returncode == 0 and output == desired:
             return VpnActionResult(True, "Готово.", desired)
@@ -163,6 +183,7 @@ class VpnController:
         command = [
             "powershell.exe",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-EncodedCommand",
@@ -182,6 +203,7 @@ class VpnController:
         encoded_name = base64.b64encode(service_name.encode("utf-8")).decode("ascii")
         return f"""
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $name = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded_name}'))
 $svc = Get-Service -Name $name -ErrorAction Stop
@@ -198,6 +220,7 @@ $svc = Get-Service -Name $name -ErrorAction Stop
         action = "Start-Service" if desired == "running" else "Stop-Service"
         return f"""
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $name = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded_name}'))
 $desired = '{desired}'

@@ -8,12 +8,24 @@ pythonw = projectDir & "\.venv\Scripts\pythonw.exe"
 python = projectDir & "\.venv\Scripts\python.exe"
 mainPy = projectDir & "\main.py"
 
+If Not fso.FileExists(mainPy) Then
+    MsgBox "main.py not found: " & mainPy, vbCritical, "Astra"
+    WScript.Quit 1
+End If
+
+If Not fso.FolderExists(projectDir & "\logs") Then
+    fso.CreateFolder(projectDir & "\logs")
+End If
+
+shell.CurrentDirectory = projectDir
+shell.Environment("PROCESS")("PYTHONUTF8") = "1"
+
 If fso.FileExists(pythonw) Then
     command = Chr(34) & pythonw & Chr(34) & " " & Chr(34) & mainPy & Chr(34)
 ElseIf fso.FileExists(python) Then
     command = Chr(34) & python & Chr(34) & " " & Chr(34) & mainPy & Chr(34)
 Else
-    MsgBox "Не найден Python в .venv. Сначала создай окружение и установи зависимости.", vbCritical, "Astra"
+    MsgBox "Python not found in .venv. Create the virtual environment and install dependencies first.", vbCritical, "Astra"
     WScript.Quit 1
 End If
 

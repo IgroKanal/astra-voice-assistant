@@ -24,6 +24,7 @@ def main() -> None:
     print(f"stt_pause_threshold={settings.stt_pause_threshold}")
     print(f"stt_non_speaking_duration={settings.stt_non_speaking_duration}")
     print(f"tts_cache_prewarm_max_new_phrases={settings.tts_cache_prewarm_max_new_phrases}")
+    print(f"tts_cache_generation_timeout_seconds={settings.tts_cache_generation_timeout_seconds}")
 
     assert hasattr(settings, "vpn_enabled")
     assert hasattr(settings, "vpn_provider")
@@ -36,6 +37,7 @@ def main() -> None:
     assert settings.stt_pause_threshold >= 0.5
     assert settings.stt_non_speaking_duration >= 0.3
     assert settings.tts_cache_prewarm_max_new_phrases >= 0
+    assert settings.tts_cache_generation_timeout_seconds >= 5
 
     print("v0.10 config validation passed")
 

@@ -76,6 +76,22 @@ _BROWSER_SHORTCUTS = {
 
 _KNOWN_BROWSERS = ("firefox", "msedge", "chrome", "browser")
 
+_TERMINAL_PROCESS_NAMES = {
+    "cmd",
+    "powershell",
+    "pwsh",
+    "windowsterminal",
+    "wt",
+    "conhost",
+    # Beta safety: VS Code/Cursor can contain an integrated terminal while
+    # the foreground process is still Code.exe/Cursor.exe. Without UI
+    # automation we cannot reliably distinguish editor focus from terminal
+    # focus, so voice text input + Enter are blocked there too.
+    "code",
+    "cursor",
+    "vscodium",
+}
+
 _VOLUME_KEYS = {
     "volume_mute": 0xAD,
     "volume_down": 0xAE,
@@ -222,6 +238,16 @@ class KeyboardController:
         self.user32.GetWindowTextW.restype = ctypes.c_int
 
     def send_shortcut(self, name: str) -> KeyboardActionResult:
+        if name == "enter" and self.is_foreground_terminal_like():
+            self.logger.warning(
+                "Enter blocked in terminal-like foreground process: %s",
+                self._foreground_process_name(),
+            )
+            return KeyboardActionResult(
+                False,
+                "Enter в терминале отключён для безопасности.",
+            )
+
         if name in _VOLUME_KEYS:
             ok = self._press_virtual_key(_VOLUME_KEYS[name])
             if ok:
@@ -247,6 +273,16 @@ class KeyboardController:
         text = text.strip()
         if not text:
             return KeyboardActionResult(False, "Что написать?")
+
+        if self.is_foreground_terminal_like():
+            self.logger.warning(
+                "Text input blocked in terminal-like foreground process: %s",
+                self._foreground_process_name(),
+            )
+            return KeyboardActionResult(
+                False,
+                "Ввод текста в терминал отключён для безопасности.",
+            )
 
         if app_process_name:
             if not self.focus_process(app_process_name):
@@ -507,6 +543,11 @@ if ($result) {{ [Console]::Write('1') }} else {{ [Console]::Write('0') }}
                     self.user32.AttachThreadInput(source_thread, target_thread, 0)
                 except Exception:
                     pass
+
+
+    def is_foreground_terminal_like(self) -> bool:
+        process_name = self._foreground_process_name().lower().removesuffix(".exe")
+        return process_name in _TERMINAL_PROCESS_NAMES
 
     def _press_combo(self, modifiers: list[int], key_code: int) -> bool:
         try:

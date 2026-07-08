@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.command_parser import CommandType, parse_command_text
+from src.command_parser import CommandType, extract_command_after_wake, parse_command_text
 
 
 def assert_cmd(text: str, expected_type: CommandType, expected_target: str = "") -> None:
@@ -120,6 +121,43 @@ def main() -> None:
     assert (PROJECT_ROOT / "start_astra_hidden.vbs").exists()
     assert (PROJECT_ROOT / "start_astra_debug.bat").exists()
     assert (PROJECT_ROOT / "tools" / "install_autostart.ps1").exists()
+
+    # v0.10.8 beta safety gate regressions.
+    assert_cmd("открой youtube.com", CommandType.OPEN_URL, "youtube.com")
+    assert_cmd("открой сайт youtube.com", CommandType.OPEN_URL, "youtube.com")
+    assert_cmd("открой https://example.com", CommandType.OPEN_URL, "https://example.com")
+
+    # v0.10.8.1: real beta flow uses wake extraction first. It must preserve
+    # dots and URL separators, not normalize them into spaces.
+    wake_phrases = ["астра", "эй астра", "привет астра"]
+    parsed = extract_command_after_wake("Астра, открой youtube.com", wake_phrases)
+    assert parsed.type == CommandType.OPEN_URL and parsed.target == "youtube.com", parsed
+    parsed = extract_command_after_wake("Астра, открой сайт youtube.com", wake_phrases)
+    assert parsed.type == CommandType.OPEN_URL and parsed.target == "youtube.com", parsed
+    parsed = extract_command_after_wake("Астра, открой https://example.com", wake_phrases)
+    assert parsed.type == CommandType.OPEN_URL and parsed.target == "https://example.com", parsed
+
+    apps_json = json.loads((PROJECT_ROOT / "config" / "apps.json").read_text(encoding="utf-8"))
+    apps_text = json.dumps(apps_json, ensure_ascii=False).lower()
+    assert "cmd.exe" not in apps_text, "cmd.exe must not be whitelisted in beta config"
+    assert "командная строка" not in apps_json.get("apps", {}), "cmd app must be removed"
+
+    env_example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "ALLOW_COMMANDS_WITHOUT_WAKE=false" in env_example
+
+    keyboard_controller = (PROJECT_ROOT / "src" / "keyboard_controller.py").read_text(encoding="utf-8")
+    assert "_TERMINAL_PROCESS_NAMES" in keyboard_controller
+    assert "Enter в терминале отключён" in keyboard_controller
+    assert "Ввод текста в терминал отключён" in keyboard_controller
+    assert '"code"' in keyboard_controller, "VS Code foreground must be guarded for beta safety"
+
+    main_py = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "wake_required_guard" in main_py
+    assert "blocked before LLM-router" in main_py
+
+    config_loader = (PROJECT_ROOT / "src" / "config_loader.py").read_text(encoding="utf-8")
+    assert "tts_cache_generation_timeout_seconds" in config_loader
+    assert "TTS_CACHE_GENERATION_TIMEOUT_SECONDS" in config_loader
 
     print("v0.10 VPN/window parser smoke tests passed")
 

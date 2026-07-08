@@ -661,6 +661,45 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
+_RAW_DOMAIN_RE = re.compile(
+    r"^(https?://)?[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(/\S*)?$",
+    re.IGNORECASE,
+)
+_RAW_SITE_PUNCTUATION_RE = re.compile(r"[!?;()\[\]{}\"'«»]")
+
+
+def _raw_command_text(text: str) -> str:
+    raw = text.lower().replace("ё", "е")
+    raw = _RAW_SITE_PUNCTUATION_RE.sub(" ", raw)
+    raw = _whitespace_re.sub(" ", raw)
+    words = [word for word in raw.split() if word not in _FILLER_WORDS]
+    return " ".join(words).strip()
+
+
+def _raw_target_after_prefix(text: str, prefix: str) -> str:
+    raw = _raw_command_text(text)
+    if raw == prefix:
+        return ""
+    if raw.startswith(prefix + " "):
+        return raw.removeprefix(prefix).strip()
+    return ""
+
+
+def _strip_site_words_preserve_url(value: str) -> str:
+    clean = value.strip().lower().replace("ё", "е")
+    for word in ("сайт", "страницу", "страница"):
+        if clean.startswith(word + " "):
+            return clean.removeprefix(word).strip()
+    return clean
+
+
+def _is_raw_domain_target(value: str) -> bool:
+    clean = _strip_site_words_preserve_url(value)
+    if not clean:
+        return False
+    return bool(_RAW_DOMAIN_RE.match(clean))
+
+
 def remove_filler_words(text: str) -> str:
     normalized = normalize_text(text)
     words = [word for word in normalized.split() if word not in _FILLER_WORDS]
@@ -732,6 +771,25 @@ def is_command_like_text(text: str) -> bool:
     return False
 
 
+def _wake_phrase_pattern(phrase: str) -> str:
+    """Builds a wake-phrase regex that preserves the raw command tail.
+
+    `normalize_text()` removes dots and URL separators. That is fine for
+    comparing wake phrases, but it breaks commands like
+    "Астра, открой https://example.com" before the URL parser can see the
+    original target. This pattern matches the wake phrase in the raw text while
+    allowing punctuation between words, then `extract_command_after_wake()`
+    passes the untouched command tail to `parse_command_text()`.
+    """
+    words = normalize_text(phrase).split()
+    if not words:
+        return ""
+
+    separator = r"[\s,.:;!?\-]+"
+    body = separator.join(re.escape(word) for word in words)
+    return rf"(?<!\w){body}(?!\w)"
+
+
 def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedCommand:
     """
     Ищет фразу активации и возвращает текст после неё.
@@ -740,24 +798,30 @@ def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedComm
     "Астра, открой блокнот" -> "открой блокнот".
     "Астра" -> WAKE_ONLY.
     "открой блокнот" -> NO_WAKE.
+
+    Важно: после wake phrase команда передаётся в parser в raw-виде,
+    чтобы не ломать домены и URL точками/слэшами.
     """
     normalized = normalize_text(text)
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
 
-    wake_phrases_normalized = sorted(
-        {normalize_text(phrase) for phrase in wake_phrases if normalize_text(phrase)},
+    raw = text.lower().replace("ё", "е")
+    wake_patterns = sorted(
+        {_wake_phrase_pattern(phrase) for phrase in wake_phrases},
         key=len,
         reverse=True,
     )
 
-    for phrase in wake_phrases_normalized:
-        pattern = rf"(^|\s){re.escape(phrase)}(\s|$)"
-        match = re.search(pattern, normalized)
+    for pattern in wake_patterns:
+        if not pattern:
+            continue
+
+        match = re.search(pattern, raw, flags=re.IGNORECASE)
         if not match:
             continue
 
-        command_text = normalized[match.end():].strip()
+        command_text = raw[match.end():].strip(" \t\r\n,.!?;:-")
         if not command_text:
             return ParsedCommand(CommandType.WAKE_ONLY)
         return parse_command_text(command_text)
@@ -1140,6 +1204,14 @@ def parse_command_text(text: str) -> ParsedCommand:
             return ParsedCommand(CommandType.OPEN_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
+
+            raw_target = _raw_target_after_prefix(text, prefix)
+            if _is_raw_domain_target(raw_target):
+                return ParsedCommand(
+                    CommandType.OPEN_URL,
+                    text=normalized,
+                    target=_strip_site_words_preserve_url(raw_target),
+                )
 
             if _is_ambiguous_chat_target(target):
                 return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=AMBIGUOUS_CHAT_TARGET)

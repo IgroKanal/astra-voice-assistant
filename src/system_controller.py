@@ -166,6 +166,7 @@ if ($null -eq $battery) {
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             output = (result.stdout or result.stderr or "").strip()
             if result.returncode == 0:
@@ -195,6 +196,7 @@ if ($null -eq $battery) {
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             output = (result.stdout or result.stderr or "").strip()
             if result.returncode == 0:

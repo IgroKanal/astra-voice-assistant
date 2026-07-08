@@ -71,7 +71,7 @@ copy .env.example .env
 Открой `.env` и замени:
 
 ```env
-LLM_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 на свой API-ключ.
@@ -165,9 +165,10 @@ WAKE_PHRASES=вега,эй вега,привет вега
 
 ```env
 LLM_PROVIDER=gemini
-LLM_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-LLM_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemma-4-31b-it
+GEMINI_FALLBACK_MODEL=gemini-3.5-flash
 ```
 
 ### OpenAI

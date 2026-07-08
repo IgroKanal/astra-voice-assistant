@@ -449,6 +449,19 @@ def resolve_action(
 
     command_like = is_command_like_text(raw_text)
 
+    if command_like and not had_wake and not ctx.settings.allow_commands_without_wake:
+        ctx.logger.info(
+            "Command-like phrase without wake phrase blocked before LLM-router: %s",
+            raw_text,
+        )
+        return AssistantAction(
+            type=ActionType.UNKNOWN,
+            text=raw_text,
+            confidence=0.0,
+            source="wake_required_guard",
+            reason="Command-like action requires wake phrase when commands without wake are disabled.",
+        )
+
     can_use_router = (
         ctx.settings.llm_router_enabled
         and ctx.settings.llm_enabled
@@ -516,13 +529,38 @@ def resolve_action(
     )
 
 
-def build_help_text() -> str:
-    return (
-        "Я умею открывать сайты, приложения и папки, управлять вкладками, "
-        "VPN, окнами, громкостью и рабочим столом. "
-        "Примеры: открой ютуб, закрой вкладку, включи VPN, какие окна открыты. "
-        "Текст пишу только в активное окно после имени."
-    )
+def build_help_text(topic: str = "general") -> str:
+    topic = (topic or "general").strip().lower()
+
+    help_by_topic = {
+        "general": (
+            "Я умею открывать сайты, приложения и папки, управлять вкладками, "
+            "VPN, окнами, громкостью и рабочим столом. "
+            "Скажи: команды браузера, команды VPN или команды окон."
+        ),
+        "browser": (
+            "Браузер: открой ютуб, закрой вкладку, обнови страницу, "
+            "новая вкладка, новое окно браузера, открой загрузки браузера."
+        ),
+        "vpn": (
+            "VPN: статус VPN, включи VPN, выключи VPN. "
+            "Я управляю только настроенной службой AmneziaWG."
+        ),
+        "window": (
+            "Окна: какие окна открыты, активное окно, переключись на Firefox, "
+            "сверни окно, разверни окно, покажи рабочий стол."
+        ),
+        "system": (
+            "Система: Астра, статус интернета, сколько памяти, сколько места, "
+            "сделай скриншот."
+        ),
+        "voice": (
+            "Голос: повтори, что ты услышала, стоп. "
+            "Если фраза обрезалась, скажи команду короче или ответь на уточнение."
+        ),
+    }
+
+    return help_by_topic.get(topic, help_by_topic["general"])
 
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
@@ -686,7 +724,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         return True
 
     if action.type == ActionType.HELP:
-        ctx.respond(build_help_text())
+        ctx.respond(build_help_text(action.target or action.query or "general"))
         return True
 
     if action.type == ActionType.GET_TIME:
@@ -711,7 +749,10 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.UNKNOWN:
         if ctx.respond_to_unknown:
-            ctx.respond("Не понял команду.")
+            if action.source == "wake_required_guard":
+                ctx.respond("Назови меня перед этой командой.")
+            else:
+                ctx.respond("Не понял команду.")
         return True
 
     return True

@@ -230,7 +230,13 @@ class WindowsAppManager:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             else:
-                subprocess.Popen(command)
+                subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
             self.logger.info("Запуск приложения: %s -> %s", app.name, command)
             return AppActionResult(True, "Открываю.")
         except FileNotFoundError:

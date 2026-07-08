@@ -19,7 +19,7 @@ class Settings:
     wake_phrases: list[str] = field(
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
-    allow_commands_without_wake: bool = True
+    allow_commands_without_wake: bool = False
     allow_text_conversation_without_wake: bool = True
     allow_voice_conversation_without_wake: bool = False
     router_cooldown_seconds: float = 2.0
@@ -82,6 +82,7 @@ class Settings:
     tts_cache_dir: str = ""
     tts_cache_prewarm_enabled: bool = True
     tts_cache_prewarm_max_new_phrases: int = 4
+    tts_cache_generation_timeout_seconds: int = 20
     tts_cache_prewarm_phrases: list[str] = field(
         default_factory=lambda: [
             "Астра запущена.",
@@ -231,7 +232,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         wake_phrases=_list_from_env("WAKE_PHRASES", default_wake_phrases),
         allow_commands_without_wake=_bool_from_env(
             "ALLOW_COMMANDS_WITHOUT_WAKE",
-            True,
+            False,
         ),
         allow_text_conversation_without_wake=_bool_from_env(
             "ALLOW_TEXT_CONVERSATION_WITHOUT_WAKE",
@@ -338,6 +339,10 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         tts_cache_prewarm_max_new_phrases=_int_from_env(
             "TTS_CACHE_PREWARM_MAX_NEW_PHRASES",
             4,
+        ),
+        tts_cache_generation_timeout_seconds=_int_from_env(
+            "TTS_CACHE_GENERATION_TIMEOUT_SECONDS",
+            20,
         ),
         tts_cache_prewarm_phrases=_list_from_env(
             "TTS_CACHE_PREWARM_PHRASES",

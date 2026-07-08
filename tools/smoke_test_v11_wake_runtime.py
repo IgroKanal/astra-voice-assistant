@@ -65,7 +65,7 @@ class FakeAIClient:
         self.route_called = False
         self.ask_called = False
 
-    def route_command(self, text: str) -> AssistantAction:
+    def route_command(self, text: str, apps=None) -> AssistantAction:
         self.route_called = True
         raise AssertionError(f"Router must not be called for this test: {text!r}")
 

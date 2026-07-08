@@ -1,338 +1,261 @@
-# Астра — голосовой ассистент для Windows
+# Astra Voice Assistant — v1.0 Beta
 
-MVP голосового ассистента на Python для Windows 10/11.
+Astra is a Windows-only voice assistant for PC.
 
-Ассистент умеет:
+Current beta focus:
 
-- слушать микрофон;
-- активироваться по имени `Астра`;
-- открывать приложения из `config/apps.json`;
-- закрывать приложения из `config/apps.json`;
-- отправлять обычные вопросы в LLM через OpenAI-compatible API;
-- озвучивать ответы через TTS;
-- работать в тестовом текстовом режиме без микрофона.
+- wake-only voice runtime: Astra reacts after the wake phrase `Астра`;
+- local safe skills for apps, sites, browser tabs, folders, VPN, windows, screenshots and system info;
+- Gemini/OpenAI-compatible LLM fallback only for normal questions after wake phrase;
+- beta safety gate: no command execution without wake phrase, no whitelisted `cmd.exe`, terminal text/Enter guards.
 
 ---
 
-## 1. Требования
+## 1. Requirements
 
 - Windows 10/11
 - Python 3.10+
-- Git, если нужно загрузить проект на GitHub
-- Микрофон
-- Интернет для Google Web Speech STT
-- API-ключ LLM, если нужны ответы на обычные вопросы
+- Microphone
+- Internet for Google Web Speech STT
+- Gemini API key if LLM answers are needed
+- Optional: AmneziaWG if VPN control is enabled
 
 ---
 
-## 2. Быстрый запуск
+## 2. Install
 
-### Шаг 1. Создай виртуальное окружение
+```powershell
+cd C:\Projects\astra-voice-assistant
 
-```bash
 python -m venv .venv
-```
-
-### Шаг 2. Активируй окружение
-
-PowerShell:
-
-```bash
 .\.venv\Scripts\Activate.ps1
-```
 
-Если PowerShell запрещает запуск скриптов, выполни:
-
-```bash
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-Потом снова:
-
-```bash
-.\.venv\Scripts\Activate.ps1
-```
-
-### Шаг 3. Установи зависимости
-
-```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
 
-### Шаг 4. Создай `.env`
-
-Скопируй пример:
-
-```bash
 copy .env.example .env
 ```
 
-Открой `.env` и замени:
+Then edit `.env`:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY=PASTE_YOUR_GEMINI_KEY_HERE
 ```
 
-на свой API-ключ.
-
-Если пока нет ключа, можно отключить LLM:
+If you want to test without LLM:
 
 ```env
 LLM_ENABLED=false
 ```
 
-Тогда команды открытия и закрытия приложений будут работать, но обычные вопросы — нет.
+Apply beta-safe wake settings:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v100_beta_env.ps1
+```
 
 ---
 
-## 3. Запуск
+## 3. Run modes
 
-### Голосовой режим
+### Voice mode
 
-```bash
+```powershell
 python main.py
 ```
 
-Примеры фраз:
+Voice mode is wake-only by default.
 
-```text
-Астра, открой блокнот
-Астра, закрой блокнот
-Астра, открой калькулятор
-Астра, объясни что такое API
-Астра, стоп
-```
-
-### Текстовый режим без микрофона
-
-```bash
-python main.py --text
-```
-
-Этот режим нужен для проверки логики, если микрофон или PyAudio ещё не настроены.
-
----
-
-## 4. Как добавить приложение
-
-Открой файл:
-
-```text
-config/apps.json
-```
-
-Добавь приложение в блок `apps`:
-
-```json
-"vscode": {
-  "aliases": ["код", "vs code", "visual studio code"],
-  "open_command": ["C:\\Users\\USERNAME\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"],
-  "process_name": "Code.exe"
-}
-```
-
-Правила:
-
-- `aliases` — как ты будешь называть приложение голосом;
-- `open_command` — команда запуска;
-- `process_name` — имя процесса для закрытия через `taskkill`;
-- обратные слэши в JSON-пути надо писать двойными: `\\`.
-
----
-
-## 5. Настройка имени ассистента
-
-В `.env`:
-
-```env
-ASSISTANT_NAME=Астра
-WAKE_PHRASES=астра,эй астра,привет астра
-```
-
-Можно поменять, например:
-
-```env
-ASSISTANT_NAME=Вега
-WAKE_PHRASES=вега,эй вега,привет вега
-```
-
----
-
-## 6. Настройка LLM
-
-### Gemini, стартовый вариант
-
-```env
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your_gemini_api_key_here
-LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-GEMINI_MODEL=gemma-4-31b-it
-GEMINI_FALLBACK_MODEL=gemini-3.5-flash
-```
-
-### OpenAI
-
-```env
-LLM_PROVIDER=openai
-LLM_API_KEY=your_openai_api_key_here
-LLM_BASE_URL=
-LLM_MODEL=gpt-4.1-mini
-```
-
-### Ollama локально
-
-```env
-LLM_PROVIDER=ollama
-LLM_API_KEY=ollama
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=llama3.1
-```
-
----
-
-## 7. Частые проблемы
-
-### `No module named ...`
-
-Зависимости не установлены или виртуальное окружение не активировано.
-
-Решение:
-
-```bash
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
----
-
-### Ошибка установки PyAudio
-
-Попробуй обновить pip:
-
-```bash
-python -m pip install --upgrade pip setuptools wheel
-pip install PyAudio
-```
-
-Если не получилось, сначала тестируй проект в текстовом режиме:
-
-```bash
-python main.py --text
-```
-
----
-
-### Ассистент не слышит микрофон
-
-Проверь:
-
-- разрешение микрофона в Windows;
-- выбран ли правильный микрофон по умолчанию;
-- работает ли микрофон в других приложениях;
-- не занят ли микрофон другим приложением.
-
----
-
-### LLM не отвечает
-
-Проверь:
-
-- есть ли `.env`;
-- правильно ли указан `LLM_API_KEY`;
-- не стоит ли `LLM_ENABLED=false`;
-- есть ли интернет;
-- правильная ли модель указана в `LLM_MODEL`.
-
----
-
-## 8. GitHub
-
-Инструкция по загрузке проекта на GitHub лежит в файле:
-
-```text
-GITHUB_UPLOAD.md
-```
-
----
-
-## 9. Безопасность
-
-- Реальный `.env` не загружается на GitHub.
-- API-ключи нельзя писать в коде.
-- Ассистент запускает только приложения из `config/apps.json`.
-- Произвольные команды пользователя не выполняются.
-
----
-
-## 10. Wake-only режим v0.11
-
-Начиная с v0.11 голосовой режим по умолчанию работает безопаснее:
-
-```text
-обычная речь без имени → игнорируется
-Астра → Слушаю. → следующая фраза считается командой
-Астра, открой YouTube → команда выполняется сразу
-```
-
-Это нужно, чтобы ассистент не воспринимал каждую фразу рядом с микрофоном как команду.
-
-### Примеры голосом
+Examples:
 
 ```text
 Астра
 открой YouTube
 ```
 
+or directly:
+
 ```text
+Астра, открой YouTube
 Астра, статус VPN
 Астра, переключись на Firefox
-Астра, статус интернета
+Астра, статус интер
 Астра, стоп
 ```
 
-### Уточнения в wake-only режиме
-
-Если Астра спросила уточнение, можно ответить коротко сразу после вопроса:
+Without wake phrase, commands are ignored in voice mode:
 
 ```text
-Астра, открой
-Астра: Что открыть?
-ютуб
+открой YouTube
+закрой вкладку
+включи VPN
 ```
 
-Для максимальной надёжности также можно повторить имя:
+### Text mode
 
-```text
-Астра, открой
-Астра: Что открыть?
-Астра, ютуб
+```powershell
+python main.py --text
 ```
 
-### Текстовый режим
-
-В beta-настройках команды без имени отключены. В `python main.py --text` используй команды так:
+Text mode is for development and debugging. With beta defaults, command examples should use wake phrase:
 
 ```text
 Астра, открой блокнот
-Астра, статус VPN
 Астра, открой youtube.com
-Астра, стоп
+Астра, статус VPN
+Астра, помощь
 ```
 
-Обычные вопросы в text mode можно писать без имени, если включено:
+### STT test mode
+
+```powershell
+python main.py --stt-test
+```
+
+Use this to check how the microphone/STT recognizes wake phrases and commands.
+
+---
+
+## 4. Double-click launchers
+
+For local beta testing:
+
+```text
+start_astra_debug.bat
+start_astra_text.bat
+start_astra_hidden.vbs
+```
+
+Recommended order:
+
+1. Test with `python main.py`.
+2. Test with `start_astra_debug.bat`.
+3. Only then test `start_astra_hidden.vbs`.
+
+Hidden mode writes diagnostics to logs. Do not use hidden mode for the first test after a patch.
+
+---
+
+## 5. Autostart
+
+Install autostart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\install_autostart.ps1
+```
+
+Remove autostart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\uninstall_autostart.ps1
+```
+
+Autostart is optional for v1.0 Beta.
+
+---
+
+## 6. Safety model
+
+Astra v1.0 Beta intentionally does not support:
+
+- arbitrary shell/cmd/powershell commands from voice;
+- shutdown/reboot/delete commands;
+- Alt+F4 active-window closing;
+- Telegram contact/message automation;
+- browser extension control;
+- pywinauto UI control.
+
+Important safety defaults:
 
 ```env
-ALLOW_TEXT_CONVERSATION_WITHOUT_WAKE=true
+ALLOW_COMMANDS_WITHOUT_WAKE=false
+ALLOW_VOICE_CONVERSATION_WITHOUT_WAKE=false
+VOICE_RUNTIME_MODE=wake_only
+WAKE_ONLY_MODE=true
 ```
 
-### Проверка v0.11
+The LLM-router cannot execute local sensitive actions such as keyboard shortcuts, typing, screenshot, VPN, window or system info actions.
+
+---
+
+## 7. VPN control
+
+Configure `.env`:
+
+```env
+VPN_ENABLED=true
+VPN_PROVIDER=amneziawg
+VPN_TUNNEL_SERVICE_NAME=AmneziaWGTunnel$pc-awg-2
+VPN_MANAGER_SERVICE_NAME=AmneziaWGManager
+```
+
+Commands:
+
+```text
+Астра, статус VPN
+Астра, включи VPN
+Астра, выключи VPN
+```
+
+Starting/stopping Windows services may require administrator rights.
+
+---
+
+## 8. Verification
+
+Run before commit/release:
 
 ```powershell
 python -m compileall main.py src tools
 python tools\smoke_test_v09_parser.py
 python tools\smoke_test_v10_parser.py
 python tools\smoke_test_v11_wake_runtime.py
+python tools\smoke_test_v100_beta.py
 python tools\validate_v10_config.py
 python tools\astra_doctor.py
 ```
+
+Manual voice checklist:
+
+```text
+открой YouTube
+Астра
+открой YouTube
+Астра, открой YouTube
+Астра, статус VPN
+Астра, переключись на Firefox
+Астра, статус интер
+Астра, стоп
+```
+
+Expected:
+
+- no-wake `открой YouTube` is ignored in voice mode;
+- `Астра` opens the command session;
+- direct wake commands work;
+- VPN/window/browser/system commands stay local;
+- no command-like no-wake phrase goes to LLM-router.
+
+---
+
+## 9. Release packaging
+
+Build review package:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build_review_package.ps1
+```
+
+Build beta release package:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
+```
+
+Do not publish real `.env` or API keys.
+
+---
+
+## 10. Known limitations
+
+See `KNOWN_LIMITATIONS.md`.

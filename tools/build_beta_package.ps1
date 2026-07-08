@@ -3,9 +3,9 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.0-beta-review-package.zip"
-$TempDir = Join-Path $ProjectParent "astra-v100-beta-review-clean"
-$ReviewContextDir = Join-Path $TempDir "_REVIEW_CONTEXT"
+$OutZip = Join-Path $ProjectParent "astra-v1.0-beta-release.zip"
+$TempDir = Join-Path $ProjectParent "astra-v100-beta-release-clean"
+$ContextDir = Join-Path $TempDir "_RELEASE_CONTEXT"
 
 if (Test-Path $OutZip) {
     Remove-Item $OutZip -Force
@@ -45,11 +45,11 @@ if ($roboExit -gt 7) {
     throw "robocopy failed with exit code $roboExit"
 }
 
-New-Item -ItemType Directory -Path $ReviewContextDir -Force | Out-Null
+New-Item -ItemType Directory -Path $ContextDir -Force | Out-Null
 
 $EnvPath = Join-Path $ProjectRoot ".env"
 $SanitizedEnvPath = Join-Path $TempDir ".env.sanitized"
-$ContextEnvPath = Join-Path $ReviewContextDir "env_sanitized.txt"
+$ContextEnvPath = Join-Path $ContextDir "env_sanitized.txt"
 
 if (Test-Path $EnvPath) {
     $sanitized = Get-Content $EnvPath -Encoding UTF8 |
@@ -68,26 +68,11 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.0 Beta review package",
+    "# Astra v1.0 Beta release package",
     "",
-    "Purpose: code review package for Astra v1.0 Beta RC.",
+    "This package excludes .git, .venv, real .env, logs, caches, pyc and mp3 cache files.",
     "",
-    "Included:",
-    "- project source files",
-    "- .env.example",
-    "- .env.sanitized with API keys removed",
-    "- _REVIEW_CONTEXT/env_sanitized.txt",
-    "",
-    "Excluded:",
-    "- .git",
-    "- .venv",
-    "- real .env with API keys",
-    "- logs",
-    "- cache",
-    "- mp3 files",
-    "- __pycache__",
-    "",
-    "Recommended checks:",
+    "Before release, run:",
     "python -m compileall main.py src tools",
     "python tools\smoke_test_v09_parser.py",
     "python tools\smoke_test_v10_parser.py",
@@ -96,19 +81,14 @@ $ReadmeLines = @(
     "python tools\validate_v10_config.py",
     "python tools\astra_doctor.py",
     "",
-    "Review focus:",
-    "- wake-only voice runtime",
-    "- no-wake speech ignored in voice mode",
-    "- no-wake command-like text not sent to LLM-router",
-    "- v0.10.8.1 beta safety gate still active",
-    "- text mode and stt-test not broken"
+    "Use .env.example to create a local .env. Never publish a real .env with API keys."
 )
 
-Set-Content -Path (Join-Path $ReviewContextDir "README_REVIEW_PACKAGE.md") -Value $ReadmeLines -Encoding UTF8
+Set-Content -Path (Join-Path $ContextDir "README_RELEASE_PACKAGE.md") -Value $ReadmeLines -Encoding UTF8
 
 Compress-Archive -Path (Join-Path $TempDir "*") -DestinationPath $OutZip -Force
 
 Remove-Item $TempDir -Recurse -Force
 
-Write-Host "Review package created:"
+Write-Host "Beta release package created:"
 Write-Host $OutZip

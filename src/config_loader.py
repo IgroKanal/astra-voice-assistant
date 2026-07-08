@@ -203,6 +203,38 @@ def _str_from_env(name: str, default: str) -> str:
     return value.strip() or default
 
 
+
+def _looks_like_mojibake(value: str) -> bool:
+    return any(marker in value for marker in ("Р", "СЃ", "С€", "СЋ", "Р»"))
+
+
+def _repair_common_mojibake(value: str) -> str:
+    """Repairs common UTF-8-as-Windows-1251 mojibake in .env values.
+
+    This is intentionally conservative and is used only for user-facing text
+    such as the wake response. It prevents broken responses like
+    "РЎР»СѓС€Р°СЋ." when a PowerShell script or editor saved Cyrillic with
+    the wrong encoding.
+    """
+    if not value or not _looks_like_mojibake(value):
+        return value
+
+    try:
+        repaired = value.encode("cp1251").decode("utf-8")
+    except UnicodeError:
+        return value
+
+    # Keep the repaired value only if it became plausible Cyrillic.
+    if any("а" <= char <= "я" or "А" <= char <= "Я" for char in repaired):
+        return repaired
+
+    return value
+
+
+def _text_from_env(name: str, default: str) -> str:
+    return _repair_common_mojibake(_str_from_env(name, default))
+
+
 def _gemini_api_key() -> str:
     return os.getenv("GEMINI_API_KEY", os.getenv("LLM_API_KEY", "")).strip()
 
@@ -224,11 +256,21 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
     default_name = "Астра"
     assistant_name = os.getenv("ASSISTANT_NAME", default_name).strip() or default_name
 
-    default_wake_phrases = [
-        assistant_name.lower(),
-        f"эй {assistant_name.lower()}",
-        f"привет {assistant_name.lower()}",
-    ]
+    default_wake_phrases = list(
+        dict.fromkeys(
+            [
+                assistant_name.lower(),
+                f"эй {assistant_name.lower()}",
+                f"привет {assistant_name.lower()}",
+                "астро",
+                "остра",
+                "а стра",
+                "астер",
+                "астэр",
+                "астры",
+            ]
+        )
+    )
 
     default_system_prompt = (
         f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. "
@@ -265,7 +307,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "WAKE_RESPONSE_ENABLED",
             True,
         ),
-        wake_response_text=_str_from_env(
+        wake_response_text=_text_from_env(
             "WAKE_RESPONSE_TEXT",
             "Слушаю.",
         ),

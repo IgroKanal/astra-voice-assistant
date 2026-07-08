@@ -375,6 +375,10 @@ KEYBOARD_COMMANDS = {
     # Keys
     "нажми enter": "enter",
     "нажми энтер": "enter",
+    "отправь нажми enter": "enter",
+    "отправь нажми энтер": "enter",
+    "отправь enter": "enter",
+    "отправь энтер": "enter",
     "энтер": "enter",
     "escape": "escape",
     "esc": "escape",
@@ -1139,6 +1143,12 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in {
         "закрой окно",
         "закрыть окно",
+        "закрой ок",
+        "закрыть ок",
+        "закрой ак",
+        "закрыть ак",
+        "закрой аг",
+        "закрыть аг",
         "закрой это окно",
         "закрой активное окно",
         "закрой текущее окно",

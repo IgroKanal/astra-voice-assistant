@@ -31,6 +31,12 @@ REQUIRED_FILES = (
     "tools/install_autostart.ps1",
     "tools/uninstall_autostart.ps1",
     "tools/apply_v110_wake_env.ps1",
+    "tools/apply_v100_beta_env.ps1",
+    "tools/build_beta_package.ps1",
+    "tools/smoke_test_v100_beta.py",
+    "BETA_CHECKLIST.md",
+    "KNOWN_LIMITATIONS.md",
+    "RELEASE_NOTES_v1.0-beta.md",
 )
 
 
@@ -101,6 +107,7 @@ def check_settings() -> int:
     print(f"tts_cache_generation_timeout_seconds={settings.tts_cache_generation_timeout_seconds}")
     print(f"voice_runtime_mode={settings.voice_runtime_mode}")
     print(f"wake_only_mode={settings.wake_only_mode}")
+    print(f"wake_response_text={settings.wake_response_text}")
     print(f"wake_listen_timeout_seconds={settings.wake_listen_timeout_seconds}")
     print(f"command_listen_timeout_seconds={settings.command_listen_timeout_seconds}")
 
@@ -108,6 +115,18 @@ def check_settings() -> int:
         warn("LLM is enabled but API key is not configured")
     else:
         ok("LLM key configuration is acceptable")
+
+    if "Р" in settings.wake_response_text or "СЃ" in settings.wake_response_text:
+        fail("wake_response_text looks like mojibake; run tools/apply_v100_beta_env.ps1")
+        problems += 1
+    else:
+        ok("wake response text encoding is acceptable")
+
+    if "астер" not in settings.wake_phrases or "астэр" not in settings.wake_phrases:
+        fail("wake phrase STT variants are missing; run tools/apply_v100_beta_env.ps1")
+        problems += 1
+    else:
+        ok("wake phrase STT variants are configured")
 
     if settings.tts_cache_generation_timeout_seconds < 5:
         fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at least 5")

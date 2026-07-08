@@ -49,4 +49,4 @@ foreach ($key in $updates.Keys) {
 }
 
 Set-Content -Path $EnvPath -Value $lines -Encoding UTF8
-Write-Host "Astra v0.11 wake-only env settings applied to .env"
+Write-Host "Astra v1.0 Beta environment settings applied to .env"

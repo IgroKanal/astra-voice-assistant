@@ -25,6 +25,12 @@ def main() -> None:
     print(f"stt_non_speaking_duration={settings.stt_non_speaking_duration}")
     print(f"tts_cache_prewarm_max_new_phrases={settings.tts_cache_prewarm_max_new_phrases}")
     print(f"tts_cache_generation_timeout_seconds={settings.tts_cache_generation_timeout_seconds}")
+    print(f"voice_runtime_mode={settings.voice_runtime_mode}")
+    print(f"wake_only_mode={settings.wake_only_mode}")
+    print(f"wake_listen_timeout_seconds={settings.wake_listen_timeout_seconds}")
+    print(f"wake_phrase_time_limit_seconds={settings.wake_phrase_time_limit_seconds}")
+    print(f"command_listen_timeout_seconds={settings.command_listen_timeout_seconds}")
+    print(f"command_phrase_time_limit_seconds={settings.command_phrase_time_limit_seconds}")
 
     assert hasattr(settings, "vpn_enabled")
     assert hasattr(settings, "vpn_provider")
@@ -38,6 +44,11 @@ def main() -> None:
     assert settings.stt_non_speaking_duration >= 0.3
     assert settings.tts_cache_prewarm_max_new_phrases >= 0
     assert settings.tts_cache_generation_timeout_seconds >= 5
+    assert settings.voice_runtime_mode in {"wake_only", "wake", "wake-only", "legacy"}
+    assert settings.wake_listen_timeout_seconds >= 2
+    assert settings.wake_phrase_time_limit_seconds >= 2
+    assert settings.command_listen_timeout_seconds >= 5
+    assert settings.command_phrase_time_limit_seconds >= 8
 
     print("v0.10 config validation passed")
 

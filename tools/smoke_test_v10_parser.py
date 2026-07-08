@@ -159,6 +159,29 @@ def main() -> None:
     assert "tts_cache_generation_timeout_seconds" in config_loader
     assert "TTS_CACHE_GENERATION_TIMEOUT_SECONDS" in config_loader
 
+
+    # v0.11.0 wake-only runtime regressions.
+    assert "voice_runtime_mode" in config_loader
+    assert "wake_only_mode" in config_loader
+    assert "wake_listen_timeout_seconds" in config_loader
+    assert "command_listen_timeout_seconds" in config_loader
+
+    assert "def _wake_only_voice_enabled" in main_py
+    assert "Wake-only voice runtime enabled" in main_py
+    assert "Wake-only режим" in main_py
+    assert "VOICE_RUNTIME_MODE=wake_only" in env_example
+    assert "WAKE_ONLY_MODE=true" in env_example
+    assert (PROJECT_ROOT / "tools" / "apply_v110_wake_env.ps1").exists()
+
+    parsed = extract_command_after_wake("Астра", wake_phrases)
+    assert parsed.type == CommandType.WAKE_ONLY, parsed
+    parsed = extract_command_after_wake("Астра, статус vpn", wake_phrases)
+    assert parsed.type == CommandType.VPN_CONTROL and parsed.target == "status", parsed
+    parsed = extract_command_after_wake("Астра, переключись на firefox", wake_phrases)
+    assert parsed.type == CommandType.WINDOW_CONTROL and parsed.target == "focus:firefox", parsed
+    parsed = extract_command_after_wake("открой youtube.com", wake_phrases)
+    assert parsed.type == CommandType.NO_WAKE, parsed
+
     print("v0.10 VPN/window parser smoke tests passed")
 
 

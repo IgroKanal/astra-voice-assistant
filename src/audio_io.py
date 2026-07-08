@@ -315,19 +315,36 @@ class VoiceIO:
     def _has_cyrillic(self, text: str) -> bool:
         return any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in text)
 
-    def listen_once(self) -> ListenResult:
+    def listen_once(
+        self,
+        *,
+        timeout_seconds: int | float | None = None,
+        phrase_time_limit_seconds: int | float | None = None,
+        prompt: str = "Слушаю...",
+    ) -> ListenResult:
         if self.microphone is None:
             return ListenResult(False, error="Микрофон не доступен.")
 
         start = time.perf_counter()
+        timeout = (
+            self.settings.listen_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        phrase_time_limit = (
+            self.settings.phrase_time_limit_seconds
+            if phrase_time_limit_seconds is None
+            else phrase_time_limit_seconds
+        )
 
         try:
             with self.microphone as source:
-                print("Слушаю...")
+                if prompt:
+                    print(prompt)
                 audio = self.recognizer.listen(
                     source,
-                    timeout=self.settings.listen_timeout_seconds,
-                    phrase_time_limit=self.settings.phrase_time_limit_seconds,
+                    timeout=timeout,
+                    phrase_time_limit=phrase_time_limit,
                 )
 
             alternatives = self._recognize_google_alternatives(audio)

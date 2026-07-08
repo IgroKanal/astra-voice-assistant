@@ -22,6 +22,17 @@ class Settings:
     allow_commands_without_wake: bool = False
     allow_text_conversation_without_wake: bool = True
     allow_voice_conversation_without_wake: bool = False
+
+    voice_runtime_mode: str = "wake_only"
+    wake_only_mode: bool = True
+    wake_response_enabled: bool = True
+    wake_response_text: str = "Слушаю."
+    wake_listen_timeout_seconds: int = 4
+    wake_phrase_time_limit_seconds: int = 4
+    command_listen_timeout_seconds: int = 10
+    command_phrase_time_limit_seconds: int = 16
+    wake_allow_direct_command: bool = True
+
     router_cooldown_seconds: float = 2.0
 
     stt_command_aware_alternatives: bool = True
@@ -241,6 +252,42 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         allow_voice_conversation_without_wake=_bool_from_env(
             "ALLOW_VOICE_CONVERSATION_WITHOUT_WAKE",
             False,
+        ),
+        voice_runtime_mode=_str_from_env(
+            "VOICE_RUNTIME_MODE",
+            "wake_only",
+        ).lower(),
+        wake_only_mode=_bool_from_env(
+            "WAKE_ONLY_MODE",
+            True,
+        ),
+        wake_response_enabled=_bool_from_env(
+            "WAKE_RESPONSE_ENABLED",
+            True,
+        ),
+        wake_response_text=_str_from_env(
+            "WAKE_RESPONSE_TEXT",
+            "Слушаю.",
+        ),
+        wake_listen_timeout_seconds=_int_from_env(
+            "WAKE_LISTEN_TIMEOUT_SECONDS",
+            4,
+        ),
+        wake_phrase_time_limit_seconds=_int_from_env(
+            "WAKE_PHRASE_TIME_LIMIT_SECONDS",
+            4,
+        ),
+        command_listen_timeout_seconds=_int_from_env(
+            "COMMAND_LISTEN_TIMEOUT_SECONDS",
+            10,
+        ),
+        command_phrase_time_limit_seconds=_int_from_env(
+            "COMMAND_PHRASE_TIME_LIMIT_SECONDS",
+            16,
+        ),
+        wake_allow_direct_command=_bool_from_env(
+            "WAKE_ALLOW_DIRECT_COMMAND",
+            True,
         ),
         router_cooldown_seconds=_float_from_env(
             "ROUTER_COOLDOWN_SECONDS",

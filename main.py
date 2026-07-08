@@ -938,6 +938,15 @@ def run_text_mode(
             return
 
 
+def _wake_only_voice_enabled(settings: Settings) -> bool:
+    mode = (settings.voice_runtime_mode or "").strip().lower()
+    return settings.wake_only_mode or mode in {"wake_only", "wake", "wake-only"}
+
+
+def _voice_command_text_with_wake(settings: Settings, command_text: str) -> str:
+    return f"{settings.assistant_name}, {command_text.strip()}"
+
+
 def run_voice_mode(
     settings: Settings,
     apps: dict[str, AppConfig],
@@ -961,14 +970,6 @@ def run_voice_mode(
     )
     voice.speak(f"{settings.assistant_name} запущена.")
 
-    if settings.allow_commands_without_wake:
-        logger.info("Режим разработки: явные команды можно выполнять без wake phrase.")
-        print("Режим разработки: можно говорить 'открой блокнот' без имени.")
-
-    if settings.allow_voice_conversation_without_wake:
-        logger.info("Разговорный режим без wake phrase включён.")
-        print("Разговорный режим: можно говорить обычные фразы без имени.")
-
     state = TurnState()
 
     def respond(message: str) -> None:
@@ -979,7 +980,11 @@ def run_voice_mode(
         voice.speak(shortened)
 
     def get_follow_up() -> str:
-        follow_up = voice.listen_once()
+        follow_up = voice.listen_once(
+            timeout_seconds=settings.command_listen_timeout_seconds,
+            phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
+            prompt="Слушаю команду...",
+        )
         if not follow_up.ok:
             logger.info("STT follow-up: %s", follow_up.error)
             return ""
@@ -1003,6 +1008,78 @@ def run_voice_mode(
         state=state,
     )
 
+    if _wake_only_voice_enabled(settings):
+        logger.info(
+            "Wake-only voice runtime enabled. wake_timeout=%s wake_limit=%s command_timeout=%s command_limit=%s",
+            settings.wake_listen_timeout_seconds,
+            settings.wake_phrase_time_limit_seconds,
+            settings.command_listen_timeout_seconds,
+            settings.command_phrase_time_limit_seconds,
+        )
+        print("Wake-only режим: скажи 'Астра' перед командой.")
+
+        while True:
+            wake_result = voice.listen_once(
+                timeout_seconds=settings.wake_listen_timeout_seconds,
+                phrase_time_limit_seconds=settings.wake_phrase_time_limit_seconds,
+                prompt="Жду: Астра...",
+            )
+
+            if not wake_result.ok:
+                logger.info("Wake STT: %s", wake_result.error)
+                continue
+
+            parsed = extract_command_after_wake(
+                wake_result.text,
+                settings.wake_phrases,
+            )
+
+            if parsed.type == CommandType.NO_WAKE:
+                logger.info("Wake ignored: no wake phrase in %r", wake_result.text)
+                continue
+
+            if parsed.type == CommandType.WAKE_ONLY:
+                logger.info("wake_detected: wake_only")
+                if settings.wake_response_enabled:
+                    respond(settings.wake_response_text)
+
+                command_result = voice.listen_once(
+                    timeout_seconds=settings.command_listen_timeout_seconds,
+                    phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
+                    prompt="Слушаю команду...",
+                )
+
+                if not command_result.ok:
+                    logger.info("Command session timeout/unknown: %s", command_result.error)
+                    respond("Не расслышал, повтори.")
+                    continue
+
+                logger.info(
+                    "command_session_text=%r",
+                    command_result.text,
+                )
+                should_continue = process_turn(
+                    _voice_command_text_with_wake(settings, command_result.text),
+                    ctx,
+                )
+                if not should_continue:
+                    return
+                continue
+
+            logger.info("wake_detected: direct_command text=%r", wake_result.text)
+            should_continue = process_turn(wake_result.text, ctx)
+            if not should_continue:
+                return
+
+    # Legacy/dev mode: старое поведение. Оставлено только для ручной отладки.
+    if settings.allow_commands_without_wake:
+        logger.info("Режим разработки: явные команды можно выполнять без wake phrase.")
+        print("Режим разработки: можно говорить 'открой блокнот' без имени.")
+
+    if settings.allow_voice_conversation_without_wake:
+        logger.info("Разговорный режим без wake phrase включён.")
+        print("Разговорный режим: можно говорить обычные фразы без имени.")
+
     while True:
         listen_result = voice.listen_once()
         if not listen_result.ok:
@@ -1012,6 +1089,7 @@ def run_voice_mode(
         should_continue = process_turn(listen_result.text, ctx)
         if not should_continue:
             return
+
 
 
 def main() -> int:

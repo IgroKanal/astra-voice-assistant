@@ -30,6 +30,7 @@ REQUIRED_FILES = (
     "start_astra_hidden.vbs",
     "tools/install_autostart.ps1",
     "tools/uninstall_autostart.ps1",
+    "tools/apply_v110_wake_env.ps1",
 )
 
 
@@ -98,6 +99,10 @@ def check_settings() -> int:
     print(f"vpn_tunnel_service_name={settings.vpn_tunnel_service_name}")
     print(f"tts_cache_prewarm_max_new_phrases={settings.tts_cache_prewarm_max_new_phrases}")
     print(f"tts_cache_generation_timeout_seconds={settings.tts_cache_generation_timeout_seconds}")
+    print(f"voice_runtime_mode={settings.voice_runtime_mode}")
+    print(f"wake_only_mode={settings.wake_only_mode}")
+    print(f"wake_listen_timeout_seconds={settings.wake_listen_timeout_seconds}")
+    print(f"command_listen_timeout_seconds={settings.command_listen_timeout_seconds}")
 
     if settings.llm_enabled and not settings.llm_api_key:
         warn("LLM is enabled but API key is not configured")
@@ -106,6 +111,21 @@ def check_settings() -> int:
 
     if settings.tts_cache_generation_timeout_seconds < 5:
         fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at least 5")
+        problems += 1
+
+    if settings.voice_runtime_mode not in {"wake_only", "wake", "wake-only", "legacy"}:
+        fail("VOICE_RUNTIME_MODE must be wake_only or legacy")
+        problems += 1
+
+    if settings.wake_only_mode and settings.allow_voice_conversation_without_wake:
+        warn("wake-only mode is enabled; voice conversation without wake should usually stay false")
+
+    if settings.wake_listen_timeout_seconds < 2:
+        fail("WAKE_LISTEN_TIMEOUT_SECONDS must be at least 2")
+        problems += 1
+
+    if settings.command_listen_timeout_seconds < 5:
+        fail("COMMAND_LISTEN_TIMEOUT_SECONDS must be at least 5")
         problems += 1
 
     return problems

@@ -181,6 +181,19 @@
         "firefox"
       ],
       "process_name": "firefox.exe"
+    },
+    "яндекс музыка": {
+      "aliases": [
+        "yandex music",
+        "яндекс music",
+        "яндекс музыка",
+        "яндекс музыку",
+        "яндекс мьюзик"
+      ],
+      "open_command": [
+        "%LOCALAPPDATA%\\Programs\\YandexMusic\\Яндекс Музыка.exe"
+      ],
+      "process_name": "Яндекс Музыка.exe"
     }
   }
 }

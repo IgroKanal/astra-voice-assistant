@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.1-beta-review-package.zip"
-$TempDir = Join-Path $ProjectParent "astra-v11-beta-review-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.2-beta-review-package.zip"
+$TempDir = Join-Path $ProjectParent "astra-v12-beta-review-clean"
 $ReviewContextDir = Join-Path $TempDir "_REVIEW_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -76,9 +76,9 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.1 Beta review package",
+    "# Astra v1.2 Beta review package",
     "",
-    "Purpose: independent code review for the v1.1 Daily Workflow & Context Update.",
+    "Purpose: independent code review for the v1.2 Native Music App Integration update.",
     "",
     "Included:",
     "- project source files",
@@ -103,8 +103,10 @@ $ReadmeLines = @(
     "python tools\smoke_test_v100_beta.py",
     "python tools\smoke_test_v101_beta.py",
     "python tools\smoke_test_v11_daily_workflow.py",
+    "python tools\smoke_test_v12_native_music.py",
     "python tools\validate_v10_config.py",
     "python tools\validate_v11_config.py",
+    "python tools\validate_v12_config.py",
     "python tools\astra_doctor.py",
     "",
     "Review focus:",
@@ -116,6 +118,9 @@ $ReadmeLines = @(
     "- bounded context cannot bypass wake or LLM safety gates",
     "- global media keys and previous-window behavior",
     "- local YouTube search query preservation",
+    "- native Yandex Music resolver uses fixed whitelist data only",
+    "- explicit Yandex Music website command remains a URL action",
+    "- honest failure when the native client cannot be resolved",
     "- terminal typing/Enter guard",
     "- bounded TTS prewarm attempts",
     "- package secret/file validation"

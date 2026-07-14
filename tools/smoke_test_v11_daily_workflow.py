@@ -89,10 +89,18 @@ class FakeAppManager:
             open_command=["Telegram.exe"],
             process_name="Telegram.exe",
         )
+        self.yandex_music = AppConfig(
+            name="яндекс музыка",
+            aliases=["яндекс музыка", "яндекс музыку", "yandex music"],
+            open_command=["Яндекс Музыка.exe"],
+            process_name="Яндекс Музыка.exe",
+        )
 
     def find_app(self, target: str):
         if target.lower() in {"telegram", "телеграм"}:
             return self.telegram
+        if target.lower() in {"яндекс музыка", "яндекс музыку", "yandex music"}:
+            return self.yandex_music
         return None
 
     def open_app(self, target: str):
@@ -203,7 +211,7 @@ def test_parser_and_youtube_query_preservation() -> None:
         "предыдущий трек": (CommandType.KEYBOARD_SHORTCUT, "media_previous"),
         "останови музыку": (CommandType.KEYBOARD_SHORTCUT, "media_stop"),
         "открой музыку": (CommandType.OPEN_FOLDER, "музыку"),
-        "открой яндекс музыку": (CommandType.OPEN_URL, "яндекс музыку"),
+        "открой яндекс музыку": (CommandType.OPEN_APP, "яндекс музыка"),
         "откроется AMD": (CommandType.OPEN_APP, "amd"),
         "вернись обратно": (CommandType.WINDOW_CONTROL, "previous"),
     }
@@ -291,11 +299,12 @@ def test_music_follow_up_and_youtube_search() -> None:
     original_open = astra_main.webbrowser.open
     astra_main.webbrowser.open = lambda url: opened_urls.append(url) or True
     try:
-        yandex_ctx, yandex_responses, yandex_ai, *_ = make_context()
+        yandex_ctx, yandex_responses, yandex_ai, yandex_apps, *_ = make_context()
         process_turn("Астра, включи музыку", yandex_ctx)
         process_turn("Яндекс музыку", yandex_ctx)
-        assert opened_urls == ["https://music.yandex.ru"], opened_urls
-        assert yandex_responses[-1] == "Открываю сайт.", yandex_responses
+        assert yandex_apps.opened == ["яндекс музыка"], yandex_apps.opened
+        assert opened_urls == [], opened_urls
+        assert yandex_responses[-1] == "Открываю.", yandex_responses
         assert yandex_ai.route_calls == 0 and yandex_ai.ask_calls == 0
 
         process_turn("Астра, найди на ютубе Python 3.12 C++", ctx)

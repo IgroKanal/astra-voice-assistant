@@ -594,6 +594,7 @@ SITE_NAMES = (
     "kinopoisk",
     "яндекс музыка",
     "яндекс музыку",
+    "яндекс музыки",
     "music yandex",
     "hh",
     "headhunter",
@@ -622,7 +623,20 @@ APP_LIKE_NAMES = (
     "хром",
     "chrome",
     "edge",
+    "yandex music",
+    "яндекс music",
+    "яндекс музыка",
+    "яндекс музыку",
+    "яндекс мьюзик",
 )
+
+YANDEX_MUSIC_APP_TARGETS = {
+    "yandex music",
+    "яндекс music",
+    "яндекс музыка",
+    "яндекс музыку",
+    "яндекс мьюзик",
+}
 
 FOLDER_NAMES = (
     "загрузки",
@@ -1160,6 +1174,11 @@ def _is_app_like_target(target: str) -> bool:
     return clean in APP_LIKE_NAMES
 
 
+def _is_yandex_music_app_target(target: str) -> bool:
+    """Recognize only explicit app names, never the generic word "музыка"."""
+    return normalize_text(target) in YANDEX_MUSIC_APP_TARGETS
+
+
 def _parse_system_info(normalized: str) -> ParsedCommand | None:
     if normalized in SYSTEM_INFO_COMMANDS:
         return ParsedCommand(
@@ -1342,6 +1361,16 @@ def parse_command_text(text: str) -> ParsedCommand:
                     target=_strip_site_words_preserve_url(raw_target),
                 )
 
+            # v1.2: an installed Yandex Music client is the default for the
+            # explicit product name. The website stays available through
+            # "открой сайт Яндекс Музыки" and normal URL/domain handling.
+            if _is_yandex_music_app_target(target):
+                return ParsedCommand(
+                    CommandType.OPEN_APP,
+                    text=normalized,
+                    target="яндекс музыка",
+                )
+
             if _is_ambiguous_chat_target(target):
                 return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=AMBIGUOUS_CHAT_TARGET)
 
@@ -1370,6 +1399,12 @@ def parse_command_text(text: str) -> ParsedCommand:
             return ParsedCommand(CommandType.CLOSE_APP, text=normalized, target="")
         if normalized.startswith(prefix + " "):
             target = normalized.removeprefix(prefix).strip()
+            if _is_yandex_music_app_target(target):
+                return ParsedCommand(
+                    CommandType.CLOSE_APP,
+                    text=normalized,
+                    target="яндекс музыка",
+                )
             if target in SITE_NAMES or any(
                 word in target for word in ("сайт", "вкладк", "страниц")
             ):

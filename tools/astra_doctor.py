@@ -37,12 +37,15 @@ REQUIRED_FILES = (
     "tools/apply_v100_beta_env.ps1",
     "tools/apply_v101_beta_env.ps1",
     "tools/apply_v11_beta_env.ps1",
+    "tools/apply_v12_beta_env.ps1",
     "tools/build_beta_package.ps1",
     "tools/build_review_package.ps1",
     "tools/smoke_test_v100_beta.py",
     "tools/smoke_test_v101_beta.py",
     "tools/smoke_test_v11_daily_workflow.py",
+    "tools/smoke_test_v12_native_music.py",
     "tools/validate_v11_config.py",
+    "tools/validate_v12_config.py",
     "tools/validate_package.py",
     "BETA_CHECKLIST.md",
     "KNOWN_LIMITATIONS.md",
@@ -50,6 +53,7 @@ REQUIRED_FILES = (
     "RELEASE_NOTES_v1.0-beta.md",
     "RELEASE_NOTES_v1.0.1.md",
     "RELEASE_NOTES_v1.1.md",
+    "RELEASE_NOTES_v1.2.md",
 )
 
 
@@ -196,7 +200,7 @@ def check_apps() -> int:
         return 1
 
     ok(f"apps loaded: {len(apps)}")
-    for required in ("firefox", "vscode", "telegram", "блокнот"):
+    for required in ("firefox", "vscode", "telegram", "блокнот", "яндекс музыка"):
         if required in apps:
             ok(f"app configured: {required}")
         else:

@@ -160,6 +160,7 @@ _SITE_ALIASES = {
     "кинопоиск": "https://www.kinopoisk.ru",
     "яндекс музыка": "https://music.yandex.ru",
     "яндекс музыку": "https://music.yandex.ru",
+    "яндекс музыки": "https://music.yandex.ru",
     "music yandex": "https://music.yandex.ru",
     "hh": "https://hh.ru",
     "headhunter": "https://hh.ru",

@@ -32,6 +32,9 @@ class WindowsAppManager:
     _FUZZY_MARGIN = 0.08
     _BROWSER_GENERIC_TARGETS = {"браузер", "browser"}
     _BROWSER_APP_NAMES = {"firefox", "chrome", "edge", "msedge"}
+    _YANDEX_MUSIC_APP_NAME = "яндекс музыка"
+    _YANDEX_MUSIC_PROCESS_NAME = "яндекс музыка.exe"
+    _YANDEX_MUSIC_START_APP_ID = "ru.yandex.desktop.music"
     _FUZZY_BLOCKLIST = {
         "ок",
         "ак",
@@ -45,6 +48,11 @@ class WindowsAppManager:
         "posledniy",
         "ча",
         "чат",
+        "music",
+        "yandex",
+        "музыка",
+        "музыку",
+        "яндекс",
     }
 
     def __init__(
@@ -217,6 +225,12 @@ class WindowsAppManager:
                     False,
                     "Не нашёл Code.exe. Проверь путь к VS Code или установи команду code в PATH.",
                 )
+            if app.name == self._YANDEX_MUSIC_APP_NAME:
+                return AppActionResult(
+                    False,
+                    "Не нашёл приложение Яндекс Музыка. Проверь установку или "
+                    "ASTRA_YANDEX_MUSIC_PATH.",
+                )
             return AppActionResult(False, f"Не удалось открыть {app.name}: команда запуска не найдена.")
 
         try:
@@ -256,7 +270,93 @@ class WindowsAppManager:
         if app.name == "vscode" or app.process_name.lower() == "code.exe":
             return self._resolve_vscode_command()
 
+        if (
+            app.name == self._YANDEX_MUSIC_APP_NAME
+            or app.process_name.lower() == self._YANDEX_MUSIC_PROCESS_NAME
+        ):
+            return self._resolve_yandex_music_command()
+
         return [os.path.expandvars(part) for part in app.open_command]
+
+    def _resolve_yandex_music_command(self) -> list[str] | None:
+        """Resolve the native client without hardcoded user paths or speech input.
+
+        Resolution order:
+        1. ASTRA_YANDEX_MUSIC_PATH from the local environment.
+        2. Known per-user/system installation paths.
+        3. A fixed StartApps ID, but only when a matching Start Menu shortcut
+           exists. The fallback uses explorer.exe with constant arguments and
+           never interpolates recognized speech.
+        """
+        direct_candidates: list[Path] = []
+
+        env_path = os.getenv("ASTRA_YANDEX_MUSIC_PATH", "").strip()
+        if env_path:
+            direct_candidates.append(Path(os.path.expandvars(env_path)))
+
+        local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+        program_files = os.getenv("ProgramFiles", "").strip()
+        program_files_x86 = os.getenv("ProgramFiles(x86)", "").strip()
+
+        if local_app_data:
+            direct_candidates.append(
+                Path(local_app_data) / "Programs" / "YandexMusic" / "Яндекс Музыка.exe"
+            )
+        if program_files:
+            direct_candidates.append(
+                Path(program_files) / "YandexMusic" / "Яндекс Музыка.exe"
+            )
+        if program_files_x86:
+            direct_candidates.append(
+                Path(program_files_x86) / "YandexMusic" / "Яндекс Музыка.exe"
+            )
+
+        for candidate in direct_candidates:
+            if candidate.is_file() and candidate.suffix.lower() == ".exe":
+                return [str(candidate)]
+
+        shortcut_candidates: list[Path] = []
+        app_data = os.getenv("APPDATA", "").strip()
+        program_data = os.getenv("ProgramData", "").strip()
+        if app_data:
+            shortcut_candidates.append(
+                Path(app_data)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Яндекс Музыка.lnk"
+            )
+        if program_data:
+            shortcut_candidates.append(
+                Path(program_data)
+                / "Microsoft"
+                / "Windows"
+                / "Start Menu"
+                / "Programs"
+                / "Яндекс Музыка.lnk"
+            )
+
+        if any(candidate.is_file() for candidate in shortcut_candidates):
+            explorer = shutil.which("explorer.exe")
+            if not explorer:
+                windows_dir = os.getenv("WINDIR", "").strip()
+                candidate = Path(windows_dir) / "explorer.exe" if windows_dir else None
+                if candidate is not None and candidate.is_file():
+                    explorer = str(candidate)
+            if explorer:
+                return [
+                    explorer,
+                    rf"shell:AppsFolder\{self._YANDEX_MUSIC_START_APP_ID}",
+                ]
+
+        self.logger.warning(
+            "Yandex Music executable was not found. Checked %s direct path(s) "
+            "and %s Start Menu shortcut(s).",
+            len(direct_candidates),
+            len(shortcut_candidates),
+        )
+        return None
 
     def _resolve_vscode_command(self) -> list[str] | None:
         """

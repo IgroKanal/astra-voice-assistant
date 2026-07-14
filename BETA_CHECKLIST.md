@@ -1,4 +1,4 @@
-# Astra v1.1 Beta checklist
+# Astra v1.2 Beta checklist
 
 ## Automated checks
 
@@ -10,8 +10,10 @@ python tools\smoke_test_v11_wake_runtime.py
 python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
 python tools\smoke_test_v11_daily_workflow.py
+python tools\smoke_test_v12_native_music.py
 python tools\validate_v10_config.py
 python tools\validate_v11_config.py
+python tools\validate_v12_config.py
 python tools\astra_doctor.py
 ```
 
@@ -128,6 +130,29 @@ Expected:
 - `закрой его` works only for fresh bounded context;
 - previous-window switching never sends Alt+F4.
 
+## Native Yandex Music
+
+Check:
+
+```text
+открой Яндекс Музыку
+Астра, открой Яндекс Музыку
+Астра, включи музыку
+Яндекс музыку
+Астра, переключись на Яндекс Музыку
+Астра, закрой Яндекс Музыку
+Астра, открой сайт Яндекс Музыки
+```
+
+Expected:
+
+- the no-wake phrase is ignored before actions and LLM-router;
+- direct and follow-up forms open the native client without a console window;
+- focus finds the visible `Яндекс Музыка.exe` window;
+- close targets only the allowlisted Yandex Music process;
+- the explicit site form opens `https://music.yandex.ru`;
+- if the client is missing, Astra reports failure instead of saying it opened.
+
 ## Packaging
 
 ```powershell
@@ -138,8 +163,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 Expected:
 
 ```text
-C:\Projects\astra-v1.1-beta-review-package.zip
-C:\Projects\astra-v1.1-beta-release.zip
+C:\Projects\astra-v1.2-beta-review-package.zip
+C:\Projects\astra-v1.2-beta-release.zip
 ```
 
 Both scripts must finish with `Astra package validation passed`. Validation

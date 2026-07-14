@@ -1,4 +1,4 @@
-# Astra Voice Assistant — v1.1 Beta
+# Astra Voice Assistant — v1.2 Beta
 
 Astra is a Windows-only voice assistant for PC.
 
@@ -8,6 +8,7 @@ Current beta focus:
 - local safe skills for apps, sites, browser tabs, folders, VPN, windows, screenshots and system info;
 - exact-match safe routines, bounded recent-action context and global media keys;
 - local YouTube search and previous-window switching;
+- native Yandex Music open/close/focus with an explicit website fallback;
 - Gemini/OpenAI-compatible LLM fallback only for normal questions after wake phrase;
 - beta safety gate: no command execution without wake phrase, no whitelisted `cmd.exe`, terminal text/Enter guards.
 
@@ -53,7 +54,7 @@ LLM_ENABLED=false
 Apply beta-safe wake settings:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\apply_v11_beta_env.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v12_beta_env.ps1
 ```
 
 ---
@@ -102,6 +103,9 @@ Daily workflow examples:
 локальную
 Астра, пауза
 Астра, следующий трек
+Астра, открой Яндекс Музыку
+Астра, переключись на Яндекс Музыку
+Астра, открой сайт Яндекс Музыки
 Астра, вернись обратно
 Астра, закрой его
 ```
@@ -110,6 +114,11 @@ Daily workflow examples:
 after `CONTEXT_TTL_SECONDS` (120 seconds by default). It does not add general
 conversation memory. Edit `config/routines.json` only with the documented
 allowlisted step types; invalid or privileged steps stop Astra at startup.
+
+`Яндекс Музыка` means the native desktop client by default. Astra resolves the
+standard `%LOCALAPPDATA%` installation and registered StartApps entry. For a
+non-standard installation, set `ASTRA_YANDEX_MUSIC_PATH` in the local `.env`.
+Use `открой сайт Яндекс Музыки` when the website is intended.
 
 ### Text mode
 
@@ -170,13 +179,13 @@ Remove autostart:
 powershell -ExecutionPolicy Bypass -File .\tools\uninstall_autostart.ps1
 ```
 
-Autostart is optional for v1.1 Beta.
+Autostart is optional for v1.2 Beta.
 
 ---
 
 ## 6. Safety model
 
-Astra v1.1 Beta intentionally does not support:
+Astra v1.2 Beta intentionally does not support:
 
 - arbitrary shell/cmd/powershell commands from voice;
 - shutdown/reboot/delete commands;
@@ -236,8 +245,10 @@ python tools\smoke_test_v11_wake_runtime.py
 python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
 python tools\smoke_test_v11_daily_workflow.py
+python tools\smoke_test_v12_native_music.py
 python tools\validate_v10_config.py
 python tools\validate_v11_config.py
+python tools\validate_v12_config.py
 python tools\astra_doctor.py
 ```
 
@@ -259,6 +270,9 @@ Manual voice checklist:
 Астра, включи рабочий режим
 Астра, следующий трек
 Астра, найди на ютубе Python 3.12
+Астра, открой Яндекс Музыку
+Астра, переключись на Яндекс Музыку
+Астра, открой сайт Яндекс Музыки
 Астра, статус интер
 Астра, стоп
 ```
@@ -290,8 +304,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 Do not publish real `.env` or API keys.
 
 The build scripts run `tools\validate_package.py` automatically. Expected
-archives are `astra-v1.1-beta-review-package.zip` and
-`astra-v1.1-beta-release.zip` in `C:\Projects`.
+archives are `astra-v1.2-beta-review-package.zip` and
+`astra-v1.2-beta-release.zip` in `C:\Projects`.
 
 ---
 

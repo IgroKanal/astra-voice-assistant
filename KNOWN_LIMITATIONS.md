@@ -1,4 +1,4 @@
-# Astra v1.1 Beta known limitations
+# Astra v1.2 Beta known limitations
 
 This beta is intentionally conservative.
 
@@ -36,10 +36,14 @@ This beta is intentionally conservative.
   run shell commands. They stop at eight allowlisted open steps.
 - Media controls use global Windows media keys; the active media application
   decides whether it handles them.
+- Yandex Music integration opens, closes or focuses the desktop client, but it
+  does not select a playlist/track or read playback state from the app UI.
+- Non-standard Yandex Music installations may require the local
+  `ASTRA_YANDEX_MUSIC_PATH` override.
 - `вернись обратно` is available only after Astra successfully focused another
   window during the current process lifetime.
 
-## Not included in v1.1 Beta
+## Not included in v1.2 Beta
 
 - GUI/tray app.
 - Real Windows service.

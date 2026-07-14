@@ -32,11 +32,17 @@ REQUIRED_FILES = (
     "tools/uninstall_autostart.ps1",
     "tools/apply_v110_wake_env.ps1",
     "tools/apply_v100_beta_env.ps1",
+    "tools/apply_v101_beta_env.ps1",
     "tools/build_beta_package.ps1",
+    "tools/build_review_package.ps1",
     "tools/smoke_test_v100_beta.py",
+    "tools/smoke_test_v101_beta.py",
+    "tools/validate_package.py",
     "BETA_CHECKLIST.md",
     "KNOWN_LIMITATIONS.md",
+    "README_PATCH.md",
     "RELEASE_NOTES_v1.0-beta.md",
+    "RELEASE_NOTES_v1.0.1.md",
 )
 
 
@@ -130,6 +136,14 @@ def check_settings() -> int:
 
     if settings.tts_cache_generation_timeout_seconds < 5:
         fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at least 5")
+        problems += 1
+
+    if settings.tts_cache_generation_timeout_seconds > 10:
+        fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at most 10 for v1.0.1")
+        problems += 1
+
+    if settings.tts_cache_prewarm_max_new_phrases > 1:
+        fail("TTS_CACHE_PREWARM_MAX_NEW_PHRASES must be at most 1 for v1.0.1")
         problems += 1
 
     if settings.voice_runtime_mode not in {"wake_only", "wake", "wake-only", "legacy"}:

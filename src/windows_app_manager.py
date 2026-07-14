@@ -33,6 +33,9 @@ class WindowsAppManager:
     _BROWSER_GENERIC_TARGETS = {"браузер", "browser"}
     _BROWSER_APP_NAMES = {"firefox", "chrome", "edge", "msedge"}
     _FUZZY_BLOCKLIST = {
+        "ок",
+        "ак",
+        "аг",
         "окно",
         "акно",
         "последнее",

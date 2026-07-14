@@ -429,6 +429,11 @@ KEYBOARD_COMMANDS = {
     "звук": "volume_mute",
 }
 
+INCOMPLETE_KEY_COMMANDS = (
+    "нажми",
+    "отправь нажми",
+)
+
 SITE_NAMES = (
     # AI
     "чатгпт",
@@ -632,6 +637,7 @@ COMMAND_HINTS = (
     *WINDOW_CONTROL_HINTS,
     *(item for values in WINDOW_STATE_COMMANDS.values() for item in values),
     *KEYBOARD_COMMANDS.keys(),
+    *INCOMPLETE_KEY_COMMANDS,
     "открой сайт",
     "закрой сайт",
     "открой папку",
@@ -666,34 +672,40 @@ def normalize_text(text: str) -> str:
 
 
 _RAW_DOMAIN_RE = re.compile(
-    r"^(https?://)?[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(/\S*)?$",
+    r"^(https?://)?[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(?::\d{1,5})?(?:[/?#]\S*)?$",
     re.IGNORECASE,
 )
-_RAW_SITE_PUNCTUATION_RE = re.compile(r"[!?;()\[\]{}\"'«»]")
 
 
 def _raw_command_text(text: str) -> str:
-    raw = text.lower().replace("ё", "е")
-    raw = _RAW_SITE_PUNCTUATION_RE.sub(" ", raw)
+    raw = text.strip()
     raw = _whitespace_re.sub(" ", raw)
-    words = [word for word in raw.split() if word not in _FILLER_WORDS]
+    words = [
+        word
+        for word in raw.split()
+        if normalize_text(word) not in _FILLER_WORDS
+    ]
     return " ".join(words).strip()
 
 
 def _raw_target_after_prefix(text: str, prefix: str) -> str:
     raw = _raw_command_text(text)
-    if raw == prefix:
+    match = re.match(
+        rf"^{re.escape(prefix)}(?:[\s,.:;!?\-]+|$)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
         return ""
-    if raw.startswith(prefix + " "):
-        return raw.removeprefix(prefix).strip()
-    return ""
+    return raw[match.end():].strip()
 
 
 def _strip_site_words_preserve_url(value: str) -> str:
-    clean = value.strip().lower().replace("ё", "е")
+    clean = value.strip()
+    normalized = clean.lower().replace("ё", "е")
     for word in ("сайт", "страницу", "страница"):
-        if clean.startswith(word + " "):
-            return clean.removeprefix(word).strip()
+        if normalized.startswith(word + " "):
+            return clean[len(word):].strip()
     return clean
 
 
@@ -810,7 +822,7 @@ def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedComm
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
 
-    raw = text.lower().replace("ё", "е")
+    raw = text
     wake_patterns = sorted(
         {_wake_phrase_pattern(phrase) for phrase in wake_phrases},
         key=len,
@@ -825,7 +837,7 @@ def extract_command_after_wake(text: str, wake_phrases: list[str]) -> ParsedComm
         if not match:
             continue
 
-        command_text = raw[match.end():].strip(" \t\r\n,.!?;:-")
+        command_text = raw[match.end():].lstrip(" \t\r\n,.!?;:-").rstrip()
         if not command_text:
             return ParsedCommand(CommandType.WAKE_ONLY)
         return parse_command_text(command_text)
@@ -909,6 +921,13 @@ def _parse_window_control(normalized: str) -> ParsedCommand | None:
 
 
 def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
+    if normalized in INCOMPLETE_KEY_COMMANDS:
+        return ParsedCommand(
+            CommandType.KEYBOARD_SHORTCUT,
+            text=normalized,
+            target="incomplete_key",
+        )
+
     if normalized in KEYBOARD_COMMANDS:
         return ParsedCommand(
             CommandType.KEYBOARD_SHORTCUT,

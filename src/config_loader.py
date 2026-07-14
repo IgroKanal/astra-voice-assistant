@@ -92,8 +92,8 @@ class Settings:
     tts_cache_enabled: bool = True
     tts_cache_dir: str = ""
     tts_cache_prewarm_enabled: bool = True
-    tts_cache_prewarm_max_new_phrases: int = 4
-    tts_cache_generation_timeout_seconds: int = 20
+    tts_cache_prewarm_max_new_phrases: int = 1
+    tts_cache_generation_timeout_seconds: int = 8
     tts_cache_prewarm_phrases: list[str] = field(
         default_factory=lambda: [
             "Астра запущена.",
@@ -427,11 +427,11 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         ),
         tts_cache_prewarm_max_new_phrases=_int_from_env(
             "TTS_CACHE_PREWARM_MAX_NEW_PHRASES",
-            4,
+            1,
         ),
         tts_cache_generation_timeout_seconds=_int_from_env(
             "TTS_CACHE_GENERATION_TIMEOUT_SECONDS",
-            20,
+            8,
         ),
         tts_cache_prewarm_phrases=_list_from_env(
             "TTS_CACHE_PREWARM_PHRASES",

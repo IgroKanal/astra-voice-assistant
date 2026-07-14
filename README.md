@@ -1,4 +1,4 @@
-# Astra Voice Assistant — v1.0 Beta
+# Astra Voice Assistant — v1.0.1 Beta
 
 Astra is a Windows-only voice assistant for PC.
 
@@ -14,7 +14,7 @@ Current beta focus:
 ## 1. Requirements
 
 - Windows 10/11
-- Python 3.10+
+- Python 3.12
 - Microphone
 - Internet for Google Web Speech STT
 - Gemini API key if LLM answers are needed
@@ -51,7 +51,7 @@ LLM_ENABLED=false
 Apply beta-safe wake settings:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\apply_v100_beta_env.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v101_beta_env.ps1
 ```
 
 ---
@@ -150,13 +150,13 @@ Remove autostart:
 powershell -ExecutionPolicy Bypass -File .\tools\uninstall_autostart.ps1
 ```
 
-Autostart is optional for v1.0 Beta.
+Autostart is optional for v1.0.1 Beta.
 
 ---
 
 ## 6. Safety model
 
-Astra v1.0 Beta intentionally does not support:
+Astra v1.0.1 Beta intentionally does not support:
 
 - arbitrary shell/cmd/powershell commands from voice;
 - shutdown/reboot/delete commands;
@@ -211,6 +211,7 @@ python tools\smoke_test_v09_parser.py
 python tools\smoke_test_v10_parser.py
 python tools\smoke_test_v11_wake_runtime.py
 python tools\smoke_test_v100_beta.py
+python tools\smoke_test_v101_beta.py
 python tools\validate_v10_config.py
 python tools\astra_doctor.py
 ```
@@ -222,6 +223,11 @@ Manual voice checklist:
 Астра
 открой YouTube
 Астра, открой YouTube
+Астер, стоп
+Астэр, стоп
+Астры, стоп
+Астра, открой https://example.com/CaseSensitive?Token=AbC
+Астра, закрой ок
 Астра, статус VPN
 Астра, переключись на Firefox
 Астра, статус интер
@@ -253,6 +259,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 ```
 
 Do not publish real `.env` or API keys.
+
+The build scripts run `tools\validate_package.py` automatically. Expected
+archives are `astra-v1.0.1-beta-review-package.zip` and
+`astra-v1.0.1-beta-release.zip` in `C:\Projects`.
 
 ---
 

@@ -189,14 +189,18 @@ _SITE_ALIASES.update({
     "chad gpt": "https://chatgpt.com",
 })
 
-_DOMAIN_RE = re.compile(r"^[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(/.*)?$", re.IGNORECASE)
+_DOMAIN_RE = re.compile(
+    r"^[a-z0-9а-яё.-]+\.[a-zа-яё]{2,}(?::\d{1,5})?(?:[/?#].*)?$",
+    re.IGNORECASE,
+)
 
 
 def _strip_site_words(value: str) -> str:
-    clean = value.strip().lower().replace("ё", "е")
+    clean = value.strip()
+    normalized = clean.lower().replace("ё", "е")
     for word in ("сайт", "страницу", "страница"):
-        if clean.startswith(word + " "):
-            return clean.removeprefix(word).strip()
+        if normalized.startswith(word + " "):
+            return clean[len(word):].strip()
     return clean
 
 
@@ -245,15 +249,15 @@ def normalize_url_or_site(value: str) -> str:
     if not clean:
         return ""
 
-    site_url = find_site_url(clean)
-    if site_url:
-        return site_url
-
-    if clean.startswith(("http://", "https://")):
+    if clean.lower().startswith(("http://", "https://")):
         return clean
 
     if _DOMAIN_RE.match(clean):
         return f"https://{clean}"
+
+    site_url = find_site_url(clean)
+    if site_url:
+        return site_url
 
     return f"https://www.google.com/search?q={quote_plus(value)}"
 

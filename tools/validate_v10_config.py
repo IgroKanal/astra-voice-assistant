@@ -13,7 +13,7 @@ from src.config_loader import load_settings
 def main() -> None:
     settings = load_settings()
 
-    print("Astra v1.0 beta config validation")
+    print("Astra v1.0.1 beta config validation")
     print(f"vpn_enabled={settings.vpn_enabled}")
     print(f"vpn_provider={settings.vpn_provider}")
     print(f"vpn_tunnel_service_name={settings.vpn_tunnel_service_name}")
@@ -45,8 +45,8 @@ def main() -> None:
     assert settings.phrase_time_limit_seconds >= 8
     assert settings.stt_pause_threshold >= 0.5
     assert settings.stt_non_speaking_duration >= 0.3
-    assert settings.tts_cache_prewarm_max_new_phrases >= 0
-    assert settings.tts_cache_generation_timeout_seconds >= 5
+    assert 0 <= settings.tts_cache_prewarm_max_new_phrases <= 1
+    assert 5 <= settings.tts_cache_generation_timeout_seconds <= 10
     assert settings.voice_runtime_mode in {"wake_only", "wake", "wake-only", "legacy"}
     assert settings.wake_listen_timeout_seconds >= 2
     assert settings.wake_phrase_time_limit_seconds >= 2
@@ -59,7 +59,7 @@ def main() -> None:
     assert "астэр" in settings.wake_phrases
     assert "астры" in settings.wake_phrases
 
-    print("v1.0 beta config validation passed")
+    print("v1.0.1 beta config validation passed")
 
 
 if __name__ == "__main__":

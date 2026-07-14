@@ -88,8 +88,11 @@ _TERMINAL_PROCESS_NAMES = {
     # automation we cannot reliably distinguish editor focus from terminal
     # focus, so voice text input + Enter are blocked there too.
     "code",
+    "code-insiders",
+    "code - insiders",
     "cursor",
     "vscodium",
+    "powershell_ise",
 }
 
 _VOLUME_KEYS = {
@@ -238,6 +241,12 @@ class KeyboardController:
         self.user32.GetWindowTextW.restype = ctypes.c_int
 
     def send_shortcut(self, name: str) -> KeyboardActionResult:
+        if name == "incomplete_key":
+            return KeyboardActionResult(
+                False,
+                "Не понял, какую клавишу нажать. Скажи: нажми Enter.",
+            )
+
         if name == "enter" and self.is_foreground_terminal_like():
             self.logger.warning(
                 "Enter blocked in terminal-like foreground process: %s",

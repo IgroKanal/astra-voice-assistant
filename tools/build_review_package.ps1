@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.0-beta-review-package.zip"
-$TempDir = Join-Path $ProjectParent "astra-v100-beta-review-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.0.1-beta-review-package.zip"
+$TempDir = Join-Path $ProjectParent "astra-v101-beta-review-clean"
 $ReviewContextDir = Join-Path $TempDir "_REVIEW_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -28,14 +28,18 @@ $robocopyArgs = @(
     ".pytest_cache",
     ".mypy_cache",
     "logs",
+    "cache",
     ".cache",
     "/XF",
     ".env",
     "*.mp3",
     "*.pyc",
     "*.backup-*.json",
-    "voice_test_log.txt",
-    "README_PATCH.md"
+    "*.bak",
+    "*.backup",
+    "*.orig",
+    "*~",
+    "voice_test_log.txt"
 )
 
 & robocopy @robocopyArgs | Out-Null
@@ -68,9 +72,9 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.0 Beta review package",
+    "# Astra v1.0.1 Beta review package",
     "",
-    "Purpose: code review package for Astra v1.0 Beta RC.",
+    "Purpose: independent code review for the v1.0.1 Bugfix & Reliability Update.",
     "",
     "Included:",
     "- project source files",
@@ -93,6 +97,7 @@ $ReadmeLines = @(
     "python tools\smoke_test_v10_parser.py",
     "python tools\smoke_test_v11_wake_runtime.py",
     "python tools\smoke_test_v100_beta.py",
+    "python tools\smoke_test_v101_beta.py",
     "python tools\validate_v10_config.py",
     "python tools\astra_doctor.py",
     "",
@@ -101,12 +106,25 @@ $ReadmeLines = @(
     "- no-wake speech ignored in voice mode",
     "- no-wake command-like text not sent to LLM-router",
     "- v0.10.8.1 beta safety gate still active",
-    "- text mode and stt-test not broken"
+    "- URL path/query preservation",
+    "- terminal typing/Enter guard",
+    "- bounded TTS prewarm attempts",
+    "- package secret/file validation"
 )
 
 Set-Content -Path (Join-Path $ReviewContextDir "README_REVIEW_PACKAGE.md") -Value $ReadmeLines -Encoding UTF8
 
 Compress-Archive -Path (Join-Path $TempDir "*") -DestinationPath $OutZip -Force
+
+$PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $PythonExe)) {
+    $PythonExe = "python"
+}
+
+& $PythonExe (Join-Path $ProjectRoot "tools\validate_package.py") $OutZip
+if ($LASTEXITCODE -ne 0) {
+    throw "Review package validation failed with exit code $LASTEXITCODE"
+}
 
 Remove-Item $TempDir -Recurse -Force
 

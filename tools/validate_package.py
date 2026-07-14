@@ -27,6 +27,16 @@ FORBIDDEN_SUFFIXES = {
     ".pyc",
 }
 
+SOURCE_ONLY_EXCLUDED_DIRECTORIES = {
+    "_review_context",
+    "_release_context",
+}
+
+SOURCE_ONLY_EXCLUDED_FILES = {
+    ".env.sanitized",
+    "astra-v1.1-last-log.txt",
+}
+
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?m)^\s*(GEMINI_API_KEY|LLM_API_KEY|OPENAI_API_KEY)\s*=\s*(.*?)\s*$"
 )
@@ -112,7 +122,49 @@ def _secret_findings(text: str) -> list[str]:
     return findings
 
 
-def validate_zip(path: str | Path) -> list[str]:
+def _source_file_is_packaged(relative_path: Path) -> bool:
+    lowered_parts = tuple(part.lower() for part in relative_path.parts)
+    if any(
+        part in FORBIDDEN_DIRECTORY_NAMES or part in SOURCE_ONLY_EXCLUDED_DIRECTORIES
+        for part in lowered_parts[:-1]
+    ):
+        return False
+    filename = lowered_parts[-1] if lowered_parts else ""
+    if filename in FORBIDDEN_EXACT_FILENAMES or filename in SOURCE_ONLY_EXCLUDED_FILES:
+        return False
+    if filename.endswith("-last-log.txt"):
+        return False
+    if any(filename.endswith(suffix) for suffix in FORBIDDEN_SUFFIXES):
+        return False
+    return not _is_backup_name(filename)
+
+
+def _source_match_findings(archive: zipfile.ZipFile, source_root: Path) -> list[str]:
+    findings: list[str] = []
+    archive_members = {
+        _normalized_member_name(info.filename).rstrip("/"): info
+        for info in archive.infolist()
+        if not info.is_dir()
+    }
+
+    for source_path in sorted(source_root.rglob("*")):
+        if not source_path.is_file():
+            continue
+        relative = source_path.relative_to(source_root)
+        if not _source_file_is_packaged(relative):
+            continue
+        member_name = relative.as_posix()
+        info = archive_members.get(member_name)
+        if info is None:
+            findings.append(f"{member_name}: missing compared with source root")
+            continue
+        if archive.read(info) != source_path.read_bytes():
+            findings.append(f"{member_name}: content differs from source root")
+
+    return findings
+
+
+def validate_zip(path: str | Path, source_root: str | Path | None = None) -> list[str]:
     archive_path = Path(path)
     problems: list[str] = []
 
@@ -159,6 +211,13 @@ def validate_zip(path: str | Path) -> list[str]:
             for finding in _secret_findings(text):
                 problems.append(f"{normalized}: {finding}")
 
+        if source_root is not None:
+            root = Path(source_root)
+            if not root.is_dir():
+                problems.append(f"source root not found: {root}")
+            else:
+                problems.extend(_source_match_findings(archive, root))
+
     if not seen_names:
         problems.append("archive is empty")
 
@@ -170,12 +229,16 @@ def build_parser() -> argparse.ArgumentParser:
         description="Validate an Astra review/release ZIP for forbidden files and secrets."
     )
     parser.add_argument("zip_path", help="Path to the ZIP archive to validate.")
+    parser.add_argument(
+        "--source-root",
+        help="Also require packaged project files to match this source tree byte-for-byte.",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    problems = validate_zip(args.zip_path)
+    problems = validate_zip(args.zip_path, source_root=args.source_root)
 
     if problems:
         print("Astra package validation failed:")

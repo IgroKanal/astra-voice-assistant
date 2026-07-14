@@ -413,7 +413,7 @@ def test_package_validator_rejects_secrets_and_forbidden_files() -> None:
         assert any("forbidden directory: cache" in item for item in problems), problems
 
 
-def test_v101_package_script_markers() -> None:
+def test_current_package_script_markers() -> None:
     review_script = (PROJECT_ROOT / "tools" / "build_review_package.ps1").read_text(
         encoding="utf-8"
     )
@@ -422,8 +422,9 @@ def test_v101_package_script_markers() -> None:
     )
 
     for script in (review_script, release_script):
-        assert "v1.0.1" in script
+        assert "v1.1" in script
         assert "validate_package.py" in script
+        assert "--source-root" in script
         assert "smoke_test_v101_beta.py" in script
         assert '".env"' in script
         assert "roboExit -gt 7" in script
@@ -440,7 +441,7 @@ def main() -> None:
     test_terminal_guard_for_typing_and_enter()
     test_tts_prewarm_caps_failed_attempts()
     test_package_validator_rejects_secrets_and_forbidden_files()
-    test_v101_package_script_markers()
+    test_current_package_script_markers()
     print("v1.0.1 beta bugfix/reliability smoke tests passed")
 
 

@@ -1,4 +1,4 @@
-# Astra Voice Assistant — v1.0.1 Beta
+# Astra Voice Assistant — v1.1 Beta
 
 Astra is a Windows-only voice assistant for PC.
 
@@ -6,6 +6,8 @@ Current beta focus:
 
 - wake-only voice runtime: Astra reacts after the wake phrase `Астра`;
 - local safe skills for apps, sites, browser tabs, folders, VPN, windows, screenshots and system info;
+- exact-match safe routines, bounded recent-action context and global media keys;
+- local YouTube search and previous-window switching;
 - Gemini/OpenAI-compatible LLM fallback only for normal questions after wake phrase;
 - beta safety gate: no command execution without wake phrase, no whitelisted `cmd.exe`, terminal text/Enter guards.
 
@@ -51,7 +53,7 @@ LLM_ENABLED=false
 Apply beta-safe wake settings:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\apply_v101_beta_env.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v11_beta_env.ps1
 ```
 
 ---
@@ -90,6 +92,24 @@ Without wake phrase, commands are ignored in voice mode:
 закрой вкладку
 включи VPN
 ```
+
+Daily workflow examples:
+
+```text
+Астра, включи рабочий режим
+Астра, найди на ютубе ambient music
+Астра, включи музыку
+локальную
+Астра, пауза
+Астра, следующий трек
+Астра, вернись обратно
+Астра, закрой его
+```
+
+`закрой его` uses only the last successful local app/site action and expires
+after `CONTEXT_TTL_SECONDS` (120 seconds by default). It does not add general
+conversation memory. Edit `config/routines.json` only with the documented
+allowlisted step types; invalid or privileged steps stop Astra at startup.
 
 ### Text mode
 
@@ -150,13 +170,13 @@ Remove autostart:
 powershell -ExecutionPolicy Bypass -File .\tools\uninstall_autostart.ps1
 ```
 
-Autostart is optional for v1.0.1 Beta.
+Autostart is optional for v1.1 Beta.
 
 ---
 
 ## 6. Safety model
 
-Astra v1.0.1 Beta intentionally does not support:
+Astra v1.1 Beta intentionally does not support:
 
 - arbitrary shell/cmd/powershell commands from voice;
 - shutdown/reboot/delete commands;
@@ -174,7 +194,10 @@ VOICE_RUNTIME_MODE=wake_only
 WAKE_ONLY_MODE=true
 ```
 
-The LLM-router cannot execute local sensitive actions such as keyboard shortcuts, typing, screenshot, VPN, window or system info actions.
+The LLM-router cannot execute local sensitive actions such as routines, keyboard
+shortcuts, typing, screenshot, VPN, window or system info actions. Routines are
+loaded from `config/routines.json` and allow only `open_app`, `open_url` and
+`open_folder` steps.
 
 ---
 
@@ -212,7 +235,9 @@ python tools\smoke_test_v10_parser.py
 python tools\smoke_test_v11_wake_runtime.py
 python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
+python tools\smoke_test_v11_daily_workflow.py
 python tools\validate_v10_config.py
+python tools\validate_v11_config.py
 python tools\astra_doctor.py
 ```
 
@@ -230,6 +255,10 @@ Manual voice checklist:
 Астра, закрой ок
 Астра, статус VPN
 Астра, переключись на Firefox
+Астра, вернись обратно
+Астра, включи рабочий режим
+Астра, следующий трек
+Астра, найди на ютубе Python 3.12
 Астра, статус интер
 Астра, стоп
 ```
@@ -261,8 +290,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 Do not publish real `.env` or API keys.
 
 The build scripts run `tools\validate_package.py` automatically. Expected
-archives are `astra-v1.0.1-beta-review-package.zip` and
-`astra-v1.0.1-beta-release.zip` in `C:\Projects`.
+archives are `astra-v1.1-beta-review-package.zip` and
+`astra-v1.1-beta-release.zip` in `C:\Projects`.
 
 ---
 

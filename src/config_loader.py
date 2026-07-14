@@ -42,6 +42,10 @@ class Settings:
     browser_preferred: str = ""
     browser_focus_missing_timeout_seconds: float = 0.35
 
+    routines_enabled: bool = True
+    routines_config_path: str = "config/routines.json"
+    context_ttl_seconds: float = 120.0
+
     voice_max_speak_chars: int = 180
     voice_short_responses: bool = True
 
@@ -352,6 +356,12 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "BROWSER_FOCUS_MISSING_TIMEOUT_SECONDS",
             0.35,
         ),
+        routines_enabled=_bool_from_env("ROUTINES_ENABLED", True),
+        routines_config_path=_str_from_env(
+            "ROUTINES_CONFIG_PATH",
+            "config/routines.json",
+        ),
+        context_ttl_seconds=_float_from_env("CONTEXT_TTL_SECONDS", 120.0),
         voice_max_speak_chars=_int_from_env("VOICE_MAX_SPEAK_CHARS", 180),
         voice_short_responses=_bool_from_env("VOICE_SHORT_RESPONSES", True),
 

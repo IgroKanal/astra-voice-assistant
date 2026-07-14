@@ -48,6 +48,7 @@ class WindowController:
         self.browser_preferred = (browser_preferred or "").strip().lower()
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
+        self._previous_hwnd = 0
         self._configure_ctypes()
 
     def _configure_ctypes(self) -> None:
@@ -55,6 +56,8 @@ class WindowController:
         self.user32.EnumWindows.restype = ctypes.c_int
         self.user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
         self.user32.IsWindowVisible.restype = ctypes.c_int
+        self.user32.IsWindow.argtypes = [ctypes.c_void_p]
+        self.user32.IsWindow.restype = ctypes.c_int
         self.user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
         self.user32.GetWindowTextLengthW.restype = ctypes.c_int
         self.user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
@@ -147,7 +150,10 @@ class WindowController:
         if info is None:
             return WindowActionResult(False, "Не нашёл такое открытое окно.")
 
+        foreground = int(self.user32.GetForegroundWindow() or 0)
         if self._activate_window(info.hwnd):
+            if foreground and foreground != info.hwnd:
+                self._previous_hwnd = foreground
             self.logger.info(
                 "Focused window: target=%r hwnd=%s pid=%s process=%s title=%r",
                 target,
@@ -159,6 +165,22 @@ class WindowController:
             return WindowActionResult(True, f"Переключаюсь на {self._short_window_label(info)}.")
 
         return WindowActionResult(False, "Не удалось переключиться на окно.")
+
+    def focus_previous_window(self) -> WindowActionResult:
+        """Return to the window recorded by the last successful focus action."""
+        previous = self._previous_hwnd
+        if not previous or not self.user32.IsWindow(ctypes.c_void_p(previous)):
+            self._previous_hwnd = 0
+            return WindowActionResult(False, "Предыдущее окно пока не запомнено.")
+
+        current = int(self.user32.GetForegroundWindow() or 0)
+        if not self._activate_window(previous):
+            return WindowActionResult(False, "Не удалось вернуться к предыдущему окну.")
+
+        if current and current != previous:
+            self._previous_hwnd = current
+        self.logger.info("Focused previous window: hwnd=%s", previous)
+        return WindowActionResult(True, "Возвращаю предыдущее окно.")
 
     def active_window(self) -> WindowInfo | None:
         hwnd = self.user32.GetForegroundWindow()

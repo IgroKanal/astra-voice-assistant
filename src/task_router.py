@@ -22,6 +22,7 @@ class ActionType(str, Enum):
     VPN_CONTROL = "vpn_control"
     WINDOW_CONTROL = "window_control"
     VOICE_FEEDBACK = "voice_feedback"
+    ROUTINE = "routine"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -158,6 +159,7 @@ _SITE_ALIASES = {
     "kinopoisk": "https://www.kinopoisk.ru",
     "кинопоиск": "https://www.kinopoisk.ru",
     "яндекс музыка": "https://music.yandex.ru",
+    "яндекс музыку": "https://music.yandex.ru",
     "music yandex": "https://music.yandex.ru",
     "hh": "https://hh.ru",
     "headhunter": "https://hh.ru",
@@ -267,6 +269,11 @@ def google_search_url(query: str) -> str:
     return f"https://www.google.com/search?q={quote_plus(query.strip())}"
 
 
+def youtube_search_url(query: str) -> str:
+    """Returns a browser-safe YouTube search URL without using a shell."""
+    return f"https://www.youtube.com/results?search_query={quote_plus(query.strip())}"
+
+
 def short_confirmation(action: AssistantAction) -> str:
     """Короткие ответы уменьшают задержку TTS."""
     if action.type == ActionType.OPEN_APP:
@@ -287,6 +294,8 @@ def short_confirmation(action: AssistantAction) -> str:
         return "Скриншот."
     if action.type == ActionType.SYSTEM_INFO:
         return "Сейчас скажу."
+    if action.type == ActionType.ROUTINE:
+        return "Запускаю режим."
     if action.type == ActionType.HELP:
         return "Показываю команды."
     if action.type == ActionType.GET_TIME:

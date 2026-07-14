@@ -9,6 +9,7 @@ import time
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from src.ai_client import AIClient
@@ -17,7 +18,9 @@ from src.command_parser import (
     CommandType,
     ParsedCommand,
     AMBIGUOUS_CHAT_TARGET,
+    AMBIGUOUS_MUSIC_TARGET,
     MIXED_COMMAND_TARGET,
+    UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
     UNSUPPORTED_OPEN_TARGET,
     extract_command_after_wake,
@@ -28,6 +31,7 @@ from src.command_parser import (
 from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config, load_settings
 from src.folder_controller import FolderController
 from src.keyboard_controller import KeyboardController
+from src.routine_controller import RoutineConfigError, RoutineController, RoutineDefinition
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
@@ -38,6 +42,7 @@ from src.task_router import (
     find_site_url,
     google_search_url,
     normalize_url_or_site,
+    youtube_search_url,
 )
 from src.windows_app_manager import WindowsAppManager
 
@@ -55,6 +60,7 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.VPN_CONTROL,
     CommandType.WINDOW_CONTROL,
     CommandType.VOICE_FEEDBACK,
+    CommandType.ROUTINE,
     CommandType.EXIT,
 }
 
@@ -72,6 +78,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.VPN_CONTROL,
     ActionType.WINDOW_CONTROL,
     ActionType.VOICE_FEEDBACK,
+    ActionType.ROUTINE,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
@@ -85,6 +92,9 @@ class TurnState:
     last_assistant_response: str = ""
     pending_kind: str = ""
     pending_created_at: float = 0.0
+    last_context_kind: str = ""
+    last_context_target: str = ""
+    last_context_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -104,6 +114,7 @@ class TurnContext:
     allow_conversation_without_wake: bool
     respond_to_unknown: bool
     state: TurnState
+    routines: RoutineController | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -194,6 +205,8 @@ def score_stt_alternative(
         score += 75
     if parsed.type == CommandType.VOICE_FEEDBACK:
         score += 75
+    if parsed.type == CommandType.ROUTINE:
+        score += 90
 
     # Мягкий бонус за внятные латинские технические названия.
     for token in ("vs code", "vscode", "youtube", "chatgpt", "telegram", "firefox", "vpn", "впн"):
@@ -264,6 +277,93 @@ def pending_is_active(state: TurnState) -> bool:
     return time.monotonic() - state.pending_created_at <= _PENDING_TTL_SECONDS
 
 
+def remember_context(ctx: TurnContext, kind: str, target: str) -> None:
+    clean_target = target.strip()
+    if not kind or not clean_target:
+        return
+    ctx.state.last_context_kind = kind
+    ctx.state.last_context_target = clean_target
+    ctx.state.last_context_at = time.monotonic()
+    ctx.logger.info("context_saved kind=%s target=%r", kind, clean_target)
+
+
+def clear_context(state: TurnState) -> None:
+    state.last_context_kind = ""
+    state.last_context_target = ""
+    state.last_context_at = 0.0
+
+
+def context_is_active(ctx: TurnContext) -> bool:
+    if not ctx.state.last_context_kind or not ctx.state.last_context_target:
+        return False
+    ttl = max(0.0, ctx.settings.context_ttl_seconds)
+    if ttl <= 0 or time.monotonic() - ctx.state.last_context_at > ttl:
+        clear_context(ctx.state)
+        return False
+    return True
+
+
+def resolve_context_reference(parsed: ParsedCommand, ctx: TurnContext) -> ParsedCommand:
+    """Resolve only narrow pronouns against the last successful local action."""
+    pronouns = {"его", "ее", "её", "это", "последнее", "последний"}
+
+    if parsed.type == CommandType.CLOSE_APP and normalize_text(parsed.target) in pronouns:
+        if not context_is_active(ctx):
+            return ParsedCommand(
+                CommandType.CLOSE_APP,
+                text=parsed.text,
+                target=UNRESOLVED_CONTEXT_TARGET,
+            )
+        if ctx.state.last_context_kind == "app":
+            return ParsedCommand(
+                CommandType.CLOSE_APP,
+                text=parsed.text,
+                target=ctx.state.last_context_target,
+            )
+        if ctx.state.last_context_kind == "site":
+            return ParsedCommand(
+                CommandType.KEYBOARD_SHORTCUT,
+                text=parsed.text,
+                target="close_tab",
+            )
+        return ParsedCommand(
+            CommandType.CLOSE_APP,
+            text=parsed.text,
+            target=UNRESOLVED_CONTEXT_TARGET,
+        )
+
+    if parsed.type == CommandType.WINDOW_CONTROL and parsed.target.startswith("focus:"):
+        focus_target = normalize_text(parsed.target.removeprefix("focus:"))
+        if focus_target not in pronouns:
+            return parsed
+        if not context_is_active(ctx):
+            return ParsedCommand(
+                CommandType.WINDOW_CONTROL,
+                text=parsed.text,
+                target=f"focus:{UNRESOLVED_CONTEXT_TARGET}",
+            )
+        targets_by_kind = {
+            "app": ctx.state.last_context_target,
+            "site": "браузер",
+            "folder": "проводник",
+            "window": ctx.state.last_context_target,
+        }
+        target = targets_by_kind.get(ctx.state.last_context_kind, "")
+        if target:
+            return ParsedCommand(
+                CommandType.WINDOW_CONTROL,
+                text=parsed.text,
+                target=f"focus:{target}",
+            )
+        return ParsedCommand(
+            CommandType.WINDOW_CONTROL,
+            text=parsed.text,
+            target=f"focus:{UNRESOLVED_CONTEXT_TARGET}",
+        )
+
+    return parsed
+
+
 def _clean_follow_up_target(raw_text: str) -> str:
     value = normalize_text(raw_text)
     for prefix in ("на ", "no ", "в ", "к ", "ко "):
@@ -324,6 +424,7 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
     if direct.type in _DIRECT_COMMAND_TYPES and direct.type != CommandType.VOICE_FEEDBACK:
         if direct.target and direct.target not in {
             AMBIGUOUS_CHAT_TARGET,
+            AMBIGUOUS_MUSIC_TARGET,
             MIXED_COMMAND_TARGET,
             UNSUPPORTED_OPEN_TARGET,
             UNSUPPORTED_CLOSE_TARGET,
@@ -342,6 +443,14 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
             return parsed_to_action(parsed, source="pending_followup")
         if any(token in target for token in ("telegram", "телеграм", "телега", "тг")):
             parsed = parse_command_text("открой телеграм")
+            return parsed_to_action(parsed, source="pending_followup")
+
+    if kind == "ambiguous_music":
+        if any(token in target for token in ("яндекс", "yandex")):
+            parsed = parse_command_text("открой яндекс музыку")
+            return parsed_to_action(parsed, source="pending_followup")
+        if target in {"локальную", "локальная", "скачанную", "скачанные", "файлы"}:
+            parsed = parse_command_text("открой музыку")
             return parsed_to_action(parsed, source="pending_followup")
 
     if kind == "window_focus":
@@ -377,6 +486,15 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
             source="pending_followup",
         )
 
+    if kind == "youtube_search":
+        return AssistantAction(
+            type=ActionType.WEB_SEARCH,
+            text=raw_text,
+            query=f"youtube:{target}",
+            confidence=1.0,
+            source="pending_followup",
+        )
+
     return None
 
 
@@ -396,6 +514,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.VPN_CONTROL: ActionType.VPN_CONTROL,
         CommandType.WINDOW_CONTROL: ActionType.WINDOW_CONTROL,
         CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
+        CommandType.ROUTINE: ActionType.ROUTINE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -564,7 +683,8 @@ def build_help_text(topic: str = "general") -> str:
     help_by_topic = {
         "general": (
             "Я умею открывать сайты, приложения и папки, управлять вкладками, "
-            "VPN, окнами, громкостью и рабочим столом. "
+            "VPN, окнами, музыкой, громкостью и рабочим столом. "
+            "Также доступен рабочий режим. "
             "Скажи: команды браузера, команды VPN или команды окон."
         ),
         "browser": (
@@ -591,6 +711,68 @@ def build_help_text(topic: str = "general") -> str:
 
     return help_by_topic.get(topic, help_by_topic["general"])
 
+
+def _open_web_url(url: str, logger: logging.Logger) -> bool:
+    try:
+        return bool(webbrowser.open(url))
+    except Exception:
+        logger.exception("Browser open failed: url=%r", url)
+        return False
+
+
+def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int, int]:
+    """Execute only the controller-validated local steps in a routine."""
+    succeeded = 0
+    for step in routine.steps:
+        ok = False
+        detail = ""
+
+        if step.action == "open_app":
+            app = ctx.app_manager.find_app(step.target)
+            if app is None:
+                detail = "application is not in whitelist"
+            else:
+                focused = ctx.windows.focus_target(app.name)
+                if focused.ok:
+                    ok = True
+                    detail = "focused existing window"
+                else:
+                    result = ctx.app_manager.open_app(step.target)
+                    ok = result.ok
+                    detail = result.message
+                if ok:
+                    remember_context(ctx, "app", app.name)
+
+        elif step.action == "open_url":
+            url = normalize_url_or_site(step.target)
+            if url:
+                ok = _open_web_url(url, ctx.logger)
+                detail = url if ok else "browser rejected URL"
+                if ok:
+                    remember_context(ctx, "site", url)
+            else:
+                detail = "URL is empty"
+
+        elif step.action == "open_folder":
+            result = ctx.folders.open_folder(step.target)
+            ok = result.ok
+            detail = result.message
+            if ok:
+                remember_context(ctx, "folder", step.target)
+
+        if ok:
+            succeeded += 1
+        ctx.logger.info(
+            "decision_source=routine routine=%s step=%s target=%r ok=%s detail=%r",
+            routine.name,
+            step.action,
+            step.target,
+            ok,
+            detail,
+        )
+
+    return succeeded, len(routine.steps)
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -613,10 +795,17 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             set_pending(ctx.state, "ambiguous_chat")
             ctx.respond("Какой чат открыть: ChatGPT или Telegram?")
             return True
+        if action.target == AMBIGUOUS_MUSIC_TARGET:
+            set_pending(ctx.state, "ambiguous_music")
+            ctx.respond("Какую музыку открыть: локальную или Яндекс Музыку?")
+            return True
         if action.target == MIXED_COMMAND_TARGET:
             ctx.respond("Смешанные команды отключены.")
             return True
+        app = ctx.app_manager.find_app(action.target)
         result = ctx.app_manager.open_app(action.target)
+        if result.ok and app is not None:
+            remember_context(ctx, "app", app.name)
         ctx.respond(result.message)
         return True
 
@@ -628,10 +817,15 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         if action.target == UNSUPPORTED_CLOSE_TARGET:
             ctx.respond("Закрытие окна отключено.")
             return True
+        if action.target == UNRESOLVED_CONTEXT_TARGET:
+            ctx.respond("Не помню, что нужно закрыть. Назови приложение или вкладку.")
+            return True
         if action.target == MIXED_COMMAND_TARGET:
             ctx.respond("Смешанные команды отключены.")
             return True
         result = ctx.app_manager.close_app(action.target)
+        if result.ok and context_is_active(ctx) and ctx.state.last_context_kind == "app":
+            clear_context(ctx.state)
         ctx.respond(result.message)
         return True
 
@@ -641,12 +835,17 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             set_pending(ctx.state, "open_url")
             ctx.respond("Какой сайт открыть?")
             return True
-        webbrowser.open(url)
-        ctx.respond("Открываю сайт.")
+        if _open_web_url(url, ctx.logger):
+            remember_context(ctx, "site", url)
+            ctx.respond("Открываю сайт.")
+        else:
+            ctx.respond("Не удалось открыть сайт.")
         return True
 
     if action.type == ActionType.OPEN_FOLDER:
         result = ctx.folders.open_folder(action.target or action.query)
+        if result.ok:
+            remember_context(ctx, "folder", action.target or action.query)
         ctx.respond(result.message)
         return True
 
@@ -656,8 +855,20 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             set_pending(ctx.state, "search")
             ctx.respond("Что найти?")
             return True
-        webbrowser.open(google_search_url(query))
-        ctx.respond("Ищу.")
+        if query.startswith("youtube:"):
+            search_query = query.removeprefix("youtube:").strip()
+            if not search_query:
+                set_pending(ctx.state, "youtube_search")
+                ctx.respond("Что найти на YouTube?")
+                return True
+            url = youtube_search_url(search_query)
+        else:
+            url = google_search_url(query)
+        if _open_web_url(url, ctx.logger):
+            remember_context(ctx, "site", url)
+            ctx.respond("Ищу.")
+        else:
+            ctx.respond("Не удалось открыть поиск.")
         return True
 
     if action.type == ActionType.KEYBOARD_SHORTCUT:
@@ -722,15 +933,40 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             result = ctx.windows.maximize_active_window()
         elif window_action == "show_desktop":
             result = ctx.windows.show_desktop()
+        elif window_action == "previous":
+            result = ctx.windows.focus_previous_window()
         elif window_action == "focus:":
             set_pending(ctx.state, "window_focus")
             ctx.respond("На какое окно переключиться?")
             return True
         elif window_action.startswith("focus:"):
-            result = ctx.windows.focus_target(window_action.removeprefix("focus:"))
+            focus_target = window_action.removeprefix("focus:")
+            if focus_target == UNRESOLVED_CONTEXT_TARGET:
+                ctx.respond("Не помню предыдущее приложение. Назови окно явно.")
+                return True
+            result = ctx.windows.focus_target(focus_target)
+            if result.ok:
+                remember_context(ctx, "window", focus_target)
         else:
             result = ctx.windows.describe_open_windows()
         ctx.respond(result.message)
+        return True
+
+    if action.type == ActionType.ROUTINE:
+        if ctx.routines is None or not ctx.routines.enabled:
+            ctx.respond("Режимы отключены в настройках.")
+            return True
+        routine = ctx.routines.resolve(action.target or action.query)
+        if routine is None:
+            ctx.respond("Не знаю такой режим.")
+            return True
+        succeeded, total = _execute_routine(routine, ctx)
+        if succeeded == total:
+            ctx.respond(routine.response)
+        elif succeeded:
+            ctx.respond("Режим выполнен частично. Подробности смотри в логах.")
+        else:
+            ctx.respond("Не удалось запустить режим. Подробности смотри в логах.")
         return True
 
     if action.type == ActionType.VOICE_FEEDBACK:
@@ -840,6 +1076,8 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         raw_text = follow_up
         had_wake = True
 
+    parsed = resolve_context_reference(parsed, ctx)
+
     action = resolve_action(
         raw_text=raw_text,
         parsed=parsed,
@@ -909,6 +1147,7 @@ def run_text_mode(
     windows: WindowController,
     ai_client: AIClient,
     logger: logging.Logger,
+    routines: RoutineController | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -959,6 +1198,7 @@ def run_text_mode(
         allow_conversation_without_wake=settings.allow_text_conversation_without_wake,
         respond_to_unknown=True,
         state=state,
+        routines=routines,
     )
 
     while True:
@@ -1024,6 +1264,7 @@ def run_voice_mode(
     windows: WindowController,
     ai_client: AIClient,
     logger: logging.Logger,
+    routines: RoutineController | None = None,
 ) -> None:
     voice = VoiceIO(settings=settings, logger=logger)
     voice.set_alternative_selector(
@@ -1072,6 +1313,7 @@ def run_voice_mode(
         allow_conversation_without_wake=settings.allow_voice_conversation_without_wake,
         respond_to_unknown=False,
         state=state,
+        routines=routines,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -1210,6 +1452,20 @@ def main() -> int:
         print(f"Ошибка конфигурации: {exc}")
         return 1
 
+    routine_path = Path(settings.routines_config_path)
+    if not routine_path.is_absolute():
+        routine_path = Path(__file__).resolve().parent / routine_path
+    try:
+        routines = RoutineController(
+            config_path=routine_path,
+            enabled=settings.routines_enabled,
+            logger=logger,
+        )
+    except RoutineConfigError as exc:
+        logger.error("Ошибка конфигурации routines: %s", exc)
+        print(f"Ошибка конфигурации routines: {exc}")
+        return 1
+
     app_manager = WindowsAppManager(
         apps=apps,
         logger=logger,
@@ -1233,9 +1489,15 @@ def main() -> int:
         if args.stt_test:
             run_stt_test_mode(settings, apps, app_manager, logger)
         elif args.text:
-            run_text_mode(settings, apps, app_manager, keyboard, folders, system, vpn, windows, ai_client, logger)
+            run_text_mode(
+                settings, apps, app_manager, keyboard, folders, system, vpn,
+                windows, ai_client, logger, routines,
+            )
         else:
-            run_voice_mode(settings, apps, app_manager, keyboard, folders, system, vpn, windows, ai_client, logger)
+            run_voice_mode(
+                settings, apps, app_manager, keyboard, folders, system, vpn,
+                windows, ai_client, logger, routines,
+            )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
         logger.info("Остановка по Ctrl+C")

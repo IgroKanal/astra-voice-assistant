@@ -60,6 +60,7 @@ class FolderController:
             "картинки": self.home / "Pictures",
             "pictures": self.home / "Pictures",
             "музыка": self.home / "Music",
+            "музыку": self.home / "Music",
             "music": self.home / "Music",
             "видео": self.home / "Videos",
             "videos": self.home / "Videos",

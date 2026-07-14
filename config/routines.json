@@ -1,0 +1,22 @@
+{
+  "routines": {
+    "work": {
+      "aliases": [
+        "рабочий режим",
+        "режим работы",
+        "начни работу"
+      ],
+      "response": "Рабочий режим готов.",
+      "steps": [
+        {
+          "action": "open_url",
+          "target": "чат gpt"
+        },
+        {
+          "action": "open_app",
+          "target": "telegram"
+        }
+      ]
+    }
+  }
+}

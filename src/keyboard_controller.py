@@ -101,6 +101,13 @@ _VOLUME_KEYS = {
     "volume_up": 0xAF,
 }
 
+_MEDIA_KEYS = {
+    "media_next": 0xB0,
+    "media_previous": 0xB1,
+    "media_stop": 0xB2,
+    "media_play_pause": 0xB3,
+}
+
 _SHORTCUT_MESSAGES = {
     "close_tab": "Закрываю вкладку.",
     "new_tab": "Открываю новую вкладку.",
@@ -134,6 +141,10 @@ _SHORTCUT_MESSAGES = {
     "volume_up": "Громче.",
     "volume_down": "Тише.",
     "volume_mute": "Переключаю звук.",
+    "media_play_pause": "Переключаю паузу.",
+    "media_next": "Следующий трек.",
+    "media_previous": "Предыдущий трек.",
+    "media_stop": "Останавливаю музыку.",
 }
 
 _TITLE_FALLBACK_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -262,6 +273,12 @@ class KeyboardController:
             if ok:
                 return KeyboardActionResult(True, _SHORTCUT_MESSAGES.get(name, "Готово."))
             return KeyboardActionResult(False, "Не удалось изменить громкость.")
+
+        if name in _MEDIA_KEYS:
+            ok = self._press_virtual_key(_MEDIA_KEYS[name])
+            if ok:
+                return KeyboardActionResult(True, _SHORTCUT_MESSAGES[name])
+            return KeyboardActionResult(False, "Не удалось управлять воспроизведением.")
 
         combo = _SHORTCUTS.get(name)
         if combo is None:

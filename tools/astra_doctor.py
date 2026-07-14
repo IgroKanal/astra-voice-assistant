@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config_loader import ConfigError, load_apps_config, load_settings
+from src.routine_controller import RoutineConfigError, RoutineController
 
 
 REQUIRED_FILES = (
@@ -19,12 +20,14 @@ REQUIRED_FILES = (
     ".env.example",
     "requirements.txt",
     "config/apps.json",
+    "config/routines.json",
     "src/command_parser.py",
     "src/audio_io.py",
     "src/config_loader.py",
     "src/task_router.py",
     "src/vpn_controller.py",
     "src/window_controller.py",
+    "src/routine_controller.py",
     "start_astra_debug.bat",
     "start_astra_text.bat",
     "start_astra_hidden.vbs",
@@ -33,16 +36,20 @@ REQUIRED_FILES = (
     "tools/apply_v110_wake_env.ps1",
     "tools/apply_v100_beta_env.ps1",
     "tools/apply_v101_beta_env.ps1",
+    "tools/apply_v11_beta_env.ps1",
     "tools/build_beta_package.ps1",
     "tools/build_review_package.ps1",
     "tools/smoke_test_v100_beta.py",
     "tools/smoke_test_v101_beta.py",
+    "tools/smoke_test_v11_daily_workflow.py",
+    "tools/validate_v11_config.py",
     "tools/validate_package.py",
     "BETA_CHECKLIST.md",
     "KNOWN_LIMITATIONS.md",
     "README_PATCH.md",
     "RELEASE_NOTES_v1.0-beta.md",
     "RELEASE_NOTES_v1.0.1.md",
+    "RELEASE_NOTES_v1.1.md",
 )
 
 
@@ -116,6 +123,8 @@ def check_settings() -> int:
     print(f"wake_response_text={settings.wake_response_text}")
     print(f"wake_listen_timeout_seconds={settings.wake_listen_timeout_seconds}")
     print(f"command_listen_timeout_seconds={settings.command_listen_timeout_seconds}")
+    print(f"routines_enabled={settings.routines_enabled}")
+    print(f"context_ttl_seconds={settings.context_ttl_seconds}")
 
     if settings.llm_enabled and not settings.llm_api_key:
         warn("LLM is enabled but API key is not configured")
@@ -139,11 +148,11 @@ def check_settings() -> int:
         problems += 1
 
     if settings.tts_cache_generation_timeout_seconds > 10:
-        fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at most 10 for v1.0.1")
+        fail("TTS_CACHE_GENERATION_TIMEOUT_SECONDS must be at most 10")
         problems += 1
 
     if settings.tts_cache_prewarm_max_new_phrases > 1:
-        fail("TTS_CACHE_PREWARM_MAX_NEW_PHRASES must be at most 1 for v1.0.1")
+        fail("TTS_CACHE_PREWARM_MAX_NEW_PHRASES must be at most 1")
         problems += 1
 
     if settings.voice_runtime_mode not in {"wake_only", "wake", "wake-only", "legacy"}:
@@ -160,6 +169,21 @@ def check_settings() -> int:
     if settings.command_listen_timeout_seconds < 5:
         fail("COMMAND_LISTEN_TIMEOUT_SECONDS must be at least 5")
         problems += 1
+
+    if settings.context_ttl_seconds < 5 or settings.context_ttl_seconds > 300:
+        fail("CONTEXT_TTL_SECONDS must be between 5 and 300")
+        problems += 1
+
+    if settings.routines_enabled:
+        routine_path = Path(settings.routines_config_path)
+        if not routine_path.is_absolute():
+            routine_path = PROJECT_ROOT / routine_path
+        try:
+            routines = RoutineController(routine_path)
+            ok(f"safe routines loaded: {routines.routine_count()}")
+        except RoutineConfigError as exc:
+            fail(f"routines config invalid: {exc}")
+            problems += 1
 
     return problems
 

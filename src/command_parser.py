@@ -22,6 +22,7 @@ class CommandType(str, Enum):
     VPN_CONTROL = "vpn_control"
     WINDOW_CONTROL = "window_control"
     VOICE_FEEDBACK = "voice_feedback"
+    ROUTINE = "routine"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -43,11 +44,18 @@ UNSUPPORTED_CLOSE_TARGET = "__unsupported_close__"
 UNSUPPORTED_OPEN_TARGET = "__unsupported_open__"
 AMBIGUOUS_CHAT_TARGET = "__ambiguous_chat__"
 MIXED_COMMAND_TARGET = "__mixed_command__"
+AMBIGUOUS_MUSIC_TARGET = "__ambiguous_music__"
+UNRESOLVED_CONTEXT_TARGET = "__context_unavailable__"
 
 
 OPEN_PREFIXES = (
     "открой",
     "открыть",
+    # Observed STT substitutions for the imperative "открой". Keeping them
+    # in the local parser prevents an action-like phrase from reaching the
+    # conversation LLM and producing a false success claim.
+    "откроется",
+    "откроеться",
     "запусти",
     "запустить",
     "включи",
@@ -260,6 +268,12 @@ WINDOW_STATE_COMMANDS = {
         "сверни все окна",
         "рабочий стол",
     ),
+    "previous": (
+        "вернись обратно",
+        "переключись обратно",
+        "предыдущее окно",
+        "верни предыдущее окно",
+    ),
 }
 
 WINDOW_FOCUS_PREFIXES = (
@@ -276,6 +290,8 @@ WINDOW_FOCUS_PREFIXES = (
     "активируй окно",
     "активировать окно",
     "покажи окно",
+    "вернись на",
+    "вернись в",
 )
 
 WINDOW_CONTROL_HINTS = (
@@ -427,6 +443,19 @@ KEYBOARD_COMMANDS = {
     "уменьши громкость": "volume_down",
     "переключи звук": "volume_mute",
     "звук": "volume_mute",
+    # Global media keys: they work with the active media session and do not
+    # type text or execute a process/shell command.
+    "пауза": "media_play_pause",
+    "поставь на паузу": "media_play_pause",
+    "музыку на паузу": "media_play_pause",
+    "продолжи музыку": "media_play_pause",
+    "возобнови музыку": "media_play_pause",
+    "следующий трек": "media_next",
+    "следующая песня": "media_next",
+    "переключи трек": "media_next",
+    "предыдущий трек": "media_previous",
+    "предыдущая песня": "media_previous",
+    "останови музыку": "media_stop",
 }
 
 INCOMPLETE_KEY_COMMANDS = (
@@ -564,6 +593,7 @@ SITE_NAMES = (
     "кинопоиск",
     "kinopoisk",
     "яндекс музыка",
+    "яндекс музыку",
     "music yandex",
     "hh",
     "headhunter",
@@ -607,6 +637,7 @@ FOLDER_NAMES = (
     "картинки",
     "pictures",
     "музыка",
+    "музыку",
     "music",
     "видео",
     "videos",
@@ -651,6 +682,11 @@ COMMAND_HINTS = (
     "закройте",
     "закроет",
     "закрывайте",
+    "рабочий режим",
+    "режим работы",
+    "начни работу",
+    "найди на ютубе",
+    "поищи на ютубе",
 )
 
 _FILLER_WORDS = (
@@ -920,6 +956,55 @@ def _parse_window_control(normalized: str) -> ParsedCommand | None:
     return None
 
 
+def _parse_routine(normalized: str) -> ParsedCommand | None:
+    """Recognize an explicit routine request; config aliases stay exact-match."""
+    direct_aliases = {
+        "рабочий режим": "рабочий режим",
+        "режим работы": "рабочий режим",
+        "начни работу": "рабочий режим",
+    }
+    if normalized in direct_aliases:
+        return ParsedCommand(
+            CommandType.ROUTINE,
+            text=normalized,
+            target=direct_aliases[normalized],
+        )
+
+    for prefix in ("включи", "запусти"):
+        marker = prefix + " "
+        if normalized.startswith(marker):
+            target = normalized.removeprefix(marker).strip()
+            if target.endswith(" режим") or target.startswith("режим "):
+                return ParsedCommand(CommandType.ROUTINE, text=normalized, target=target)
+
+    return None
+
+
+def _parse_youtube_search(text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = (
+        "найди на ютубе",
+        "найди в ютубе",
+        "поищи на ютубе",
+        "поищи в ютубе",
+        "поиск на ютубе",
+        "найди на youtube",
+        "поищи на youtube",
+    )
+    for prefix in prefixes:
+        if normalized == prefix:
+            return ParsedCommand(CommandType.WEB_SEARCH, text=normalized, target="youtube:")
+        if normalized.startswith(prefix + " "):
+            query = _raw_target_after_prefix(text, prefix)
+            if not query:
+                query = normalized.removeprefix(prefix).strip()
+            return ParsedCommand(
+                CommandType.WEB_SEARCH,
+                text=normalized,
+                target=f"youtube:{query}",
+            )
+    return None
+
+
 def _parse_keyboard_shortcut(normalized: str) -> ParsedCommand | None:
     if normalized in INCOMPLETE_KEY_COMMANDS:
         return ParsedCommand(
@@ -1111,6 +1196,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in HELP_COMMANDS:
         return ParsedCommand(CommandType.HELP, text=normalized)
 
+    routine = _parse_routine(normalized)
+    if routine is not None:
+        return routine
+
     window_control = _parse_window_control(normalized)
     if window_control is not None:
         return window_control
@@ -1133,6 +1222,13 @@ def parse_command_text(text: str) -> ParsedCommand:
     # потому что без чтения реального состояния это может дать обратный эффект.
     if normalized in {"включи звук", "выключи звук", "без звука"}:
         return ParsedCommand(CommandType.ASK_LLM, text=normalized)
+
+    if normalized in {"включи музыку", "запусти музыку"}:
+        return ParsedCommand(
+            CommandType.OPEN_APP,
+            text=normalized,
+            target=AMBIGUOUS_MUSIC_TARGET,
+        )
 
     if normalized in {"открой чат", "открой ча", "открыть чат", "запусти чат"}:
         return ParsedCommand(CommandType.OPEN_APP, text=normalized, target=AMBIGUOUS_CHAT_TARGET)
@@ -1220,6 +1316,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in DATE_COMMANDS:
         return ParsedCommand(CommandType.GET_DATE, text=normalized)
+
+    youtube_search = _parse_youtube_search(text, normalized)
+    if youtube_search is not None:
+        return youtube_search
 
     for prefix in SEARCH_PREFIXES:
         if normalized == prefix:

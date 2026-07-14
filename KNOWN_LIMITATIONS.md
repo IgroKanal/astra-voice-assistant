@@ -1,4 +1,4 @@
-# Astra v1.0.1 Beta known limitations
+# Astra v1.1 Beta known limitations
 
 This beta is intentionally conservative.
 
@@ -13,7 +13,7 @@ This beta is intentionally conservative.
 ## TTS
 
 - First-time cache generation for one prewarm phrase can still take several seconds.
-- v1.0.1 limits synchronous prewarm to one attempted generation with an 8-second timeout by default.
+- The current beta limits synchronous prewarm to one attempted generation with an 8-second timeout by default.
 - Run beta environment scripts and warm up common phrases before hidden/autostart testing.
 
 ## Safety
@@ -28,8 +28,18 @@ This beta is intentionally conservative.
 - Targeted typing into a named app is disabled.
 - Typing only works in the currently active safe foreground context.
 - Terminal-like foreground windows block text input and Enter.
+- Context is deliberately short-lived and only remembers the last successful
+  app, site, folder or explicit window focus. It is not conversational memory.
+- `закрой его` can close a whitelisted app with the existing `taskkill /F`
+  behavior, so unsaved data can still be lost.
+- Safe routines cannot type, press keys, control VPN/windows, call the LLM or
+  run shell commands. They stop at eight allowlisted open steps.
+- Media controls use global Windows media keys; the active media application
+  decides whether it handles them.
+- `вернись обратно` is available only after Astra successfully focused another
+  window during the current process lifetime.
 
-## Not included in v1.0.1 Beta
+## Not included in v1.1 Beta
 
 - GUI/tray app.
 - Real Windows service.

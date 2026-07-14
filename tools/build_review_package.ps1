@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.0.1-beta-review-package.zip"
-$TempDir = Join-Path $ProjectParent "astra-v101-beta-review-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.1-beta-review-package.zip"
+$TempDir = Join-Path $ProjectParent "astra-v11-beta-review-clean"
 $ReviewContextDir = Join-Path $TempDir "_REVIEW_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -30,8 +30,12 @@ $robocopyArgs = @(
     "logs",
     "cache",
     ".cache",
+    "_REVIEW_CONTEXT",
+    "_RELEASE_CONTEXT",
     "/XF",
     ".env",
+    ".env.sanitized",
+    "*-last-log.txt",
     "*.mp3",
     "*.pyc",
     "*.backup-*.json",
@@ -72,9 +76,9 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.0.1 Beta review package",
+    "# Astra v1.1 Beta review package",
     "",
-    "Purpose: independent code review for the v1.0.1 Bugfix & Reliability Update.",
+    "Purpose: independent code review for the v1.1 Daily Workflow & Context Update.",
     "",
     "Included:",
     "- project source files",
@@ -98,7 +102,9 @@ $ReadmeLines = @(
     "python tools\smoke_test_v11_wake_runtime.py",
     "python tools\smoke_test_v100_beta.py",
     "python tools\smoke_test_v101_beta.py",
+    "python tools\smoke_test_v11_daily_workflow.py",
     "python tools\validate_v10_config.py",
+    "python tools\validate_v11_config.py",
     "python tools\astra_doctor.py",
     "",
     "Review focus:",
@@ -106,7 +112,10 @@ $ReadmeLines = @(
     "- no-wake speech ignored in voice mode",
     "- no-wake command-like text not sent to LLM-router",
     "- v0.10.8.1 beta safety gate still active",
-    "- URL path/query preservation",
+    "- safe routines allow only open_app/open_url/open_folder",
+    "- bounded context cannot bypass wake or LLM safety gates",
+    "- global media keys and previous-window behavior",
+    "- local YouTube search query preservation",
     "- terminal typing/Enter guard",
     "- bounded TTS prewarm attempts",
     "- package secret/file validation"
@@ -121,7 +130,7 @@ if (-not (Test-Path $PythonExe)) {
     $PythonExe = "python"
 }
 
-& $PythonExe (Join-Path $ProjectRoot "tools\validate_package.py") $OutZip
+& $PythonExe (Join-Path $ProjectRoot "tools\validate_package.py") $OutZip --source-root $ProjectRoot
 if ($LASTEXITCODE -ne 0) {
     throw "Review package validation failed with exit code $LASTEXITCODE"
 }

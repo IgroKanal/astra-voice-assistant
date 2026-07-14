@@ -1,4 +1,4 @@
-# Astra v1.0.1 Beta checklist
+# Astra v1.1 Beta checklist
 
 ## Automated checks
 
@@ -9,7 +9,9 @@ python tools\smoke_test_v10_parser.py
 python tools\smoke_test_v11_wake_runtime.py
 python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
+python tools\smoke_test_v11_daily_workflow.py
 python tools\validate_v10_config.py
+python tools\validate_v11_config.py
 python tools\astra_doctor.py
 ```
 
@@ -96,6 +98,36 @@ Check:
 
 Expected: local parser actions, not LLM-router.
 
+## Daily workflow and bounded context
+
+Check:
+
+```text
+включи рабочий режим
+следующий трек
+вернись обратно
+Астра, включи рабочий режим
+Астра, найди на ютубе Python 3.12 C++
+Астра, включи музыку
+локальную
+Астра, пауза
+Астра, следующий трек
+Астра, открой Telegram
+Астра, закрой его
+Астра, переключись на Firefox
+Астра, вернись обратно
+```
+
+Expected:
+
+- the first three no-wake phrases are ignored and never reach the LLM-router;
+- the configured work routine opens/focuses only its allowlisted targets;
+- YouTube search preserves punctuation in the query;
+- ambiguous music asks for local or Yandex Music;
+- media keys do not type text or start a shell;
+- `закрой его` works only for fresh bounded context;
+- previous-window switching never sends Alt+F4.
+
 ## Packaging
 
 ```powershell
@@ -106,8 +138,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 Expected:
 
 ```text
-C:\Projects\astra-v1.0.1-beta-review-package.zip
-C:\Projects\astra-v1.0.1-beta-release.zip
+C:\Projects\astra-v1.1-beta-review-package.zip
+C:\Projects\astra-v1.1-beta-release.zip
 ```
 
-Both scripts must finish with `Astra package validation passed`.
+Both scripts must finish with `Astra package validation passed`. Validation
+must also compare packaged project files byte-for-byte with the current source
+tree so a stale release ZIP cannot pass.

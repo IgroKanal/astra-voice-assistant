@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.0.1-beta-release.zip"
-$TempDir = Join-Path $ProjectParent "astra-v101-beta-release-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.1-beta-release.zip"
+$TempDir = Join-Path $ProjectParent "astra-v11-beta-release-clean"
 $ContextDir = Join-Path $TempDir "_RELEASE_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -30,8 +30,12 @@ $robocopyArgs = @(
     "logs",
     "cache",
     ".cache",
+    "_REVIEW_CONTEXT",
+    "_RELEASE_CONTEXT",
     "/XF",
     ".env",
+    ".env.sanitized",
+    "*-last-log.txt",
     "*.mp3",
     "*.pyc",
     "*.backup-*.json",
@@ -72,7 +76,7 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.0.1 Beta release package",
+    "# Astra v1.1 Beta release package",
     "",
     "This package excludes .git, .venv, real .env, logs, caches, pyc and mp3 cache files.",
     "",
@@ -83,7 +87,9 @@ $ReadmeLines = @(
     "python tools\smoke_test_v11_wake_runtime.py",
     "python tools\smoke_test_v100_beta.py",
     "python tools\smoke_test_v101_beta.py",
+    "python tools\smoke_test_v11_daily_workflow.py",
     "python tools\validate_v10_config.py",
+    "python tools\validate_v11_config.py",
     "python tools\astra_doctor.py",
     "",
     "Use .env.example to create a local .env. Never publish a real .env with API keys."
@@ -98,7 +104,7 @@ if (-not (Test-Path $PythonExe)) {
     $PythonExe = "python"
 }
 
-& $PythonExe (Join-Path $ProjectRoot "tools\validate_package.py") $OutZip
+& $PythonExe (Join-Path $ProjectRoot "tools\validate_package.py") $OutZip --source-root $ProjectRoot
 if ($LASTEXITCODE -ne 0) {
     throw "Release package validation failed with exit code $LASTEXITCODE"
 }

@@ -1,5 +1,6 @@
 """Loopback-only Ollama chat. No model pulls and no cloud fallback."""
 import json
+import threading
 import time
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -22,14 +23,16 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
+        self._request_lock = threading.Lock()
         self._models_cache: tuple[float, list[str]] | None = None
         self._model_info_cache: dict[str, tuple[float, dict]] = {}
 
     def _request(self, path, payload=None):
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = Request(self.base_url + path, data=body, headers={"Content-Type": "application/json"})
-        with self.opener.open(request, timeout=self.timeout) as response:
-            raw = response.read(2_000_001)
+        with self._request_lock:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                raw = response.read(2_000_001)
         if len(raw) > 2_000_000:
             raise ValueError("Слишком большой ответ локальной модели")
         result = json.loads(raw.decode("utf-8"))
@@ -56,6 +59,35 @@ class OllamaClient:
             metadata,
         )
         return metadata
+
+    def warmup(self, model):
+        """Load an already-installed model with a bounded local-only request."""
+        if not isinstance(model, str) or model not in self.models():
+            return False
+        loaded = self._request("/api/ps").get("models", [])
+        if isinstance(loaded, list) and any(
+            isinstance(item, dict) and item.get("name") == model
+            for item in loaded
+        ):
+            return True
+        self._request(
+            "/api/chat",
+            {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Подготовься к короткому голосовому запросу. Ответь одним символом.",
+                    },
+                    {"role": "user", "content": "1"},
+                ],
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 1, "num_ctx": 512},
+                "keep_alive": "5m",
+            },
+        )
+        return True
 
     def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None):
         if model not in self.models():

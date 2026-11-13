@@ -73,9 +73,11 @@ class Settings:
     llm_router_enabled: bool = True
     llm_router_min_confidence: float = 0.55
     ollama_thinking_enabled: bool = False
+    ollama_warmup_on_wake: bool = True
 
     speech_language: str = "ru-RU"
     stt_device_index: int | None = None
+    stt_recognition_timeout_seconds: float = 12.0
     listen_timeout_seconds: int = 10
     phrase_time_limit_seconds: int = 16
     ambient_noise_duration_seconds: float = 0.6
@@ -95,6 +97,7 @@ class Settings:
     tts_edge_rate: str = "+10%"
     tts_edge_volume: str = "+0%"
     tts_edge_pitch: str = "+0Hz"
+    tts_playback_timeout_seconds: float = 25.0
 
     tts_cache_enabled: bool = True
     tts_cache_dir: str = ""
@@ -409,7 +412,12 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             0.55,
         ),
         ollama_thinking_enabled=_bool_from_env("OLLAMA_THINKING_ENABLED", False),
+        ollama_warmup_on_wake=_bool_from_env("OLLAMA_WARMUP_ON_WAKE", True),
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
+        stt_recognition_timeout_seconds=_float_from_env(
+            "STT_RECOGNITION_TIMEOUT_SECONDS",
+            12.0,
+        ),
         listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 10),
         phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 16),
         ambient_noise_duration_seconds=_float_from_env(
@@ -438,6 +446,10 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         tts_edge_rate=_str_from_env("TTS_EDGE_RATE", "+10%"),
         tts_edge_volume=_str_from_env("TTS_EDGE_VOLUME", "+0%"),
         tts_edge_pitch=_str_from_env("TTS_EDGE_PITCH", "+0Hz"),
+        tts_playback_timeout_seconds=_float_from_env(
+            "TTS_PLAYBACK_TIMEOUT_SECONDS",
+            25.0,
+        ),
         tts_cache_enabled=_bool_from_env("TTS_CACHE_ENABLED", True),
         tts_cache_dir=os.getenv("TTS_CACHE_DIR", "").strip(),
         tts_cache_prewarm_enabled=_bool_from_env(

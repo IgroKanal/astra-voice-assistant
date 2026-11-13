@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -47,6 +48,8 @@ class AIClient:
         self._client: OpenAI | None = None
         self._dialogue: list[dict[str, str]] = []
         self._memory_stamp = None
+        self._warmup_lock = threading.Lock()
+        self._warmup_thread: threading.Thread | None = None
         self._local = OllamaClient(settings.llm_base_url, settings.llm_timeout_seconds) if settings.llm_enabled and settings.llm_provider == "ollama" else None
 
         if self._local is None and self._can_create_client():
@@ -64,6 +67,42 @@ class AIClient:
     def clear_dialogue(self) -> None:
         """Forget only the in-memory local conversation history for this session."""
         self._dialogue.clear()
+
+    def prewarm_local_async(self):
+        """Warm only an installed loopback Ollama model without blocking voice capture."""
+        if self._local is None:
+            return None
+        with self._warmup_lock:
+            if self._warmup_thread is not None and self._warmup_thread.is_alive():
+                return self._warmup_thread
+            thread = threading.Thread(
+                target=self._prewarm_local,
+                name="AstraOllamaWarmup",
+                daemon=True,
+            )
+            self._warmup_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._warmup_thread = None
+                self.logger.warning("Local model warmup could not start")
+                return None
+            return thread
+
+    def _prewarm_local(self) -> None:
+        started = time.perf_counter()
+        try:
+            ready = self._local.warmup(self.settings.llm_model)
+            self.logger.info(
+                "LLM warmup: provider=ollama result=%s elapsed=%.3fs",
+                "ready" if ready else "model_missing",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            self.logger.info(
+                "LLM warmup: provider=ollama result=unavailable elapsed=%.3fs; no model download attempted",
+                time.perf_counter() - started,
+            )
 
     def _can_create_client(self) -> bool:
         if not self.settings.llm_enabled:

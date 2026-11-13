@@ -1552,6 +1552,11 @@ def run_voice_mode(
                 logger.info("Wake ignored: no wake phrase; characters=%s", len(wake_result.text))
                 continue
 
+            if settings.ollama_warmup_on_wake:
+                prewarm = getattr(ai_client, "prewarm_local_async", None)
+                if callable(prewarm):
+                    prewarm()
+
             if parsed.type == CommandType.WAKE_ONLY:
                 logger.info("wake_detected: wake_only")
                 if settings.wake_response_enabled:

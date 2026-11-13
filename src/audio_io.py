@@ -81,6 +81,10 @@ class VoiceIO:
         self.recognizer.non_speaking_duration = (
             self.settings.stt_non_speaking_duration
         )
+        self.recognizer.operation_timeout = min(
+            60.0,
+            max(1.0, self.settings.stt_recognition_timeout_seconds),
+        )
 
         self.logger.info(
             "STT настройки: dynamic_energy=%s, energy=%s, pause=%s, non_speaking=%s",
@@ -333,6 +337,8 @@ class VoiceIO:
             return ListenResult(False, error="Микрофон не доступен.")
 
         start = time.perf_counter()
+        capture_elapsed = 0.0
+        recognition_elapsed = 0.0
         timeout = (
             self.settings.listen_timeout_seconds
             if timeout_seconds is None
@@ -345,27 +351,46 @@ class VoiceIO:
         )
 
         try:
-            with self.microphone as source:
-                emit_event("state", "Слушаю · микрофон включён")
-                if prompt:
-                    print(prompt)
-                audio = self.recognizer.listen(
-                    source,
-                    timeout=timeout,
-                    phrase_time_limit=phrase_time_limit,
-                )
+            capture_start = time.perf_counter()
+            try:
+                with self.microphone as source:
+                    emit_event("state", "Слушаю · микрофон включён")
+                    if prompt:
+                        print(prompt)
+                    audio = self.recognizer.listen(
+                        source,
+                        timeout=timeout,
+                        phrase_time_limit=phrase_time_limit,
+                    )
+            finally:
+                capture_elapsed = time.perf_counter() - capture_start
 
             emit_event("state", "Распознаю речь…")
-            alternatives = self._recognize_google_alternatives(audio)
+            recognition_start = time.perf_counter()
+            try:
+                alternatives = self._recognize_google_alternatives(audio)
+            finally:
+                recognition_elapsed = time.perf_counter() - recognition_start
             if not alternatives:
+                self._log_stt_timing(
+                    start,
+                    capture_elapsed,
+                    recognition_elapsed,
+                    "unknown",
+                )
                 return ListenResult(False, error="Не удалось распознать речь.")
 
             text = self._select_best_stt_alternative(alternatives)
+            self._log_stt_timing(
+                start,
+                capture_elapsed,
+                recognition_elapsed,
+                "ok",
+            )
             emit_event("transcript", text)
             self.logger.info("Речь распознана: %s символов", len(text))
 
             elapsed = time.perf_counter() - start
-            self.logger.info("STT timing: %.2fs [ok]", elapsed)
 
             if len(alternatives) > 1:
                 self.logger.info("STT варианты: %s", alternatives)
@@ -380,7 +405,12 @@ class VoiceIO:
             return ListenResult(True, text=text, alternatives=alternatives)
         except sr.WaitTimeoutError:
             elapsed = time.perf_counter() - start
-            self.logger.info("STT timing: %.2fs [timeout]", elapsed)
+            self._log_stt_timing(
+                start,
+                capture_elapsed,
+                recognition_elapsed,
+                "timeout",
+            )
             self._log_stt_diagnostic(
                 kind="timeout",
                 text="",
@@ -390,7 +420,12 @@ class VoiceIO:
             return ListenResult(False, error="Не услышал речь.")
         except sr.UnknownValueError:
             elapsed = time.perf_counter() - start
-            self.logger.info("STT timing: %.2fs [unknown]", elapsed)
+            self._log_stt_timing(
+                start,
+                capture_elapsed,
+                recognition_elapsed,
+                "unknown",
+            )
             self._log_stt_diagnostic(
                 kind="unknown",
                 text="",
@@ -400,7 +435,12 @@ class VoiceIO:
             return ListenResult(False, error="Не удалось распознать речь.")
         except sr.RequestError:
             elapsed = time.perf_counter() - start
-            self.logger.info("STT timing: %.2fs [request_error]", elapsed)
+            self._log_stt_timing(
+                start,
+                capture_elapsed,
+                recognition_elapsed,
+                "request_error",
+            )
             self.logger.exception("Ошибка сервиса распознавания речи")
             return ListenResult(
                 False,
@@ -408,9 +448,30 @@ class VoiceIO:
             )
         except Exception:
             elapsed = time.perf_counter() - start
-            self.logger.info("STT timing: %.2fs [error]", elapsed)
+            self._log_stt_timing(
+                start,
+                capture_elapsed,
+                recognition_elapsed,
+                "error",
+            )
             self.logger.exception("Непредвиденная ошибка STT")
             return ListenResult(False, error="Произошла ошибка распознавания речи.")
+
+    def _log_stt_timing(
+        self,
+        start: float,
+        capture_elapsed: float,
+        recognition_elapsed: float,
+        status: str,
+    ) -> None:
+        total_elapsed = time.perf_counter() - start
+        self.logger.info(
+            "STT timing: capture=%.2fs recognition=%.2fs total=%.2fs [%s]",
+            capture_elapsed,
+            recognition_elapsed,
+            total_elapsed,
+            status,
+        )
 
     def _recognize_google_alternatives(self, audio: sr.AudioData) -> list[str]:
         if not self.settings.stt_show_alternatives:
@@ -535,7 +596,17 @@ class VoiceIO:
                 return
             self.logger.debug("TTS cache miss: using direct playback to avoid synthesis wait")
 
-        if self._speak_edge_direct(text, self.settings.tts_edge_voice):
+        playback_timeout = min(
+            60.0,
+            max(1.0, self.settings.tts_playback_timeout_seconds),
+        )
+        deadline = time.monotonic() + playback_timeout
+        primary_budget = deadline - time.monotonic()
+        if primary_budget > 0 and self._speak_edge_direct(
+            text,
+            self.settings.tts_edge_voice,
+            timeout_seconds=primary_budget,
+        ):
             self._log_tts_timing(start, "direct")
             return
 
@@ -545,11 +616,17 @@ class VoiceIO:
                 "Edge TTS primary voice failed. Пробую fallback voice: %s",
                 fallback_voice,
             )
-            if self._speak_edge_direct(text, fallback_voice):
+            fallback_budget = deadline - time.monotonic()
+            if fallback_budget > 0 and self._speak_edge_direct(
+                text,
+                fallback_voice,
+                timeout_seconds=fallback_budget,
+            ):
                 self._log_tts_timing(start, "direct_fallback_voice")
                 return
 
         self._log_tts_timing(start, "failed")
+        print("[TTS ошибка] Не удалось озвучить ответ.")
 
     def _ensure_edge_cached_audio(self, text: str, voice: str) -> Path | None:
         cache_path = self._edge_cache_path(text=text, voice=voice)
@@ -668,7 +745,13 @@ class VoiceIO:
         winmm.mciGetErrorStringW(error_code, buffer, len(buffer))
         raise RuntimeError(f"MCI error {error_code}: {buffer.value}; command={command}")
 
-    def _speak_edge_direct(self, text: str, voice: str) -> bool:
+    def _speak_edge_direct(
+        self,
+        text: str,
+        voice: str,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
         if self.edge_playback_command is None:
             return False
 
@@ -695,16 +778,21 @@ class VoiceIO:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=timeout_seconds,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             return True
+        except subprocess.TimeoutExpired:
+            self.logger.warning(
+                "Edge TTS превысил лимит ожидания %.1fс",
+                timeout_seconds,
+            )
+            return False
         except subprocess.CalledProcessError as exc:
             self.logger.error("Ошибка Edge TTS: %s", exc.stderr)
-            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
             return False
         except Exception:
             self.logger.exception("Непредвиденная ошибка Edge TTS")
-            print("[TTS ошибка] Edge TTS не смог озвучить ответ.")
             return False
 
     def _log_tts_timing(self, start: float, mode: str) -> None:

@@ -73,6 +73,44 @@ class DesktopUITests(unittest.TestCase):
             window.after_cancel(app.animation_timer)
             window.destroy()
 
+    def test_command_catalog_search_inserts_without_sending(self):
+        window = tk.Tk()
+        window.withdraw()
+        app = AstraDesktop(window)
+        sent = []
+        app.bridge.send = lambda text: sent.append(text)
+        panel = None
+        try:
+            self.pump(window, lambda: not app.busy and app.bridge.running)
+            panel = app.open_command_catalog()
+            window.update()
+            search = panel.astra_command_search
+            tree = panel.astra_command_tree
+            search.delete(0, "end")
+            search.insert(0, "новый диалог")
+            window.update()
+            rows = tree.get_children()
+            self.assertEqual(rows, ("new_dialogue",))
+            tree.selection_set(rows[0])
+            window.update()
+            self.assertEqual(panel.astra_command_phrase.get(), "начни новый диалог")
+            self.assertIn("контекст текущего разговора", panel.astra_command_description.get())
+            panel.astra_command_insert.invoke()
+            self.assertEqual(app.entry.get(), f"{app.assistant_name}, начни новый диалог")
+            self.assertEqual(sent, [])
+            self.assertFalse(panel.winfo_exists())
+        finally:
+            if panel is not None:
+                try:
+                    panel.destroy()
+                except tk.TclError:
+                    pass
+            app.bridge.prevent_restart()
+            app.bridge.stop()
+            window.after_cancel(app.poll_timer)
+            window.after_cancel(app.animation_timer)
+            window.destroy()
+
     def test_close_during_startup_leaves_no_runtime(self):
         window = tk.Tk()
         window.withdraw()

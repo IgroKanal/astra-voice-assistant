@@ -156,8 +156,9 @@ class AstraDesktop:
             self.button(self.onboarding_banner, "Пока пропустить", self.dismiss_onboarding).pack(side="right", padx=(0, 8), pady=10)
         footer = tk.Frame(self.window, bg=BG)
         footer.pack(side="bottom", fill="x", padx=28, pady=14)
-        for label, text in [("Время", "Астра, сколько времени"), ("Помощь", "Астра, помощь"), ("Дата", "Астра, какая сегодня дата")]:
-            self.button(footer, label, lambda value=text: self.fill(value)).pack(side="left", padx=(0, 8))
+        self.button(footer, "Время", lambda: self.fill(f"{self.assistant_name}, сколько времени")).pack(side="left", padx=(0, 8))
+        self.button(footer, "Команды", self.open_command_catalog).pack(side="left", padx=(0, 8))
+        self.button(footer, "Дата", lambda: self.fill(f"{self.assistant_name}, какая сегодня дата")).pack(side="left", padx=(0, 8))
         body = tk.Frame(self.window, bg=BG)
         body.pack(fill="both", expand=True, padx=28)
         side = tk.Frame(body, bg=PANEL, width=270)
@@ -220,6 +221,16 @@ class AstraDesktop:
         self.entry.delete(0, "end")
         self.entry.insert(0, value)
         self.entry.focus_set()
+
+    def open_command_catalog(self):
+        if self.closing:
+            return
+        from src.command_catalog_ui import open_command_catalog
+        return open_command_catalog(
+            self.window,
+            self.button,
+            lambda phrase: self.fill(f"{self.assistant_name}, {phrase}"),
+        )
 
     def hide_to_tray(self):
         if self.closing:

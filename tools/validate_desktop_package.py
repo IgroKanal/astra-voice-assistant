@@ -71,6 +71,7 @@ def main():
                     "src.portable_reminder_backup" not in modules or
                     "src.action_audit" not in modules or "src.action_audit_ui" not in modules or
                     "src.desktop_theme" not in modules or "src.scroll_section" not in modules or
+                    "src.command_catalog" not in modules or "src.command_catalog_ui" not in modules or
                     "PIL.Image" not in modules or "PIL.ImageOps" not in modules or "PIL.ImageTk" not in modules):
                 raise ValueError("A file reader, plan interpreter, plan UI, avatar preview or onboarding module is missing from Astra.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -16,6 +17,7 @@ class CommandType(str, Enum):
     GET_TIME = "get_time"
     GET_DATE = "get_date"
     KEYBOARD_SHORTCUT = "keyboard_shortcut"
+    MEDIA_CONTROL = "media_control"
     TYPE_TEXT = "type_text"
     SCREENSHOT = "screenshot"
     SYSTEM_INFO = "system_info"
@@ -23,6 +25,7 @@ class CommandType(str, Enum):
     WINDOW_CONTROL = "window_control"
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
+    REMINDER = "reminder"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -261,7 +264,31 @@ WINDOW_STATE_COMMANDS = {
         "разверни окно",
         "разверни активное окно",
         "разверни текущее окно",
+        "разверни на весь экран",
+        "разверни окно на весь экран",
+        "разверни в полный размер",
+        "разверни окно в полный размер",
+        "открой на весь экран",
+        "открой окно на весь экран",
+        "открой в полном режиме",
+        "сделай на весь экран",
+        "сделай окно на весь экран",
+        "сделай окно большим",
+        "сделай окно широким",
+        "разверни широко",
+        "максимизируй окно",
         "разверни",
+    ),
+    "restore": (
+        "восстанови окно",
+        "восстанови активное окно",
+        "восстанови текущее окно",
+        "верни обычный размер",
+        "верни обычный размер окна",
+        "верни на обычный размер",
+        "верни на обычный размер окна",
+        "верни окно в обычный размер",
+        "сделай обычный размер окна",
     ),
     "show_desktop": (
         "покажи рабочий стол",
@@ -275,6 +302,26 @@ WINDOW_STATE_COMMANDS = {
         "верни предыдущее окно",
     ),
 }
+
+WINDOW_TARGET_STATE_PREFIXES = {
+    "minimize": (
+        "сверни",
+        "свернуть",
+    ),
+    "maximize": (
+        "разверни",
+        "развернуть",
+        "максимизируй",
+    ),
+    "restore": (
+        "восстанови",
+        "восстановить",
+        "верни обычный размер",
+        "верни на обычный размер",
+        "верни окно в обычный размер",
+    ),
+}
+
 
 WINDOW_FOCUS_PREFIXES = (
     "переключись на",
@@ -438,9 +485,11 @@ KEYBOARD_COMMANDS = {
     "громче": "volume_up",
     "сделай громче": "volume_up",
     "увеличь громкость": "volume_up",
+    "прибавь громкость": "volume_up",
     "тише": "volume_down",
     "сделай тише": "volume_down",
     "уменьши громкость": "volume_down",
+    "убавь громкость": "volume_down",
     "переключи звук": "volume_mute",
     "звук": "volume_mute",
     # Global media keys: they work with the active media session and do not
@@ -448,14 +497,20 @@ KEYBOARD_COMMANDS = {
     "пауза": "media_play_pause",
     "поставь на паузу": "media_play_pause",
     "музыку на паузу": "media_play_pause",
-    "продолжи музыку": "media_play_pause",
-    "возобнови музыку": "media_play_pause",
+    "продолжи музыку": "media_play",
+    "возобнови музыку": "media_play",
     "следующий трек": "media_next",
     "следующая песня": "media_next",
     "переключи трек": "media_next",
     "предыдущий трек": "media_previous",
     "предыдущая песня": "media_previous",
+    "верни предыдущий трек": "media_previous",
+    "верни предыдущую песню": "media_previous",
+    "начни трек заново": "media_restart_current",
+    "перезапусти трек": "media_restart_current",
+    "перезапусти песню": "media_restart_current",
     "останови музыку": "media_stop",
+    "останови воспроизведение": "media_stop",
 }
 
 INCOMPLETE_KEY_COMMANDS = (
@@ -628,6 +683,11 @@ APP_LIKE_NAMES = (
     "яндекс музыка",
     "яндекс музыку",
     "яндекс мьюзик",
+    "локальный плеер",
+    "локальный проигрыватель",
+    "медиаплеер",
+    "медиа плеер",
+    "проигрыватель",
 )
 
 YANDEX_MUSIC_APP_TARGETS = {
@@ -662,6 +722,79 @@ FOLDER_NAMES = (
     "папка проекта",
     "папка астра",
 )
+
+MEDIA_TARGET_ALIASES = {
+    "local": (
+        "локальный плеер",
+        "локальном плеере",
+        "локального плеера",
+        "локальный проигрыватель",
+        "локальном проигрывателе",
+        "медиаплеер",
+        "медиа плеер",
+        "плеер",
+        "проигрыватель",
+        "groove music",
+        "музыка groove",
+        "музыка грув",
+        "грув музыка",
+        # Частые безопасные ошибки Google STT для фразы
+        # «в локальном плеере». Они используются только рядом с фиксированной
+        # media-командой и никогда не становятся путём/именем процесса.
+        "вокальный плеер",
+        "вокальном плеере",
+        "локальный пуэр",
+        "локальном пуэре",
+        "вокальный пуэр",
+        "вокальном пуэре",
+        "локальный pueri",
+        "локальном pueri",
+        "вокальный pueri",
+        "вокальном pueri",
+    ),
+    "yandex": (
+        "яндекс музыка",
+        "яндекс музыке",
+        "яндекс музыки",
+        "яндекс музыку",
+        "yandex music",
+    ),
+}
+
+MEDIA_BASE_ACTIONS = {
+    "пауза": "play_pause",
+    "поставь на паузу": "play_pause",
+    "продолжи": "play",
+    "продолжи музыку": "play",
+    "возобнови": "play",
+    "возобнови музыку": "play",
+    "следующий трек": "next",
+    "следующая песня": "next",
+    "переключи трек": "next",
+    "предыдущий трек": "previous",
+    "предыдущая песня": "previous",
+    "верни предыдущий трек": "previous",
+    "верни предыдущую песню": "previous",
+    "начни трек заново": "restart_current",
+    "перезапусти трек": "restart_current",
+    "перезапусти песню": "restart_current",
+    "останови": "stop",
+    "останови музыку": "stop",
+    "останови воспроизведение": "stop",
+}
+
+
+# Короткие окончания, которыми Google STT часто заменяет «в локальном
+# плеере». Они принимаются только если начало фразы уже является точной
+# allowlisted media-командой.
+LOCAL_MEDIA_STT_TAILS = (
+    "вока",
+    "лока",
+    "локо",
+    "лака",
+    "loco",
+)
+
 
 COMMAND_HINTS = (
     *OPEN_PREFIXES,
@@ -825,6 +958,9 @@ def is_command_like_text(text: str) -> bool:
     if not normalized:
         return False
 
+    if re.search(r"(?<!\w)(напомни|отмени напоминание)(?!\w)", normalized):
+        return True
+
     hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
     for hint in hints:
         if not hint:
@@ -951,6 +1087,31 @@ def _parse_window_control(normalized: str) -> ParsedCommand | None:
     if normalized in ACTIVE_WINDOW_COMMANDS:
         return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target="active")
 
+    # Exact active-window commands take precedence over targeted prefixes.
+    for target, phrases in WINDOW_STATE_COMMANDS.items():
+        if normalized in phrases:
+            return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target=target)
+
+    # Targeted state changes never execute a process or shell command.  The
+    # target is used only to find an already visible top-level window.
+    for action, prefixes in WINDOW_TARGET_STATE_PREFIXES.items():
+        for prefix in prefixes:
+            if normalized.startswith(prefix + " "):
+                target = normalized.removeprefix(prefix).strip()
+                if action == "maximize":
+                    for suffix in (" на весь экран", " в полный размер", " в полном режиме"):
+                        if target.endswith(suffix):
+                            target = target[: -len(suffix)].strip()
+                            break
+                if action == "restore" and target.endswith(" окна"):
+                    target = target.removesuffix(" окна").strip()
+                if target and target not in {"окно", "активное окно", "текущее окно"}:
+                    return ParsedCommand(
+                        CommandType.WINDOW_CONTROL,
+                        text=normalized,
+                        target=f"{action}:{target}",
+                    )
+
     for prefix in WINDOW_FOCUS_PREFIXES:
         if normalized == prefix:
             return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target="focus:")
@@ -962,10 +1123,6 @@ def _parse_window_control(normalized: str) -> ParsedCommand | None:
                     text=normalized,
                     target=f"focus:{target}",
                 )
-
-    for target, phrases in WINDOW_STATE_COMMANDS.items():
-        if normalized in phrases:
-            return ParsedCommand(CommandType.WINDOW_CONTROL, text=normalized, target=target)
 
     return None
 
@@ -1016,6 +1173,52 @@ def _parse_youtube_search(text: str, normalized: str) -> ParsedCommand | None:
                 text=normalized,
                 target=f"youtube:{query}",
             )
+    return None
+
+
+def _parse_targeted_media_control(normalized: str) -> ParsedCommand | None:
+    # Direct wake commands may arrive as «следующий трек вока/лока».  Accept
+    # these short STT corruptions only when the left side is an exact fixed
+    # media action; arbitrary text never reaches this branch.
+    for tail in LOCAL_MEDIA_STT_TAILS:
+        suffix = " " + tail
+        if normalized.endswith(suffix):
+            base_phrase = normalized[: -len(suffix)].strip()
+            action = MEDIA_BASE_ACTIONS.get(base_phrase)
+            if action:
+                return ParsedCommand(
+                    CommandType.MEDIA_CONTROL,
+                    text=normalized,
+                    target=f"{action}:local",
+                )
+
+    for target, aliases in MEDIA_TARGET_ALIASES.items():
+        for alias in aliases:
+            candidates = []
+            for connector in (" в ", " для "):
+                suffix = connector + alias
+                if normalized.endswith(suffix):
+                    candidates.append(normalized[: -len(suffix)].strip())
+            if normalized.startswith(alias + " "):
+                candidates.append(normalized.removeprefix(alias).strip())
+
+            # Natural Russian imperative forms: "останови локальный плеер",
+            # "поставь локальный плеер на паузу".
+            if normalized == f"останови {alias}":
+                candidates.append("останови")
+            if normalized == f"поставь {alias} на паузу":
+                candidates.append("поставь на паузу")
+            if normalized == f"продолжи {alias}":
+                candidates.append("продолжи")
+
+            for base_phrase in candidates:
+                action = MEDIA_BASE_ACTIONS.get(base_phrase)
+                if action:
+                    return ParsedCommand(
+                        CommandType.MEDIA_CONTROL,
+                        text=normalized,
+                        target=f"{action}:{target}",
+                    )
     return None
 
 
@@ -1195,6 +1398,19 @@ def parse_command_text(text: str) -> ParsedCommand:
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
 
+    if normalized.startswith("отмени напоминание"):
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target="__cancel_reminder_ui__")
+    if normalized.startswith("напомни"):
+        match = re.fullmatch(r"напомни(?: мне)? через (\d{1,5}|одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать|шестьдесят) (секунд[уы]?|минут[уы]?|час(?:а|ов)?) (.+)", normalized)
+        if match:
+            words = {"одну": 1, "один": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5, "десять": 10, "пятнадцать": 15, "двадцать": 20, "тридцать": 30, "шестьдесят": 60}
+            amount = int(match[1]) if match[1].isdigit() else words[match[1]]
+            multiplier = 1 if match[2].startswith("секунд") else 60 if match[2].startswith("минут") else 3600
+            delay = amount * multiplier
+            if 1 <= delay <= 30 * 86400 and len(match[3]) <= 1000:
+                return ParsedCommand(CommandType.REMINDER, text=normalized, target=json.dumps({"delay": delay, "text": match[3]}, ensure_ascii=False))
+        return ParsedCommand(CommandType.REMINDER, text=normalized)
+
     # v0.9.6: аварийный выход должен оставаться локальным даже при
     # повторном распознавании: "стоп стоп стоп".
     if _is_repeated_exit_command(normalized):
@@ -1219,6 +1435,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     if routine is not None:
         return routine
 
+    targeted_media = _parse_targeted_media_control(normalized)
+    if targeted_media is not None:
+        return targeted_media
+
     window_control = _parse_window_control(normalized)
     if window_control is not None:
         return window_control
@@ -1242,11 +1462,36 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in {"включи звук", "выключи звук", "без звука"}:
         return ParsedCommand(CommandType.ASK_LLM, text=normalized)
 
+    if normalized in {
+        "включи локальную музыку",
+        "запусти локальную музыку",
+        "включи локальный плеер",
+        "запусти локальный плеер",
+        "включи groove",
+        "включи грув",
+        "включи музыку groove",
+        "включи музыку грув",
+        "запусти музыку groove",
+        "запусти музыку грув",
+    }:
+        return ParsedCommand(
+            CommandType.MEDIA_CONTROL,
+            text=normalized,
+            target="open_play_local",
+        )
+
     if normalized in {"включи музыку", "запусти музыку"}:
         return ParsedCommand(
             CommandType.OPEN_APP,
             text=normalized,
             target=AMBIGUOUS_MUSIC_TARGET,
+        )
+
+    if normalized in {"выключи музыку", "закрой музыку"}:
+        return ParsedCommand(
+            CommandType.MEDIA_CONTROL,
+            text=normalized,
+            target="shutdown_yandex_music",
         )
 
     if normalized in {"открой чат", "открой ча", "открыть чат", "запусти чат"}:

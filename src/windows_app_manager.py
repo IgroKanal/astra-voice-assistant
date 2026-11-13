@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import ntpath
 import os
 import shutil
 import subprocess
@@ -17,6 +18,7 @@ from src.config_loader import AppConfig
 class AppActionResult:
     ok: bool
     message: str
+    completed: bool | None = None
 
 
 class WindowsAppManager:
@@ -35,6 +37,16 @@ class WindowsAppManager:
     _YANDEX_MUSIC_APP_NAME = "яндекс музыка"
     _YANDEX_MUSIC_PROCESS_NAME = "яндекс музыка.exe"
     _YANDEX_MUSIC_START_APP_ID = "ru.yandex.desktop.music"
+    _LOCAL_MEDIA_APP_NAME = "медиаплеер"
+    _LOCAL_MEDIA_PROCESS_NAMES = (
+        "Microsoft.Media.Player.exe",
+        "Music.UI.exe",
+        "wmplayer.exe",
+        "AIMP.exe",
+        "AIMP64.exe",
+        "vlc.exe",
+        "foobar2000.exe",
+    )
     _FUZZY_BLOCKLIST = {
         "ок",
         "ак",
@@ -231,6 +243,12 @@ class WindowsAppManager:
                     "Не нашёл приложение Яндекс Музыка. Проверь установку или "
                     "ASTRA_YANDEX_MUSIC_PATH.",
                 )
+            if app.name == self._LOCAL_MEDIA_APP_NAME:
+                return AppActionResult(
+                    False,
+                    "Не нашёл локальный медиаплеер. Укажи его путь в "
+                    "ASTRA_LOCAL_MEDIA_PLAYER_PATH.",
+                )
             return AppActionResult(False, f"Не удалось открыть {app.name}: команда запуска не найдена.")
 
         try:
@@ -275,6 +293,9 @@ class WindowsAppManager:
             or app.process_name.lower() == self._YANDEX_MUSIC_PROCESS_NAME
         ):
             return self._resolve_yandex_music_command()
+
+        if app.name == self._LOCAL_MEDIA_APP_NAME:
+            return self._resolve_local_media_command()
 
         return [os.path.expandvars(part) for part in app.open_command]
 
@@ -358,6 +379,122 @@ class WindowsAppManager:
         )
         return None
 
+    def _resolve_local_media_command(self) -> list[str] | None:
+        """Resolve the user's local player without using recognized text.
+
+        Resolution order deliberately prefers the Windows 10 Groove Music
+        protocol over legacy Windows Media Player.  A custom executable from
+        ``ASTRA_LOCAL_MEDIA_PLAYER_PATH`` still has highest priority.
+        """
+        env_path = os.getenv("ASTRA_LOCAL_MEDIA_PLAYER_PATH", "").strip()
+        if env_path:
+            candidate = Path(os.path.expandvars(env_path))
+            if candidate.is_file() and candidate.suffix.lower() == ".exe":
+                return [str(candidate)]
+
+        explorer = shutil.which("explorer.exe")
+        if not explorer:
+            windows_dir = os.getenv("WINDIR", "").strip()
+            candidate = Path(windows_dir) / "explorer.exe" if windows_dir else None
+            if candidate is not None and candidate.is_file():
+                explorer = str(candidate)
+
+        # Windows 10 Groove Music registers this fixed protocol.  Prefer it
+        # before wmplayer.exe so «локальный плеер» opens the app the user sees
+        # as «Музыка Groove».
+        if explorer and self._windows_protocol_registered("mswindowsmusic"):
+            return [explorer, "mswindowsmusic:"]
+
+        direct_candidates: list[Path] = []
+        program_files = os.getenv("ProgramFiles", "").strip()
+        program_files_x86 = os.getenv("ProgramFiles(x86)", "").strip()
+        local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+
+        if local_app_data:
+            direct_candidates.extend(
+                [
+                    Path(local_app_data) / "Microsoft" / "WindowsApps" / "Music.UI.exe",
+                    Path(local_app_data) / "Microsoft" / "WindowsApps" / "Microsoft.Media.Player.exe",
+                    Path(local_app_data) / "Programs" / "AIMP" / "AIMP.exe",
+                    Path(local_app_data) / "Programs" / "VideoLAN" / "VLC" / "vlc.exe",
+                ]
+            )
+        for root in (program_files, program_files_x86):
+            if not root:
+                continue
+            direct_candidates.extend(
+                [
+                    Path(root) / "AIMP" / "AIMP.exe",
+                    Path(root) / "VideoLAN" / "VLC" / "vlc.exe",
+                    Path(root) / "foobar2000" / "foobar2000.exe",
+                    # Legacy fallback is intentionally last.
+                    Path(root) / "Windows Media Player" / "wmplayer.exe",
+                ]
+            )
+
+        for candidate in direct_candidates:
+            if candidate.is_file() and candidate.suffix.lower() == ".exe":
+                return [str(candidate)]
+
+        shortcut_names = {
+            "groove music.lnk",
+            "музыка groove.lnk",
+            "музыка грув.lnk",
+            "media player.lnk",
+            "проигрыватель мультимедиа.lnk",
+            "windows media player.lnk",
+            "проигрыватель windows media.lnk",
+            "aimp.lnk",
+            "vlc media player.lnk",
+        }
+        shortcut_roots: list[Path] = []
+        for env_name in ("APPDATA", "ProgramData"):
+            value = os.getenv(env_name, "").strip()
+            if value:
+                shortcut_roots.append(
+                    Path(value) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+                )
+
+        if explorer:
+            for root in shortcut_roots:
+                if not root.is_dir():
+                    continue
+                try:
+                    for shortcut in root.rglob("*.lnk"):
+                        if shortcut.name.lower() in shortcut_names:
+                            return [explorer, str(shortcut)]
+                except OSError:
+                    continue
+
+        self.logger.warning(
+            "Local media player was not found. Checked Groove protocol, %s direct "
+            "path(s), and %s shortcut root(s).",
+            len(direct_candidates),
+            len(shortcut_roots),
+        )
+        return None
+
+    @staticmethod
+    def _windows_protocol_registered(protocol: str) -> bool:
+        try:
+            import winreg
+        except ImportError:
+            return False
+
+        key_paths = (
+            rf"{protocol}",
+            rf"Software\Classes\{protocol}",
+        )
+        roots = (winreg.HKEY_CLASSES_ROOT, winreg.HKEY_CURRENT_USER)
+        for root in roots:
+            for key_path in key_paths:
+                try:
+                    with winreg.OpenKey(root, key_path):
+                        return True
+                except OSError:
+                    continue
+        return False
+
     def _resolve_vscode_command(self) -> list[str] | None:
         """
         v0.9.4 hotfix. Раньше первым делом брался code.cmd/code, найденный
@@ -430,41 +567,33 @@ class WindowsAppManager:
         )
         return None
 
+    def _close_allowed_processes(self, process_names: list[str]) -> AppActionResult:
+        from src.window_controller import WindowController
+        denied = {"cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe",
+                  "services.exe", "svchost.exe", "winlogon.exe", "csrss.exe", "lsass.exe"}
+        allowed = [name for name in process_names if ntpath.basename(name).lower() not in denied]
+        if not allowed:
+            return AppActionResult(False, "Закрытие системного/терминального процесса отключено.", False)
+        try:
+            result = WindowController(logger=self.logger).request_close_processes(allowed)
+            return AppActionResult(result.ok, result.message, result.completed)
+        except Exception:
+            self.logger.warning("Graceful close failed; force termination is disabled")
+            return AppActionResult(False, "Не удалось закрыть окно обычным способом. Принудительное завершение отключено.", False)
+
+    def _close_local_media_player(self) -> AppActionResult:
+        process_names = list(self._LOCAL_MEDIA_PROCESS_NAMES)
+        configured_path = os.getenv("ASTRA_LOCAL_MEDIA_PLAYER_PATH", "").strip()
+        if configured_path:
+            configured_name = ntpath.basename(os.path.expandvars(configured_path))
+            if configured_name.lower().endswith(".exe"):
+                process_names.insert(0, configured_name)
+        return self._close_allowed_processes(process_names)
+
     def close_app(self, user_target: str) -> AppActionResult:
         app = self.find_app(user_target)
         if app is None:
             return AppActionResult(False, "Не нашёл такое приложение в списке.")
-
-        try:
-            result = subprocess.run(
-                ["taskkill", "/IM", app.process_name, "/F"],
-                capture_output=True,
-                text=True,
-                encoding="cp866",
-                errors="replace",
-                timeout=10,
-            )
-            if result.returncode == 0:
-                self.logger.info("Закрытие приложения: %s", app.name)
-                return AppActionResult(True, "Закрываю.")
-
-            output = (result.stderr or result.stdout or "").strip()
-            self.logger.warning(
-                "taskkill вернул код %s для %s: %s",
-                result.returncode,
-                app.name,
-                output,
-            )
-            return AppActionResult(
-                False,
-                f"Не удалось закрыть {app.name}. Возможно, оно не запущено.",
-            )
-        except subprocess.TimeoutExpired:
-            self.logger.exception("Таймаут закрытия приложения: %s", app.name)
-            return AppActionResult(
-                False,
-                f"Не удалось закрыть {app.name}: превышено время ожидания.",
-            )
-        except OSError as exc:
-            self.logger.exception("Ошибка закрытия приложения: %s", app.name)
-            return AppActionResult(False, f"Не удалось закрыть {app.name}: {exc}")
+        if app.name == self._LOCAL_MEDIA_APP_NAME:
+            return self._close_local_media_player()
+        return self._close_allowed_processes([app.process_name])

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from src.action_policy import ALL_SCOPES
 
 
 class ConfigError(Exception):
@@ -73,6 +74,7 @@ class Settings:
     llm_router_min_confidence: float = 0.55
 
     speech_language: str = "ru-RU"
+    stt_device_index: int | None = None
     listen_timeout_seconds: int = 10
     phrase_time_limit_seconds: int = 16
     ambient_noise_duration_seconds: float = 0.6
@@ -127,6 +129,8 @@ class Settings:
             "Показываю рабочий стол.",
             "Сворачиваю окно.",
             "Разворачиваю окно.",
+            "Возвращаю обычный размер окна.",
+            "Переключаю на предыдущий трек.",
             "Пока нечего повторять.",
             "Интернет доступен.",
             "Открываю загрузки.",
@@ -139,6 +143,9 @@ class Settings:
     tts_volume: float = 1.0
     tts_voice_name: str = ""
     tts_debug_voices: bool = True
+    personal_memory_enabled: bool = False
+    personal_memory_path: str = ""
+    action_permissions: tuple[str, ...] = ALL_SCOPES
 
 
 @dataclass(frozen=True)

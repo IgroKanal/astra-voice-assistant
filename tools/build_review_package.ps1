@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.2-beta-review-package.zip"
-$TempDir = Join-Path $ProjectParent "astra-v12-beta-review-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.3-beta-review-package-r3.zip"
+$TempDir = Join-Path $ProjectParent "astra-v13-r3-beta-review-clean"
 $ReviewContextDir = Join-Path $TempDir "_REVIEW_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -76,9 +76,9 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.2 Beta review package",
+    "# Astra v1.3 Beta R3 review package",
     "",
-    "Purpose: independent code review for the v1.2 Native Music App Integration update.",
+    "Purpose: independent code review for v1.3 R3 STT, Groove media and safe window actions.",
     "",
     "Included:",
     "- project source files",
@@ -104,9 +104,12 @@ $ReadmeLines = @(
     "python tools\smoke_test_v101_beta.py",
     "python tools\smoke_test_v11_daily_workflow.py",
     "python tools\smoke_test_v12_native_music.py",
+    "python tools\smoke_test_v13_media_control.py",
+    "python tools\smoke_test_v13_window_actions.py",
     "python tools\validate_v10_config.py",
     "python tools\validate_v11_config.py",
     "python tools\validate_v12_config.py",
+    "python tools\validate_v13_config.py",
     "python tools\astra_doctor.py",
     "",
     "Review focus:",
@@ -116,6 +119,12 @@ $ReadmeLines = @(
     "- v0.10.8.1 beta safety gate still active",
     "- safe routines allow only open_app/open_url/open_folder",
     "- bounded context cannot bypass wake or LLM safety gates",
+    "- bounded STT repair for observed local-player phrases",
+    "- Groove Music protocol preference and fixed PLAY app-command",
+    "- deterministic previous-track double event and explicit restart-current action",
+    "- bounded local-player targeting through fixed process allowlists",
+    "- active and targeted minimize/maximize/restore window actions",
+    "- bounded same-window continuity after minimize",
     "- global media keys and previous-window behavior",
     "- local YouTube search query preservation",
     "- native Yandex Music resolver uses fixed whitelist data only",

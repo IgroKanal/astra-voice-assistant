@@ -1,0 +1,105 @@
+name: Windows checks
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
+      LLM_ENABLED: 'false'
+      VPN_ENABLED: 'false'
+      TTS_ENABLED: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated environment
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-desktop.txt
+          .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+      - name: Compile
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m compileall main.py astra_desktop.pyw astra_runtime.py src tools
+      - name: Existing regression tests
+        shell: pwsh
+        run: |
+          $tests = @('smoke_test_v09_parser.py','smoke_test_v10_parser.py','smoke_test_v11_wake_runtime.py','smoke_test_v100_beta.py','smoke_test_v101_beta.py','smoke_test_v11_daily_workflow.py','smoke_test_v12_native_music.py','smoke_test_v13_media_control.py','smoke_test_v13_window_actions.py')
+          foreach ($test in $tests) {
+            & .\.venv\Scripts\python.exe (Join-Path tools $test)
+            if ($LASTEXITCODE -ne 0) { throw "Failed: $test" }
+          }
+      - name: Configuration checks
+        shell: pwsh
+        run: |
+          $checks = @('validate_v10_config.py','validate_v11_config.py','validate_v12_config.py','validate_v13_config.py')
+          foreach ($check in $checks) {
+            & .\.venv\Scripts\python.exe (Join-Path tools $check)
+            if ($LASTEXITCODE -ne 0) { throw "Failed: $check" }
+          }
+      - name: Desktop, files and encrypted memory
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Prepare signed Godot 3D preview runtime
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'godot-4.7.2-win64.zip'
+          $destination = Join-Path $env:RUNNER_TEMP 'godot-4.7.2-win64'
+          curl.exe -L --fail --retry 3 'https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip' -o $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Godot download failed' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $godot = Join-Path $destination 'Godot_v4.7.2-stable_win64.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $godot
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Prehensile Tales B.V.*') { throw 'Godot signature validation failed' }
+          $env:ASTRA_GODOT_EXECUTABLE = $godot
+          .\.venv\Scripts\python.exe tools\validate_3d_avatar.py --godot $godot
+          if ($LASTEXITCODE -ne 0) { throw 'Godot avatar validation failed' }
+      - name: Prepare signed Inno Setup compiler
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          curl.exe -L --fail --retry 3 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -o $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup download failed' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Pyrsys B.V.*') { throw 'Inno Setup signature validation failed' }
+          $compilerDir = Join-Path $env:RUNNER_TEMP 'InnoSetup-7.1.1'
+          & $installer /PORTABLE=1 /CURRENTUSER /VERYSILENT "/DIR=$compilerDir" /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup extraction failed' }
+          $iscc = Join-Path $compilerDir 'ISCC.exe'
+          $deadline = (Get-Date).AddMinutes(3)
+          while (-not (Test-Path -LiteralPath $iscc)) {
+            if ((Get-Date) -gt $deadline) { throw 'ISCC.exe was not extracted in time' }
+            Start-Sleep -Seconds 1
+          }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "ASTRA_ISCC=$iscc"
+      - name: Build and validate portable desktop package
+        shell: pwsh
+        run: |
+          $env:ASTRA_GODOT_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'godot-4.7.2-win64\Godot_v4.7.2-stable_win64.exe'
+          $buildOutput = & .\.venv\Scripts\python.exe tools\build_desktop.py
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop package build failed' }
+          $buildOutput | Write-Output
+          $zipLine = $buildOutput | Where-Object { $_ -like 'DESKTOP_ZIP=*' } | Select-Object -Last 1
+          if (-not $zipLine) { throw 'Build did not report DESKTOP_ZIP' }
+          $archive = $zipLine.Substring('DESKTOP_ZIP='.Length)
+          & .\.venv\Scripts\python.exe tools\validate_desktop_package.py $archive --test-relocated
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop package validation failed' }
+          $previewDir = [IO.Path]::Combine([IO.Path]::GetDirectoryName($archive), [IO.Path]::GetFileNameWithoutExtension($archive))
+          $installerOutput = & .\.venv\Scripts\python.exe tools\build_installer.py --source-dir $previewDir --output-dir (Join-Path $env:RUNNER_TEMP 'AstraInstaller')
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup package build failed' }
+          $installerOutput | Write-Output
+          $installerLine = $installerOutput | Where-Object { $_ -like 'ASTRA_INSTALLER=*' } | Select-Object -Last 1
+          if (-not $installerLine) { throw 'Build did not report ASTRA_INSTALLER' }
+          $installerPath = $installerLine.Substring('ASTRA_INSTALLER='.Length)
+          & .\.venv\Scripts\python.exe tools\validate_installer.py $installerPath
+          if ($LASTEXITCODE -ne 0) { throw 'Installer integration validation failed' }

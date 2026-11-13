@@ -78,6 +78,7 @@ WAKE_PHRASES = [
 
 
 class FakeVoiceIO:
+    microphone = object()
     def __init__(self, inputs: list[str]) -> None:
         self.inputs = list(inputs)
         self.spoken: list[str] = []
@@ -422,11 +423,13 @@ def test_current_package_script_markers() -> None:
     )
 
     for script in (review_script, release_script):
-        assert "v1.2" in script
+        assert "v1.3" in script
         assert "validate_package.py" in script
         assert "--source-root" in script
         assert "smoke_test_v101_beta.py" in script
         assert "smoke_test_v12_native_music.py" in script
+        assert "smoke_test_v13_media_control.py" in script
+        assert "smoke_test_v13_window_actions.py" in script
         assert '".env"' in script
         assert "roboExit -gt 7" in script
         assert '@"' not in script and "@'" not in script

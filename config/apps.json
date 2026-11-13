@@ -194,6 +194,30 @@
         "%LOCALAPPDATA%\\Programs\\YandexMusic\\Яндекс Музыка.exe"
       ],
       "process_name": "Яндекс Музыка.exe"
+    },
+    "медиаплеер": {
+      "aliases": [
+        "локальный плеер",
+        "локальный проигрыватель",
+        "медиа плеер",
+        "media player",
+        "проигрыватель",
+        "windows media player",
+        "проигрыватель windows media",
+        "groove music",
+        "музыка groove",
+        "медиаплеер",
+        "плеер",
+        "музыка грув",
+        "грув музыка",
+        "groove",
+        "грув"
+      ],
+      "open_command": [
+        "explorer.exe",
+        "mswindowsmusic:"
+      ],
+      "process_name": "Music.UI.exe"
     }
   }
 }

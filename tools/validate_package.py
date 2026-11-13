@@ -34,7 +34,7 @@ SOURCE_ONLY_EXCLUDED_DIRECTORIES = {
 
 SOURCE_ONLY_EXCLUDED_FILES = {
     ".env.sanitized",
-    "astra-v1.2-last-log.txt",
+    "astra-v1.3-last-log.txt",
 }
 
 SECRET_ASSIGNMENT_RE = re.compile(

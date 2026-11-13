@@ -66,6 +66,15 @@ LIST_REMINDER_PHRASES = frozenset({
     "назови ближайшие напоминания",
     "что у меня с напоминаниями",
 })
+REMINDER_WEEKDAYS = {
+    "понедельник": 0,
+    "вторник": 1,
+    "среду": 2,
+    "четверг": 3,
+    "пятницу": 4,
+    "субботу": 5,
+    "воскресенье": 6,
+}
 
 
 OPEN_PREFIXES = (
@@ -1453,6 +1462,32 @@ def parse_command_text(text: str) -> ParsedCommand:
                 local_now = datetime.now().astimezone()
                 target_date = local_now.date() + timedelta(days=day_offsets[dated_match[1]])
                 target_local = datetime.combine(target_date, datetime_time(hour, minute)).astimezone()
+                delay = math.ceil(target_local.timestamp() - local_now.timestamp())
+                if 1 <= delay <= 30 * 86400:
+                    return ParsedCommand(
+                        CommandType.REMINDER,
+                        text=normalized,
+                        target=json.dumps({"delay": delay, "text": text_to_remember}, ensure_ascii=False),
+                    )
+            return ParsedCommand(CommandType.REMINDER, text=normalized)
+
+        weekday_match = re.fullmatch(
+            r"напомни(?: мне)? (?:в|во) (понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье) в (\d{1,2})(?: (\d{2}))? (.+)",
+            normalized,
+        )
+        if weekday_match:
+            hour = int(weekday_match[2])
+            minute = int(weekday_match[3] or "0")
+            text_to_remember = weekday_match[4]
+            if 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+                local_now = datetime.now().astimezone()
+                days_ahead = (REMINDER_WEEKDAYS[weekday_match[1]] - local_now.weekday()) % 7
+                target_date = local_now.date() + timedelta(days=days_ahead)
+                target_time = datetime_time(hour, minute)
+                target_local = datetime.combine(target_date, target_time).astimezone()
+                if target_local.timestamp() <= local_now.timestamp():
+                    target_date += timedelta(days=7)
+                    target_local = datetime.combine(target_date, target_time).astimezone()
                 delay = math.ceil(target_local.timestamp() - local_now.timestamp())
                 if 1 <= delay <= 30 * 86400:
                     return ParsedCommand(

@@ -32,6 +32,23 @@ class ReminderCommandTests(unittest.TestCase):
                 self.assertGreater(payload["delay"], 0)
                 self.assertLessEqual(payload["delay"], upper_bound)
 
+    def test_weekday_time_reminders_choose_a_future_local_occurrence(self):
+        for phrase in (
+            "напомни в понедельник в 9 позвонить",
+            "напомни во вторник в 9 30 позвонить",
+            "напомни в среду в 9 проверить календарь",
+            "напомни в четверг в 9 позвонить",
+            "напомни в пятницу в 9 позвонить",
+            "напомни в субботу в 9 позвонить",
+            "напомни в воскресенье в 9 позвонить",
+        ):
+            with self.subTest(phrase=phrase):
+                parsed = parse_command_text(phrase)
+                self.assertEqual(parsed.type, CommandType.REMINDER)
+                delay = json.loads(parsed.target)["delay"]
+                self.assertGreater(delay, 0)
+                self.assertLessEqual(delay, 8 * 86400)
+
     def test_calendar_time_reminders_reject_past_today_and_invalid_clock(self):
         for phrase in (
             "напомни сегодня в 0 позвонить",
@@ -40,6 +57,7 @@ class ReminderCommandTests(unittest.TestCase):
             "напомни завтра в 24 позвонить",
             "напомни завтра в 9 99 позвонить",
             "напомни завтра в 9",
+            "напомни в пятницу в 99 позвонить",
         ):
             with self.subTest(phrase=phrase):
                 parsed = parse_command_text(phrase)

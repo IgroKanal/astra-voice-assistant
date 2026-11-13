@@ -75,6 +75,40 @@ REMINDER_WEEKDAYS = {
     "субботу": 5,
     "воскресенье": 6,
 }
+_CLOCK_WORD_VALUES = {"ноль": 0, "нуль": 0, "час": 1}
+_CLOCK_ONES = {
+    1: ("один", "одна"),
+    2: ("два", "две"),
+    3: ("три",),
+    4: ("четыре",),
+    5: ("пять",),
+    6: ("шесть",),
+    7: ("семь",),
+    8: ("восемь",),
+    9: ("девять",),
+}
+_CLOCK_TEENS = (
+    "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+    "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать",
+)
+_CLOCK_TENS = {20: "двадцать", 30: "тридцать", 40: "сорок", 50: "пятьдесят"}
+for _number, _forms in _CLOCK_ONES.items():
+    for _form in _forms:
+        _CLOCK_WORD_VALUES[_form] = _number
+for _number, _word in enumerate(_CLOCK_TEENS, start=10):
+    _CLOCK_WORD_VALUES[_word] = _number
+for _tens, _word in _CLOCK_TENS.items():
+    _CLOCK_WORD_VALUES[_word] = _tens
+    for _ones, _forms in _CLOCK_ONES.items():
+        for _form in _forms:
+            _CLOCK_WORD_VALUES[f"{_word} {_form}"] = _tens + _ones
+_CLOCK_NUMBER_PATTERN = "(?:\\d{1,2}|" + "|".join(
+    re.escape(value) for value in sorted(_CLOCK_WORD_VALUES, key=lambda value: (-len(value), value))
+) + ")"
+
+
+def _parse_clock_number(value: str) -> int | None:
+    return int(value) if value.isdigit() else _CLOCK_WORD_VALUES.get(value)
 
 
 OPEN_PREFIXES = (
@@ -1450,15 +1484,19 @@ def parse_command_text(text: str) -> ParsedCommand:
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_UI_TARGET)
     if normalized.startswith("напомни"):
         dated_match = re.fullmatch(
-            r"напомни(?: мне)? (сегодня|завтра|послезавтра) в (\d{1,2})(?: (\d{2}))? (.+)",
+            r"напомни(?: мне)? (сегодня|завтра|послезавтра) в ("
+            + _CLOCK_NUMBER_PATTERN
+            + r")(?: ("
+            + _CLOCK_NUMBER_PATTERN
+            + r"))? (.+)",
             normalized,
         )
         if dated_match:
             day_offsets = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
-            hour = int(dated_match[2])
-            minute = int(dated_match[3] or "0")
+            hour = _parse_clock_number(dated_match[2])
+            minute = _parse_clock_number(dated_match[3] or "0")
             text_to_remember = dated_match[4]
-            if 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+            if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
                 local_now = datetime.now().astimezone()
                 target_date = local_now.date() + timedelta(days=day_offsets[dated_match[1]])
                 target_local = datetime.combine(target_date, datetime_time(hour, minute)).astimezone()
@@ -1472,14 +1510,18 @@ def parse_command_text(text: str) -> ParsedCommand:
             return ParsedCommand(CommandType.REMINDER, text=normalized)
 
         weekday_match = re.fullmatch(
-            r"напомни(?: мне)? (?:в|во) (понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье) в (\d{1,2})(?: (\d{2}))? (.+)",
+            r"напомни(?: мне)? (?:в|во) (понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье) в ("
+            + _CLOCK_NUMBER_PATTERN
+            + r")(?: ("
+            + _CLOCK_NUMBER_PATTERN
+            + r"))? (.+)",
             normalized,
         )
         if weekday_match:
-            hour = int(weekday_match[2])
-            minute = int(weekday_match[3] or "0")
+            hour = _parse_clock_number(weekday_match[2])
+            minute = _parse_clock_number(weekday_match[3] or "0")
             text_to_remember = weekday_match[4]
-            if 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+            if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
                 local_now = datetime.now().astimezone()
                 days_ahead = (REMINDER_WEEKDAYS[weekday_match[1]] - local_now.weekday()) % 7
                 target_date = local_now.date() + timedelta(days=days_ahead)

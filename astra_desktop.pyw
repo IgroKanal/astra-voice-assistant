@@ -208,7 +208,7 @@ class AstraDesktop:
 
     def append(self, who, text):
         self.chat.configure(state="normal")
-        role = "user" if who == "Ты" else "assistant" if who in {"Астра", self.assistant_name} else "system"
+        role = "user" if who in {"Ты", "Ты · голос"} else "assistant" if who in {"Астра", self.assistant_name} else "system"
         self.chat.insert("end", f"{who}\n", role + "_name")
         self.chat.insert("end", f"{text}\n\n", role)
         if int(self.chat.index("end-1c").split(".")[0]) > 3000:
@@ -282,6 +282,7 @@ class AstraDesktop:
         self.append("Система", f"{DISPLAY_VERSION}\nРежим: {mode}\nАссистент: {'подключён' if self.bridge.running else 'остановлен'}\nМикрофон: {'включён' if self.bridge.running and self.bridge.mode == 'voice' else 'выключен'}")
 
     def open_files(self):
+        from tkinter import ttk
         selected = filedialog.askdirectory(parent=self.window, title="Разрешить чтение выбранной папки на эту сессию")
         if not selected:
             return
@@ -293,19 +294,26 @@ class AstraDesktop:
         panel = tk.Toplevel(self.window)
         panel.title("Astra · файлы · только чтение")
         executor = SkillExecutor(workspace)
-        panel.geometry("900x620")
+        panel.geometry("1020x720")
+        panel.minsize(820, 620)
         panel.configure(bg=BG)
-        tk.Label(panel, text=str(workspace.root), bg=BG, fg=TEXT, font=("Segoe UI", 11), wraplength=850).pack(padx=20, pady=14)
+        tk.Label(panel, text="Файлы и документы", bg=BG, fg=TEXT, font=("Segoe UI", 21, "bold")).pack(anchor="w", padx=24, pady=(20, 6))
+        tk.Label(panel, text=str(workspace.root), bg=BG, fg=MUTED, font=("Segoe UI", 10), wraplength=950).pack(anchor="w", padx=24, pady=(0, 10))
         tk.Label(panel, text="Текстовые файлы, PDF, DOCX, XLSX и PPTX читаются локально. Выбери один файл или до пяти файлов с Ctrl/Shift для локального вопроса.", bg=BG, fg=MUTED, wraplength=850).pack()
         row = tk.Frame(panel, bg=BG)
         row.pack(fill="x", padx=20, pady=12)
         query = tk.Entry(row, bg=PANEL, fg=TEXT, insertbackground=TEXT, font=("Segoe UI", 11))
         query.pack(side="left", fill="x", expand=True, ipady=8)
-        results = tk.Listbox(panel, selectmode="extended", bg=PANEL, fg=TEXT, selectbackground="#514583", font=("Segoe UI", 10), relief="flat")
-        results.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        results_card = tk.Frame(panel, bg=PANEL)
+        results_card.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        results = tk.Listbox(results_card, selectmode="extended", bg=PANEL, fg=TEXT, selectbackground="#514583", font=("Segoe UI", 11), relief="flat", exportselection=False)
+        result_scroll = ttk.Scrollbar(results_card, orient="vertical", command=results.yview)
+        results.configure(yscrollcommand=result_scroll.set)
+        result_scroll.pack(side="right", fill="y")
+        results.pack(side="left", fill="both", expand=True, padx=10, pady=8)
         panel.astra_file_results = results
         status = tk.StringVar(value="")
-        tk.Label(panel, textvariable=status, bg=BG, fg=MUTED, wraplength=850).pack(side="bottom", before=results, pady=8)
+        tk.Label(panel, textvariable=status, bg=BG, fg=MUTED, wraplength=950).pack(side="bottom", before=results_card, pady=8)
         panel.astra_files_status = status
         mailbox = queue.Queue()
         generation = [0]
@@ -357,13 +365,21 @@ class AstraDesktop:
                     results.delete(0, "end")
                     for item in value:
                         results.insert("end", item.path)
-                    status.set(f"Найдено: {len(value)} · до 500 результатов / 10000 файлов · двойной щелчок: читать документ")
+                    status.set(f"Найдено: {len(value)} · двойной щелчок открывает просмотр" if value else "Файлы не найдены. Попробуй другое имя или очисти строку поиска.")
                 elif kind == "text":
                     viewer = tk.Toplevel(panel)
                     viewer.title(value[0])
                     viewer.geometry("800x560")
-                    content = tk.Text(viewer, bg=PANEL, fg=TEXT, wrap="word", font=("Consolas", 11))
-                    content.pack(fill="both", expand=True)
+                    viewer.configure(bg=BG)
+                    tk.Label(viewer, text=Path(value[0]).name, bg=BG, fg=TEXT, font=("Segoe UI", 15, "bold"), wraplength=750).pack(anchor="w", padx=20, pady=(18, 5))
+                    tk.Label(viewer, text="Локальный просмотр · документ открыт только для чтения", bg=BG, fg=MUTED).pack(anchor="w", padx=20, pady=(0, 14))
+                    content_card = tk.Frame(viewer, bg=PANEL)
+                    content_card.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+                    content = tk.Text(content_card, bg=PANEL, fg=TEXT, wrap="word", font=("Segoe UI", 11), relief="flat", padx=16, pady=14)
+                    scroll = ttk.Scrollbar(content_card, orient="vertical", command=content.yview)
+                    content.configure(yscrollcommand=scroll.set)
+                    scroll.pack(side="right", fill="y")
+                    content.pack(side="left", fill="both", expand=True)
                     content.insert("1.0", value[1])
                     content.configure(state="disabled")
                 elif kind == "image":
@@ -403,8 +419,16 @@ class AstraDesktop:
                     drain_timer[0] = None
         panel.bind("<Destroy>", destroyed)
         self.button(row, "Найти", search).pack(side="right", padx=(10, 0))
-        self.button(panel, "Операции с файлами · разрешения и восстановление", lambda: open_file_operations(panel, workspace, self.button)).pack(side="bottom", before=results, pady=6)
-        self.button(panel, "План · симуляция и запуск разрешённых шагов", lambda: open_plan_ui(panel, workspace, self.button)).pack(side="bottom", before=results, pady=6)
+        file_actions = tk.Frame(panel, bg=BG)
+        file_actions.pack(side="bottom", before=results_card, fill="x", padx=20, pady=8)
+        file_actions.columnconfigure(0, weight=1, uniform="actions")
+        file_actions.columnconfigure(1, weight=1, uniform="actions")
+        def file_action(label, callback, row, column):
+            control = self.button(file_actions, label, callback)
+            control.configure(wraplength=310)
+            control.grid(row=row, column=column, sticky="ew", padx=4, pady=4)
+        file_action("Операции с файлами · разрешения и восстановление", lambda: open_file_operations(panel, workspace, self.button), 0, 0)
+        file_action("План · симуляция и запуск разрешённых шагов", lambda: open_plan_ui(panel, workspace, self.button), 0, 1)
         def ask_selected():
             selection = results.curselection()
             if selection:
@@ -424,8 +448,8 @@ class AstraDesktop:
                 open_file_questions(panel, workspace, relatives, self.button)
             except Exception as exc:
                 status.set(str(exc))
-        self.button(panel, "Вопрос по выбранному файлу · локальный ИИ", ask_selected).pack(side="bottom", before=results, pady=6)
-        self.button(panel, "Сравнить выбранные файлы · локальный ИИ", ask_selected_many).pack(side="bottom", before=results, pady=6)
+        file_action("Вопрос по выбранному файлу · локальный ИИ", ask_selected, 1, 0)
+        file_action("Сравнить выбранные файлы · локальный ИИ", ask_selected_many, 1, 1)
         panel.astra_ask_selected_many = ask_selected_many
         panel.astra_open_selected = read
         query.bind("<Return>", lambda event: search())

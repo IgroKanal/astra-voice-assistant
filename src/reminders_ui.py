@@ -1,15 +1,19 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from src.desktop_theme import install_theme
 
 
 def open_reminders(owner, store, button, allow_create=lambda: True):
+    install_theme(owner)
     panel = tk.Toplevel(owner)
     panel.title("Astra · напоминания")
-    panel.geometry("820x600")
+    panel.geometry(f"900x{min(720, max(600, owner.winfo_screenheight() - 100))}")
+    panel.minsize(800, 600)
     panel.configure(bg="#101322")
-    tk.Label(panel, text="Срабатывают, пока Astra запущена. После перезапуска просроченные задачи доставляются снова.", bg="#101322", fg="#a2abc9", wraplength=760).pack(pady=18)
+    tk.Label(panel, text="Мои задачи", font=("Segoe UI", 21, "bold")).pack(anchor="w", padx=22, pady=(20, 4))
+    tk.Label(panel, text="Напоминания работают, пока Astra запущена. Просроченные будут доставлены при следующем запуске.", bg="#101322", fg="#a2abc9", wraplength=840).pack(anchor="w", padx=22, pady=(0, 14))
     text = tk.Entry(panel, bg="#191f34", fg="#e9ecff", insertbackground="#e9ecff", font=("Segoe UI", 12))
     text.pack(fill="x", padx=22, ipady=9)
     text.insert(0, "О чём напомнить")
@@ -17,20 +21,51 @@ def open_reminders(owner, store, button, allow_create=lambda: True):
     due = tk.Entry(panel, font=("Segoe UI", 12))
     due.pack(fill="x", padx=22, ipady=6)
     due.insert(0, (datetime.now() + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M"))
-    listing = tk.Listbox(panel, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 10), height=12)
-    listing.pack(fill="both", expand=True, padx=22, pady=16)
+    table_card = tk.Frame(panel)
+    table_card.pack(fill="both", expand=True, padx=22, pady=14)
+    listing = ttk.Treeview(table_card, columns=("due", "state", "text"), show="headings", selectmode="browse", height=6)
+    for column, label, width in (("due", "Срок", 150), ("state", "Статус", 140), ("text", "Напоминание", 450)):
+        listing.heading(column, text=label)
+        listing.column(column, width=width, minwidth=100, stretch=column == "text")
+    scrollbar = ttk.Scrollbar(table_card, orient="vertical", command=listing.yview)
+    listing.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+    listing.pack(side="left", fill="both", expand=True)
+    detail = tk.StringVar(value="Выбери задачу, чтобы прочитать её полностью.")
+    detail_card = tk.Frame(panel)
+    detail_card.pack(side="bottom", before=table_card, fill="x", padx=22)
+    detail_text = tk.Text(detail_card, height=3, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 10), wrap="word", relief="flat", padx=12, pady=8)
+    detail_scroll = ttk.Scrollbar(detail_card, orient="vertical", command=detail_text.yview)
+    detail_text.configure(yscrollcommand=detail_scroll.set)
+    detail_scroll.pack(side="right", fill="y")
+    detail_text.pack(side="left", fill="x", expand=True)
+    def show_detail(*_):
+        detail_text.configure(state="normal")
+        detail_text.delete("1.0", "end")
+        detail_text.insert("1.0", detail.get())
+        detail_text.configure(state="disabled")
+    detail.trace_add("write", show_detail)
+    show_detail()
     status = tk.StringVar()
-    tk.Label(panel, textvariable=status, bg="#101322", fg="#a2abc9", wraplength=760).pack(pady=6)
+    tk.Label(panel, textvariable=status, bg="#101322", fg="#a2abc9", wraplength=840).pack(side="bottom", before=table_card, pady=6)
     records = []
     def refresh():
         nonlocal records
         try:
             records = store.list()
-            listing.delete(0, "end")
+            selection = listing.selection()
+            if listing.get_children():
+                listing.delete(*listing.get_children())
             names = {"pending": "Ожидает", "delivering": "Доставка", "delivered": "Не прочитано", "completed": "Прочитано", "cancelled": "Отменено"}
             for record in records:
-                listing.insert("end", f"{datetime.fromtimestamp(record.due):%d.%m %H:%M} · {names[record.state]} · {record.text}")
-            status.set(f"Напоминаний: {len(records)} · текст зашифрован локально")
+                listing.insert("", "end", iid=record.id, values=(f"{datetime.fromtimestamp(record.due):%d.%m %H:%M}", names[record.state], record.text.replace("\n", " ")[:120]))
+            if selection and listing.exists(selection[0]):
+                listing.selection_set(selection[0])
+            elif not records:
+                detail.set("Пока нет задач. Введи напоминание и выбери время выше.")
+            else:
+                detail.set("Выбери задачу, чтобы прочитать её полностью.")
+            status.set(f"Всего: {len(records)} · ожидают: {sum(record.state in {'pending', 'delivering'} for record in records)} · текст зашифрован локально")
         except Exception:
             status.set("Не удалось прочитать напоминания")
     def add():
@@ -47,20 +82,20 @@ def open_reminders(owner, store, button, allow_create=lambda: True):
         except Exception:
             status.set("Не удалось сохранить напоминание")
     def cancel():
-        selection = listing.curselection()
+        selection = listing.selection()
         if selection and messagebox.askyesno("Отмена", "Отменить выбранное напоминание?", parent=panel):
             try:
-                changed = store.cancel(records[selection[0]].id)
+                changed = store.cancel(selection[0])
                 refresh()
                 if not changed:
                     status.set("Статус изменился: напоминание уже доставлено или отменено")
             except Exception:
                 status.set("Не удалось отменить напоминание")
     def complete():
-        selection = listing.curselection()
+        selection = listing.selection()
         if selection:
             try:
-                store.complete(records[selection[0]].id)
+                store.complete(selection[0])
                 refresh()
             except Exception:
                 status.set("Не удалось изменить статус напоминания")
@@ -119,7 +154,7 @@ def open_reminders(owner, store, button, allow_create=lambda: True):
         finally:
             phrase = None
     actions = tk.Frame(panel, bg="#101322")
-    actions.pack(side="bottom", before=listing, pady=10)
+    actions.pack(side="bottom", before=table_card, pady=10)
     button(actions, "Добавить", add).pack(side="left", padx=4)
     button(actions, "Отменить выбранное", cancel).pack(side="left", padx=4)
     button(actions, "Обновить", refresh).pack(side="left", padx=4)
@@ -128,5 +163,12 @@ def open_reminders(owner, store, button, allow_create=lambda: True):
     portable_actions.pack(side="bottom", before=actions, pady=(0, 8))
     button(portable_actions, "Экспорт переносимой копии…", portable_backup).pack(side="left", padx=5)
     button(portable_actions, "Импорт переносимой копии…", portable_restore).pack(side="left", padx=5)
+    def selected(_event=None):
+        choice = listing.selection()
+        if choice:
+            record = next((item for item in records if item.id == choice[0]), None)
+            if record:
+                detail.set(record.text)
+    listing.bind("<<TreeviewSelect>>", selected)
     refresh()
     return panel

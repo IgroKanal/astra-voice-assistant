@@ -53,8 +53,11 @@ class FileQuestionSession:
     def revoke(self):
         self.revoked.set()
 
+    def _is_cancelled(self, cancelled=None):
+        return self.revoked.is_set() or (cancelled is not None and cancelled.is_set())
+
     def check(self, cancelled=None):
-        if self.revoked.is_set() or (cancelled is not None and cancelled.is_set()):
+        if self._is_cancelled(cancelled):
             raise WorkspaceDenied("Запрос отменён или разрешение на файл отозвано")
 
     @staticmethod
@@ -74,7 +77,10 @@ class FileQuestionSession:
         total_characters = 0
         for relative in self.relatives:
             self.check(cancelled)
-            text = self.workspace.read_text(relative)
+            text = self.workspace.read_text(
+                relative,
+                is_cancelled=lambda: self._is_cancelled(cancelled),
+            )
             total_characters += len(text)
             if total_characters > self.MAX_CHARACTERS:
                 raise ValueError("Общий текст выбранных файлов превышает 200000 символов")
@@ -87,7 +93,9 @@ class FileQuestionSession:
             buffer, size, start = [], 0, 1
             # Fixed-size fragments preserve original line numbers, including long lines.
             for number, line in enumerate(lines, 1):
+                self.check(cancelled)
                 for offset in range(0, max(1, len(line)), 700):
+                    self.check(cancelled)
                     part = line[offset:offset + 700]
                     if buffer and (size + len(part) > 900 or number - start >= 12):
                         chunk = "\n".join(buffer)
@@ -145,7 +153,10 @@ class FileQuestionSession:
         current = []
         for relative in self.relatives:
             self.check(cancelled)
-            current.append((relative, self.workspace.read_text(relative)))
+            current.append((relative, self.workspace.read_text(
+                relative,
+                is_cancelled=lambda: self._is_cancelled(cancelled),
+            )))
         if self.collection_fingerprint(current) != digest:
             raise WorkspaceDenied("Один из выбранных файлов изменился во время ответа. Повтори вопрос по актуальному содержимому.")
         transmitted = tuple(Passage(item["lines"][0], item["lines"][1], item["text"],

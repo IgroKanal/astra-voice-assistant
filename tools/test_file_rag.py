@@ -109,6 +109,18 @@ class FileQuestionTests(unittest.TestCase):
             with self.assertRaises(WorkspaceDenied):
                 self.session.answer("кодовое слово", self.profile)
 
+    def test_revocation_during_document_read_stops_file_rag_before_model_request(self):
+        read_text = self.session.workspace.read_text
+
+        def revoke_during_read(relative, **kwargs):
+            self.session.revoke()
+            return read_text(relative, **kwargs)
+
+        with patch.object(self.session.workspace, "read_text", side_effect=revoke_during_read), \
+                patch.object(OllamaClient, "chat", side_effect=AssertionError("No request")):
+            with self.assertRaisesRegex(WorkspaceDenied, "отмен"):
+                self.session.answer("кодовое слово", self.profile)
+
     def test_changed_file_invalidates_answer(self):
         def change(*args, **kwargs):
             self.path.write_text("Новое содержимое", encoding="utf-8")

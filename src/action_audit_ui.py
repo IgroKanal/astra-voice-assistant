@@ -1,6 +1,6 @@
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from src.action_audit import default_audit
 from src.desktop_theme import install_theme, BG, TEXT, MUTED, PANEL
@@ -154,8 +154,26 @@ def open_action_audit(owner, button):
         except Exception:
             status.set("Не удалось прочитать локальный журнал")
 
+    def clear_history():
+        if not messagebox.askyesno(
+            "Очистить историю действий",
+            "Будут удалены все записи журнала Astra с этого компьютера (до 5000 событий). "
+            "Это нельзя отменить. Продолжить?",
+            parent=panel,
+        ):
+            return
+        try:
+            deleted = default_audit().clear()
+            refresh()
+            status.set(f"История очищена. Удалено записей: {deleted}.")
+        except Exception:
+            status.set("Не удалось очистить локальную историю")
+
     search_value.trace_add("write", refresh)
     outcome_value.trace_add("write", refresh)
-    button(panel, "Обновить", refresh).pack(pady=(5, 12))
+    actions = tk.Frame(panel, bg=BG)
+    actions.pack(fill="x", padx=24, pady=(5, 12))
+    button(actions, "Очистить историю", clear_history).pack(side="left")
+    button(actions, "Обновить", refresh).pack(side="right")
     refresh()
     return panel

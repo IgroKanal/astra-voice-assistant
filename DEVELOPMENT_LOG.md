@@ -646,4 +646,15 @@
 - Portable ZIP `AstraDesktop-preview-20261113-204953.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, runtime/policy/privacy, встроенные аватары, Godot IPC и проверку набора модулей. SHA-256: `0649AE11C1307DB4EFB28898CC4DB433CC653D7BDF4BB52C2A4C84EED481FB7C`.
 - `Astra-Setup-2.7.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением LocalAppData. SHA-256: `F8FF081A9B786A14F73475787BB294166F10C135A6E456D81E1BA297F15C86D1`.
 - После этих проверок ярлык Astra переключён с проверенной 2.6 на 2.7; target перечитан и сверен. Реальная визуальная/клавиатурная приёмка журнала и микрофона остаётся открытой.
+- GitHub Actions run `43468251217` для коммита `458044c` завершился успешно; release не создавался.
 - Визуальная и клавиатурная приёмка остаётся открытой. 2.7 Beta не закрывает общие gates v2–v5.
+
+## Astra 2.8 Beta · управление локальной историей
+
+- Добавлена команда очистки до 5000 локальных записей журнала. Перед удалением показывается отдельное подтверждение с описанием масштаба и необратимости действия.
+- `ActionAudit.clear()` использует SQLite-транзакцию и `PRAGMA secure_delete=ON`; повторный вызов возвращает ноль и оставляет базу чистой.
+- Отказ в диалоге подтверждения сохраняет историю; после согласия таблица сразу обновляется. Другие пользовательские данные и журналы не затрагиваются.
+- Полный Windows gate прошёл: compileall, desktop compile, legacy smoke и config validators, `astra_doctor.py`, все 173 unit/integration/UI тест за 103.8 сек.
+- Portable ZIP `AstraDesktop-preview-20261113-210650.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, runtime/policy/privacy, аватары и authenticated Godot IPC. SHA-256: `0A1E6363977EF227647F05D7A9503D09F51F12B1AE453F4B99FBA79C28D04526`.
+- `Astra-Setup-2.8.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением пользовательских данных. SHA-256: `9887590D676AE41B6B70EE55E50D45804D0207A75AEF43C382247C8EB54F7684`.
+- Ярлык переключён с проверенной 2.7 на 2.8 только после package gates; target перечитан и сверен. Визуальная/клавиатурная и микрофонная приёмка остаются открытыми.

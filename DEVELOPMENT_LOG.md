@@ -585,3 +585,10 @@
 - File UI: заголовок папки, scroll результатов, пустое состояние поиска, две колонки действий и оформленный локальный viewer документа с прокруткой. Сохранены границы workspace, выбор до пяти файлов и отдельные подтверждения операций.
 - Пройдено 29 UI-тестов за 64.3 сек; после финальной компоновки панели файлов повторены три целевых UI-сценария — прошли. Тест полного текста напоминания учитывает нормализацию пробелов существующим ReminderStore. Визуальная приёмка остаётся ручной.
 - Источники отправляются в существующую ветку, затем собирается 2.2.0-beta.1. Desktop shortcut остаётся на проверенной 2.1 до package/installer gate.
+
+### Astra 2.2 · готовый пакет и CI
+
+- GitHub run 43414248158 для 8c9cdd7 завершился success. Локальный portable 20261113-150618 прошёл 207-entry/secret/CRC scan, relocated runtime, audit/policy/privacy marker и Godot authenticated IPC.
+- ZIP D:\AstraBuilds\AstraDesktop-preview-20261113-150618.zip: SHA256 8F45197F92DFF4C67BA66A7D209615EF773CC42BC9C1A96B256A3995443AC697.
+- Setup D:\AstraBuilds\AstraInstaller-2.2\Astra-Setup-2.2.0-beta.1.exe прошёл install/runtime/uninstall с сохранением данных. SHA256 FA6C8123634BC51C5C8C07443EE0D12A450551A2AA653930B621C7DE89C38D04.
+- Desktop shortcut Astra переключён на проверенную 2.2. Микрофон/художественная приёмка остаются ручными. Следующий UI-этап — единые карточки onboarding/разрешений и доступность интерфейса; runtime scope пока не расширяется.

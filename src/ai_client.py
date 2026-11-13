@@ -16,6 +16,7 @@ from openai import OpenAIError
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
 from src.ollama_client import OllamaClient
+from src.llm_providers import create_provider
 
 
 @dataclass(frozen=True)
@@ -45,24 +46,34 @@ class AIClient:
     ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(__name__)
-        self._client: OpenAI | None = None
+        self.provider = create_provider(
+            settings,
+            openai_factory=OpenAI,
+            ollama_factory=OllamaClient,
+            can_create_compatible=self._can_create_compatible_provider(),
+        )
         self._dialogue: list[dict[str, str]] = []
         self._memory_stamp = None
         self._warmup_lock = threading.Lock()
         self._warmup_thread: threading.Thread | None = None
-        self._local = OllamaClient(settings.llm_base_url, settings.llm_timeout_seconds) if settings.llm_enabled and settings.llm_provider == "ollama" else None
 
-        if self._local is None and self._can_create_client():
-            self._client = OpenAI(
-                api_key=self.settings.llm_api_key,
-                base_url=self.settings.llm_base_url or None,
-                timeout=self.settings.llm_timeout_seconds,
-                max_retries=0,
-            )
+    @property
+    def _local(self):
+        """Compatibility view for diagnostics and older integrations."""
+        if getattr(self.provider, "is_local", False):
+            return self.provider.client
+        return None
+
+    @property
+    def _client(self):
+        """Compatibility view for diagnostics and older integrations."""
+        if self.provider is not None and not getattr(self.provider, "is_local", False):
+            return getattr(self.provider, "client", None)
+        return None
 
     @property
     def is_available(self) -> bool:
-        return self._client is not None or self._local is not None
+        return self.provider.available
 
     def clear_dialogue(self) -> None:
         """Forget only the in-memory local conversation history for this session."""
@@ -70,7 +81,7 @@ class AIClient:
 
     def prewarm_local_async(self):
         """Warm only an installed loopback Ollama model without blocking voice capture."""
-        if self._local is None:
+        if not self.provider.is_local:
             return None
         with self._warmup_lock:
             if self._warmup_thread is not None and self._warmup_thread.is_alive():
@@ -92,7 +103,7 @@ class AIClient:
     def _prewarm_local(self) -> None:
         started = time.perf_counter()
         try:
-            ready = self._local.warmup(self.settings.llm_model)
+            ready = self.provider.warmup(self.settings.llm_model)
             self.logger.info(
                 "LLM warmup: provider=ollama result=%s elapsed=%.3fs",
                 "ready" if ready else "model_missing",
@@ -104,7 +115,7 @@ class AIClient:
                 time.perf_counter() - started,
             )
 
-    def _can_create_client(self) -> bool:
+    def _can_create_compatible_provider(self) -> bool:
         if not self.settings.llm_enabled:
             return False
         if not self.settings.llm_api_key:
@@ -123,15 +134,16 @@ class AIClient:
         if not self.settings.llm_enabled:
             return LLMResult(False, "LLM отключена в настройках.")
 
-        if self._local is not None:
+        if self.provider.is_local:
             started = time.perf_counter()
             try:
                 context = self._memory_context(question)
-                answer = self._local.chat(
-                    self.settings.llm_model,
-                    self._build_answer_system_prompt(),
-                    question,
-                    self.settings.llm_max_tokens,
+                answer = self.provider.answer(
+                    model=self.settings.llm_model,
+                    system=self._build_answer_system_prompt(),
+                    question=question,
+                    max_tokens=self.settings.llm_max_tokens,
+                    temperature=self.settings.llm_temperature,
                     history=self._dialogue,
                     memory_context=context,
                     think=self.settings.ollama_thinking_enabled,
@@ -158,7 +170,7 @@ class AIClient:
                 )
                 return LLMResult(False, "Локальная модель недоступна или не успела ответить. Проверь Ollama и выбранную модель.")
 
-        if self._client is None:
+        if not self.provider.available:
             return LLMResult(
                 False,
                 "LLM API-ключ не настроен. Я могу выполнять локальные команды, "
@@ -180,17 +192,13 @@ class AIClient:
                     self.settings.llm_provider,
                     model,
                 )
-                response = self._client.chat.completions.create(
+                message = self.provider.answer(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": question},
-                    ],
-                    temperature=self.settings.llm_temperature,
+                    system=system_prompt,
+                    question=question,
                     max_tokens=self.settings.llm_max_tokens,
+                    temperature=self.settings.llm_temperature,
                 )
-
-                message = response.choices[0].message.content if response.choices else ""
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
                     result_kind = "ok"
@@ -239,7 +247,7 @@ class AIClient:
         return LLMResult(False, last_error_message)
 
     def _memory_context(self, question: str) -> str:
-        if not self.settings.personal_memory_enabled or self._local is None:
+        if not self.settings.personal_memory_enabled or not self.provider.is_local:
             return ""
         from src.personal_memory import PersonalMemory
         path = Path(self.settings.personal_memory_path) if self.settings.personal_memory_path else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "memory.sqlite"
@@ -263,7 +271,7 @@ class AIClient:
 
         LLM ничего не запускает сама. Она только возвращает намерение.
         """
-        if self._local is not None:
+        if self.provider.is_local:
             if not self.settings.llm_router_enabled:
                 return RouteResult(
                     ok=False,
@@ -280,13 +288,10 @@ class AIClient:
                 # Keep the local classifier on the already selected Ollama model.
                 # It gets no dialogue/memory, cannot call cloud APIs, and returns
                 # only an action that still passes the normal policy/dispatch gates.
-                raw_message = self._local.chat(
-                    self.settings.llm_model,
-                    self._build_router_prompt(apps),
-                    user_text,
-                    max_tokens=500,
-                    temperature=0,
-                    think=False,
+                raw_message = self.provider.classify(
+                    model=self.settings.llm_model,
+                    system=self._build_router_prompt(apps),
+                    request=user_text,
                 ).strip()
                 action = self._action_from_router_json(
                     self._parse_json_object(raw_message), user_text
@@ -312,7 +317,7 @@ class AIClient:
                     ),
                 )
 
-        if self._client is None:
+        if not self.provider.available:
             return RouteResult(
                 ok=False,
                 action=AssistantAction(
@@ -330,18 +335,13 @@ class AIClient:
         for model in self._models_to_try():
             try:
                 self.logger.info("LLM-router запрос: model=%s characters=%s", model, len(user_text))
-                response = self._client.chat.completions.create(
+                raw_message = self.provider.classify(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": user_text},
-                    ],
-                    temperature=0,
-                    max_tokens=500,
-                    response_format={"type": "json_object"},
+                    system=prompt,
+                    request=user_text,
+                    response_format=True,
                 )
-                message = response.choices[0].message.content if response.choices else ""
-                raw_message = (message or "").strip()
+                raw_message = (raw_message or "").strip()
                 last_raw_message = raw_message
                 data = self._parse_json_object(raw_message)
                 action = self._action_from_router_json(data, user_text)
@@ -384,24 +384,20 @@ class AIClient:
         apps: dict[str, AppConfig],
         model: str,
     ) -> RouteResult:
-        if self._client is None:
+        if not self.provider.available:
             return RouteResult(
                 ok=False,
                 action=AssistantAction(type=ActionType.UNKNOWN, text=user_text),
             )
 
         try:
-            response = self._client.chat.completions.create(
+            raw_message = self.provider.classify(
                 model=model,
-                messages=[
-                    {"role": "system", "content": self._build_router_prompt(apps)},
-                    {"role": "user", "content": user_text},
-                ],
-                temperature=0,
-                max_tokens=500,
+                system=self._build_router_prompt(apps),
+                request=user_text,
+                response_format=False,
             )
-            message = response.choices[0].message.content if response.choices else ""
-            raw_message = (message or "").strip()
+            raw_message = (raw_message or "").strip()
             data = self._parse_json_object(raw_message)
             action = self._action_from_router_json(data, user_text)
             return RouteResult(ok=True, action=action, raw_message=raw_message)

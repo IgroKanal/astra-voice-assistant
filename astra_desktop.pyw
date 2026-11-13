@@ -64,6 +64,8 @@ class AstraDesktop:
         self.closing_event = threading.Event()
         self.phase = 0.0
         window.title(f"{DISPLAY_VERSION} · персональный ассистент")
+        from src.desktop_theme import install_theme
+        install_theme(window)
         icon = ROOT / "assets" / "branding" / "astra.ico"
         if icon.is_file():
             window.iconbitmap(str(icon))

@@ -571,3 +571,10 @@
 
 - Run 43411932382 прошёл все тесты кроме voice-settings fit: discover-кнопка была ниже viewport на окне высотой 668 px. Она перенесена в закреплённую нижнюю панель вместе с прослушиванием и сохранением; regression-тест теперь явно выставляет 780x668.
 - Целевые fit/scroll/search тесты прошли, затем повторён полный UI-набор. Предыдущая локальная сборка 20261113-144913 не применялась к ярлыку: содержит версию до этой правки. Подготавливается свежая сборка из исправленной ревизии.
+
+### Astra 2.1 · пакетная приёмка завершена
+
+- Исправленная ревизия 90ecba6 прошла GitHub Actions run 43412656453 полностью, включая сборку и валидацию desktop-пакета. До этого workflow failures были расследованы и исправлены без ослабления FileWorkspace policy.
+- Portable ZIP: D:\AstraBuilds\AstraDesktop-preview-20261113-145425.zip. SHA256 036FEC32B38F7C8E13BCA80C9801C0817523994EEF73D2169EF5F105B8B24333. Проверены 207 entries/secret scan/CRC, relocated runtime, audit/policy, privacy marker и Godot IPC; theme/scroll modules входят в EXE.
+- Installer: D:\AstraBuilds\AstraInstaller-2.1\Astra-Setup-2.1.0-beta.1.exe. SHA256 1693FC0DBA03F003C165FB2FF44DB399E9000ABD366A286B4253AF7E4C4555D3. Install/runtime/uninstall с сохранением пользовательских данных прошёл.
+- Ярлык обновлён на 2.1 с собственной иконкой; старое техническое название ярлыка заменено на Astra при отсутствии конфликта имени. Ручные visual/voice tests остаются открытыми. Следующий UI-этап: окна файлов/задач и единые пустые состояния, затем дальнейшая дорожная карта до v5.

@@ -602,3 +602,13 @@
 - Portable ZIP `AstraDesktop-preview-20261113-191114.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, журнал, privacy marker, policy, 2D-ресурсы и аутентифицированный Godot IPC. SHA-256: `6F3F868B35B3EE1DBA5C482770AFF1B7785901FC83EACECAE1725E1D8126D0B6`.
 - Установщик `Astra-Setup-2.3.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением пользовательских данных. SHA-256: `BC51C4B1ADD922819D188296F52099DAA50091AED7EA066787C01EC35E948EE1`.
 - После проверки portable/installer ярлык `Astra` переведён на собранную 2.3.0-beta.1. Голосовая и художественная приёмка остаются за Егором; общие gates v2–v5 не объявлены закрытыми.
+- GitHub Actions run `43451448903` для `f4be0d1` завершился `success` за 5m55s, включая Windows-тесты и portable-package validation.
+
+## Astra 2.4 Beta · межпроцессный конфликт имени файла
+
+- При создании/копировании атомарная hardlink-операция не может перезаписать файл, который появился одновременно в другом процессе. Теперь конфликт возвращает понятный отказ, журнал отмечается как `cancelled`, временный файл удаляется.
+- Новая проверка запускает отдельный Windows-процесс прямо на границе системного `os.link` и подтверждает сохранность чужого содержимого. Проверены отменённый journal и отсутствие временных файлов.
+- Полный Windows gate прошёл: 165 тестов за 107.4 сек, включая compile, runtime smoke/config validators и regression suite. Более широкая гонка замены существующих файлов и подмена parent directory остаются открытыми.
+- Portable ZIP `AstraDesktop-preview-20261113-193008.zip`: 207 entries, secret/forbidden scan, CRC, relocated runtime, action audit/policy/privacy checks, 2D assets и authenticated Godot IPC прошли. SHA-256: `854DB62D1A33A8F1B07FA3C9BEE76FD6EA97ADA5904EE6B266091DC94D8CE885`.
+- Установщик `Astra-Setup-2.4.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением пользовательских данных. SHA-256: `3BF7387A7008ED6D52CC8BAE10200886C06966D7933248CB5CB8140563C4E33F`.
+- Ярлык `Astra` переключён на проверенный portable 2.4. GitHub CI для этого этапа ещё ожидает отправки; ручные voice/visual checks не объявлены пройденными.

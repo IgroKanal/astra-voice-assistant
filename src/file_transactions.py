@@ -261,8 +261,15 @@ class FileTransactions:
                     os.fsync(stream.fileno())
                 self._destination(preview.destination)
                 # Unlike replace, link refuses to overwrite a concurrently created file.
-                os.link(temporary, target)
-                temporary.unlink()
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    record["status"] = "cancelled"
+                    self._save_record(journal, record)
+                    raise WorkspaceDenied("Файл назначения появился во время операции; существующие данные сохранены") from None
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
             record["status"] = "done"
             self._save_record(journal, record)
             return operation_id

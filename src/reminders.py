@@ -99,6 +99,20 @@ class ReminderStore:
         with self.connect() as db:
             return db.execute("UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')", (identity,)).rowcount == 1
 
+    def cancel_next(self) -> bool:
+        """Cancel one earliest pending or delivering reminder atomically."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT id FROM reminders WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return False
+            return db.execute(
+                "UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')",
+                (row[0],),
+            ).rowcount == 1
+
     def unread_count(self) -> int:
         with self.connect() as db:
             return db.execute("SELECT count(*) FROM reminders WHERE state='delivered'").fetchone()[0]

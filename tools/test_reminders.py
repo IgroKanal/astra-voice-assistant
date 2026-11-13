@@ -48,6 +48,28 @@ class ReminderTests(unittest.TestCase):
         self.assertFalse(self.store.acknowledge(identity, claim.token))
         self.assertEqual(self.store.claim_due(999), [])
 
+    def test_cancel_next_atomically_cancels_only_earliest_active_reminder(self):
+        later = self.store.add("later", 300)
+        next_pending = self.store.add("next", 200)
+        delivered = self.store.add("delivered", 50)
+        delivered_claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, delivered_claim.token))
+        next_delivering = self.store.add("delivering", 100)
+        delivery_claim = self.store.claim_due(100)[0]
+
+        self.assertTrue(self.store.cancel_next())
+        self.assertFalse(self.store.valid_claim(next_delivering, delivery_claim.token))
+        self.assertFalse(self.store.acknowledge(next_delivering, delivery_claim.token))
+        self.assertTrue(self.store.cancel_next())
+        self.assertTrue(self.store.cancel_next())
+        self.assertFalse(self.store.cancel_next())
+
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[next_delivering], "cancelled")
+        self.assertEqual(states[next_pending], "cancelled")
+        self.assertEqual(states[later], "cancelled")
+        self.assertEqual(states[delivered], "delivered")
+
     def test_delivered_reminder_stays_unread_across_restart(self):
         identity = self.store.add("x", 100)
         claim = self.store.claim_due(100)[0]

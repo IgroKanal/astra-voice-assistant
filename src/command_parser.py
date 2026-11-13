@@ -50,6 +50,8 @@ AMBIGUOUS_CHAT_TARGET = "__ambiguous_chat__"
 MIXED_COMMAND_TARGET = "__mixed_command__"
 AMBIGUOUS_MUSIC_TARGET = "__ambiguous_music__"
 UNRESOLVED_CONTEXT_TARGET = "__context_unavailable__"
+CANCEL_REMINDER_UI_TARGET = "__cancel_reminder_ui__"
+CANCEL_NEXT_REMINDER_TARGET = "__cancel_next_reminder__"
 
 
 OPEN_PREFIXES = (
@@ -968,7 +970,7 @@ def is_command_like_text(text: str) -> bool:
     if not normalized:
         return False
 
-    if re.search(r"(?<!\w)(напомни|отмени напоминание)(?!\w)", normalized):
+    if re.search(r"(?<!\w)(напомни|отмени (?:ближайшее |следующее )?напоминание)(?!\w)", normalized):
         return True
 
     hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
@@ -1411,8 +1413,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
 
+    if normalized in {"отмени ближайшее напоминание", "отмени следующее напоминание"}:
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_NEXT_REMINDER_TARGET)
     if normalized.startswith("отмени напоминание"):
-        return ParsedCommand(CommandType.REMINDER, text=normalized, target="__cancel_reminder_ui__")
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_UI_TARGET)
     if normalized.startswith("напомни"):
         match = re.fullmatch(r"напомни(?: мне)? через (\d{1,5}|одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать|шестьдесят) (секунд[уы]?|минут[уы]?|час(?:а|ов)?) (.+)", normalized)
         if match:

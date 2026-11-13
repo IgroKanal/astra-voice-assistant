@@ -23,6 +23,8 @@ from src.command_parser import (
     ParsedCommand,
     AMBIGUOUS_CHAT_TARGET,
     AMBIGUOUS_MUSIC_TARGET,
+    CANCEL_NEXT_REMINDER_TARGET,
+    CANCEL_REMINDER_UI_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -910,8 +912,20 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         return True
 
     if action.type == ActionType.REMINDER:
-        if action.target == "__cancel_reminder_ui__":
+        if action.target == CANCEL_REMINDER_UI_TARGET:
             ctx.respond("Отменить напоминание можно в разделе «Задачи» приложения Astra.")
+            return True
+        if action.target == CANCEL_NEXT_REMINDER_TARGET:
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                cancelled = ReminderStore(path).cancel_next()
+                ctx.respond(
+                    "Ближайшее активное напоминание отменено."
+                    if cancelled else "Активных напоминаний для отмены нет."
+                )
+            except Exception:
+                ctx.respond("Не удалось отменить ближайшее напоминание. Проверь раздел «Задачи».")
             return True
         try:
             data = json.loads(action.target)

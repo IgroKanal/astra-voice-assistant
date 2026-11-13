@@ -24,6 +24,21 @@ class ReminderCommandTests(unittest.TestCase):
             self.assertEqual(parsed.type, CommandType.REMINDER)
             self.assertEqual(parsed.target, "")
 
+    def test_only_explicit_nearest_or_next_phrase_selects_one_reminder(self):
+        from src.command_parser import CANCEL_NEXT_REMINDER_TARGET, CANCEL_REMINDER_UI_TARGET
+        for phrase in ("отмени ближайшее напоминание", "отмени следующее напоминание"):
+            parsed = parse_command_text(phrase)
+            self.assertEqual(parsed.type, CommandType.REMINDER)
+            self.assertEqual(parsed.target, CANCEL_NEXT_REMINDER_TARGET)
+        self.assertEqual(
+            parse_command_text("отмени напоминание").target,
+            CANCEL_REMINDER_UI_TARGET,
+        )
+        self.assertEqual(
+            parse_command_text("отмени напоминание о встрече").target,
+            CANCEL_REMINDER_UI_TARGET,
+        )
+
     def test_wake_and_permission_required_before_storage(self):
         from tools.smoke_test_v11_daily_workflow import make_context
         from main import process_turn
@@ -37,6 +52,21 @@ class ReminderCommandTests(unittest.TestCase):
             ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))
             store.reset_mock()
             process_turn("Астра, напомни через пять минут сделать перерыв", ctx)
+            store.assert_not_called()
+
+    def test_voice_cancel_requires_wake_and_reminder_permission(self):
+        from tools.smoke_test_v11_daily_workflow import make_context
+        from main import process_turn
+        ctx, _, ai, *_ = make_context()
+        with patch("src.reminders.ReminderStore") as store:
+            process_turn("отмени ближайшее напоминание", ctx)
+            store.assert_not_called()
+            process_turn("Астра, отмени ближайшее напоминание", ctx)
+            store.return_value.cancel_next.assert_called_once_with()
+            self.assertEqual(ai.ask_calls, 0)
+            ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))
+            store.reset_mock()
+            process_turn("Астра, отмени следующее напоминание", ctx)
             store.assert_not_called()
 
     def test_model_cannot_schedule_reminder(self):

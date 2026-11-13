@@ -671,6 +671,7 @@ class DesktopUITests(unittest.TestCase):
         app = AstraDesktop(window)
         try:
             panel = open_ai_settings(window, app.button, lambda: None)
+            panel.geometry("780x668")
             tabs = next(item for item in panel.winfo_children() if isinstance(item, ttk.Notebook))
             tabs.select(1)
             self.pump(window, lambda: not app.busy)

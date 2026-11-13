@@ -4,7 +4,7 @@ import math
 
 from src.task_router import ActionType, AssistantAction
 
-ALL_SCOPES = ("apps", "browser", "folders", "media", "windows", "typing", "system", "vpn", "routines", "reminders")
+ALL_SCOPES = ("apps", "browser", "folders", "media", "windows", "typing", "system", "vpn", "routines", "reminders", "memory")
 SCOPES = {
     ActionType.OPEN_APP: "apps", ActionType.CLOSE_APP: "apps",
     ActionType.OPEN_URL: "browser", ActionType.WEB_SEARCH: "browser",
@@ -13,6 +13,7 @@ SCOPES = {
     ActionType.SCREENSHOT: "system", ActionType.SYSTEM_INFO: "system",
     ActionType.VPN_CONTROL: "vpn", ActionType.ROUTINE: "routines",
     ActionType.REMINDER: "reminders",
+    ActionType.MEMORY_NOTE: "memory",
 }
 ROUTER_ALLOWED = {ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.WEB_SEARCH, ActionType.GET_TIME, ActionType.GET_DATE, ActionType.HELP, ActionType.ASK_LLM, ActionType.UNKNOWN, ActionType.EMPTY}
 TRUSTED_LOCAL = {"local", "local_parser", "pending_followup", "routine"}

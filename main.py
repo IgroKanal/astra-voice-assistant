@@ -27,6 +27,11 @@ from src.command_parser import (
     CANCEL_REMINDER_MATCH_PREFIX,
     CANCEL_REMINDER_UI_TARGET,
     LIST_UPCOMING_REMINDERS_TARGET,
+    MEMORY_FORGET_PREFIX,
+    MEMORY_HELP_TARGET,
+    MEMORY_LIST_TARGET,
+    MEMORY_SAVE_TARGET,
+    MEMORY_SEARCH_PREFIX,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -81,6 +86,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.TYPE_TEXT,
     CommandType.SCREENSHOT,
     CommandType.SYSTEM_INFO,
+    CommandType.MEMORY_NOTE,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -95,6 +101,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.VOICE_FEEDBACK,
     ActionType.ROUTINE,
     ActionType.REMINDER,
+    ActionType.MEMORY_NOTE,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -621,6 +628,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
         CommandType.ROUTINE: ActionType.ROUTINE,
         CommandType.REMINDER: ActionType.REMINDER,
+        CommandType.MEMORY_NOTE: ActionType.MEMORY_NOTE,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -633,6 +641,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     query = parsed.target
     if parsed.type == CommandType.ASK_LLM:
         query = parsed.target or parsed.text
+    elif parsed.type == CommandType.MEMORY_NOTE and parsed.target == MEMORY_SAVE_TARGET:
+        query = parsed.text
 
     return AssistantAction(
         type=mapping.get(parsed.type, ActionType.UNKNOWN),
@@ -920,6 +930,42 @@ def _format_upcoming_reminders(reminders, now: datetime | None = None) -> str:
     return response
 
 
+def _personal_memory_store(settings: Settings):
+    from src.personal_memory import PersonalMemory
+
+    path = (
+        Path(settings.personal_memory_path)
+        if settings.personal_memory_path
+        else Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        / "AstraVoiceAssistant"
+        / "memory.sqlite"
+    )
+    return PersonalMemory(path)
+
+
+def _safe_memory_voice_text(value: str, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    clean = " ".join(
+        "".join(char if char.isprintable() else " " for char in value).split()
+    )
+    return clean[:limit].rstrip()
+
+
+def _format_personal_memory_list(notes) -> str:
+    items = list(notes)
+    if not items:
+        return "Сохранённых заметок нет."
+    summaries = []
+    for note in items[:3]:
+        title = _safe_memory_voice_text(note.title, 100)
+        summaries.append(title or "заметка без названия")
+    response = "Сохранённые заметки: " + "; ".join(summaries) + "."
+    if len(items) > 3:
+        response += " Другую заметку можно найти голосом по фрагменту её текста."
+    return response
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -932,6 +978,64 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.MEMORY_NOTE:
+        if not ctx.settings.personal_memory_enabled or ctx.settings.llm_provider != "ollama":
+            ctx.respond("Личная память выключена. Включи её в настройках и выбери локальный Ollama.")
+            return True
+
+        try:
+            memory = _personal_memory_store(ctx.settings)
+            if action.target == MEMORY_LIST_TARGET:
+                ctx.respond(_format_personal_memory_list(memory.search()))
+                return True
+
+            if action.target == MEMORY_SAVE_TARGET:
+                note_text = _safe_memory_voice_text(action.query, 3000)
+                if len(note_text) < 3:
+                    ctx.respond("Скажи: Астра, запомни, что нужно сохранить.")
+                    return True
+                title = note_text.split(". ", 1)[0].split("! ", 1)[0].split("? ", 1)[0]
+                title = _safe_memory_voice_text(title, 100) or "Голосовая заметка"
+                if title != note_text and len(title) == 100:
+                    title = title[:-1].rstrip() + "…"
+                memory.add(title, note_text)
+                ctx.respond(f"Запомнила: {title}. Заметка сохранена локально.")
+                return True
+
+            if action.target.startswith(MEMORY_SEARCH_PREFIX):
+                query = action.target[len(MEMORY_SEARCH_PREFIX):]
+                matches = memory.search(query)
+                if not matches:
+                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                elif len(matches) > 1:
+                    ctx.respond("Нашла несколько заметок. Скажи более точный фрагмент.")
+                else:
+                    note = matches[0]
+                    title = _safe_memory_voice_text(note.title, 100) or "без названия"
+                    content = _safe_memory_voice_text(note.text, 240)
+                    suffix = "…" if len(" ".join(note.text.split())) > len(content) else ""
+                    ctx.respond(f"В заметке «{title}»: {content}{suffix}")
+                return True
+
+            if action.target.startswith(MEMORY_FORGET_PREFIX):
+                query = action.target[len(MEMORY_FORGET_PREFIX):]
+                matches = memory.search(query)
+                if not matches:
+                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                elif len(matches) > 1:
+                    ctx.respond("Нашла несколько заметок. Скажи более точное название; ничего не удалено.")
+                elif memory.forget(matches[0].id):
+                    title = _safe_memory_voice_text(matches[0].title, 100) or "без названия"
+                    ctx.respond(f"Заметка «{title}» забыта.")
+                else:
+                    ctx.respond("Заметка уже удалена или изменилась.")
+                return True
+
+            ctx.respond("Скажи: запомни, что…, покажи сохранённые заметки, найди заметку про… или забудь заметку про…")
+        except Exception:
+            ctx.respond("Не удалось безопасно изменить локальную память. Проверь раздел «Память» приложения Astra.")
         return True
 
     if action.type == ActionType.CLEAR_DIALOGUE:

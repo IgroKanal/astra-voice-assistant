@@ -28,6 +28,7 @@ class CommandType(str, Enum):
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
     REMINDER = "reminder"
+    MEMORY_NOTE = "memory_note"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
@@ -56,6 +57,11 @@ CANCEL_REMINDER_UI_TARGET = "__cancel_reminder_ui__"
 CANCEL_NEXT_REMINDER_TARGET = "__cancel_next_reminder__"
 CANCEL_REMINDER_MATCH_PREFIX = "__cancel_reminder_match__:"
 LIST_UPCOMING_REMINDERS_TARGET = "__list_upcoming_reminders__"
+MEMORY_HELP_TARGET = "__memory_help__"
+MEMORY_LIST_TARGET = "__memory_list__"
+MEMORY_SAVE_TARGET = "__memory_save__"
+MEMORY_SEARCH_PREFIX = "__memory_search__:"
+MEMORY_FORGET_PREFIX = "__memory_forget__:"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -873,6 +879,14 @@ COMMAND_HINTS = (
     *DATE_COMMANDS,
     *HELP_COMMANDS,
     *CLEAR_DIALOGUE_COMMANDS,
+    "запомни",
+    "запиши в память",
+    "сохрани в памяти",
+    "покажи сохраненные заметки",
+    "какие заметки ты помнишь",
+    "что ты помнишь",
+    "забудь заметку",
+    "найди заметку",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
@@ -1463,6 +1477,87 @@ def _parse_system_info(normalized: str) -> ParsedCommand | None:
     return None
 
 
+def _memory_match_tail(raw_text: str, prefix: str) -> str | None:
+    raw = _whitespace_re.sub(" ", raw_text.strip())
+    match = re.match(
+        rf"^{re.escape(prefix)}(?:[\s,.:;!?\-]+|$)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return raw[match.end():].strip(" \t\r\n,.:;!?")
+
+
+def _parse_memory_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    list_phrases = {
+        "покажи сохраненные заметки",
+        "покажи мои заметки",
+        "какие заметки ты помнишь",
+        "что ты запомнила",
+        "что ты запомнил",
+        "список сохраненных заметок",
+        "список заметок",
+        "покажи личную память",
+    }
+    if normalized in list_phrases:
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_LIST_TARGET)
+
+    searches = (
+        "найди заметку про",
+        "найди в памяти",
+        "покажи заметку про",
+        "что я просил запомнить про",
+        "что я просила запомнить про",
+        "что ты помнишь про",
+        "что ты помнишь о",
+    )
+    for prefix in searches:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 3 <= len(query) <= 160 and all(char.isprintable() for char in query):
+                return ParsedCommand(
+                    CommandType.MEMORY_NOTE,
+                    text=normalized,
+                    target=MEMORY_SEARCH_PREFIX + query,
+                )
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    forgets = (
+        "забудь заметку про",
+        "удали из памяти заметку про",
+        "забудь про",
+    )
+    for prefix in forgets:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 3 <= len(query) <= 160 and all(char.isprintable() for char in query):
+                return ParsedCommand(
+                    CommandType.MEMORY_NOTE,
+                    text=normalized,
+                    target=MEMORY_FORGET_PREFIX + query,
+                )
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    save_match = re.match(
+        r"^\s*(?:пожалуйста\s+)?(?:запомни(?:\s*,?\s*что)?|запиши\s+в\s+память|сохрани\s+в\s+памяти)\s*[:\-]?\s*(.*)$",
+        raw_text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if save_match is not None:
+        note = _whitespace_re.sub(" ", save_match.group(1).strip())
+        if 3 <= len(note) <= 3000 and all(char.isprintable() for char in note):
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=note, target=MEMORY_SAVE_TARGET)
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    if normalized in {"запомни", "запиши в память", "сохрани в памяти", "забудь заметку", "найди заметку"}:
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    return None
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
@@ -1471,6 +1566,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
+
+    memory_command = _parse_memory_command(text, normalized)
+    if memory_command is not None:
+        return memory_command
 
     if normalized in LIST_REMINDER_PHRASES:
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=LIST_UPCOMING_REMINDERS_TARGET)

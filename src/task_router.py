@@ -25,6 +25,7 @@ class ActionType(str, Enum):
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
     REMINDER = "reminder"
+    MEMORY_NOTE = "memory_note"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"

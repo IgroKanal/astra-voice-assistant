@@ -11,7 +11,7 @@ from src.task_router import ActionType, AssistantAction
 class ActionPolicyTests(unittest.TestCase):
     def test_revoked_capabilities_block_every_mapped_action(self):
         policy = ActionPolicy(())
-        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE):
+        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE):
             with self.subTest(action=action_type):
                 self.assertFalse(policy.check(AssistantAction(action_type)).allowed)
         self.assertTrue(policy.check(AssistantAction(ActionType.GET_TIME)).allowed)

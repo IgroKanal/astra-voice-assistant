@@ -572,7 +572,9 @@ class DesktopUITests(unittest.TestCase):
                 )
                 canvas = permissions.astra_canvas
                 self.assertGreater(canvas.winfo_height(), 0)
-                last_card = panel.astra_permission_cards["reminders"]
+                memory_card = panel.astra_permission_cards["memory"]
+                self.assertEqual(memory_card.cget("text"), "Голосовое управление личными заметками")
+                last_card = memory_card
                 last_card.event_generate("<FocusIn>")
                 window.update()
                 self.assertGreater(canvas.yview()[0], 0)

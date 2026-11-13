@@ -204,6 +204,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
         "vpn": "Заданный VPN",
         "routines": "Пользовательские режимы",
         "reminders": "Создание напоминаний",
+        "memory": "Голосовое управление личными заметками",
     }
     scope_descriptions = {
         "apps": "Запуск приложений, которые Astra распознаёт по имени.",
@@ -216,6 +217,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
         "vpn": "Управление только VPN-подключением, заданным в настройках Astra.",
         "routines": "Запуск пользовательских режимов; каждое действие режима проверяется отдельно.",
         "reminders": "Создание, просмотр и отметка локальных напоминаний.",
+        "memory": "Запись, поиск и удаление заметок по голосовой команде; нужен локальный Ollama и включённая личная память.",
     }
     scope_vars = {scope: tk.BooleanVar(value=scope in profile.allowed_scopes) for scope in ALL_SCOPES}
     tk.Label(
@@ -266,7 +268,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
     endpoint = field("Адрес сервера (для Ollama — localhost, для облака — HTTPS)", profile.base_url)
     key = field("API-ключ (для локального Ollama оставь пустым)", profile.api_key, True)
     memory = tk.BooleanVar(value=profile.memory_enabled)
-    tk.Checkbutton(content, text="Использовать мои сохранённые заметки только в локальном диалоге", variable=memory, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(padx=20, pady=8)
+    tk.Checkbutton(content, text="Сохранять и использовать личные заметки только с локальным Ollama", variable=memory, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(padx=20, pady=8)
     local_router = tk.BooleanVar(value=profile.local_command_router_enabled)
     local_router_control = tk.Checkbutton(
         content,

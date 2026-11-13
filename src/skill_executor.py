@@ -170,7 +170,11 @@ class SkillExecutor:
                 # Permissions are rechecked by FileWorkspace immediately before I/O.
                 assert self.workspace is not None
                 if step.name == "files.search":
-                    value = self.workspace.search(step.arguments["query"])
+                    value = self.workspace.search(
+                        step.arguments["query"],
+                        is_cancelled=cancel.is_set if cancel is not None else None,
+                        deadline=deadline,
+                    )
                 elif step.name == "files.read_text":
                     value = self.workspace.read_text(step.arguments["path"])
                 else:
@@ -179,7 +183,20 @@ class SkillExecutor:
                 results.append(SkillResult(step.name, True, value=value))
                 self._record(step.name, "succeeded", correlation)
             except (OSError, ValueError) as exc:
-                results.append(SkillResult(step.name, False, error=str(exc)))
-                self._record(step.name, "failed", correlation)
+                cancelled_or_expired = (
+                    (cancel is not None and cancel.is_set())
+                    or time.monotonic() >= deadline
+                )
+                error = (
+                    "План отменён или истёк лимит времени"
+                    if cancelled_or_expired
+                    else str(exc)
+                )
+                results.append(SkillResult(step.name, False, error=error))
+                self._record(
+                    step.name,
+                    "cancelled" if cancelled_or_expired else "failed",
+                    correlation,
+                )
                 break
         return results

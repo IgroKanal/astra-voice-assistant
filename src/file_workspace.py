@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import posixpath
 import stat
+import time
+from typing import Callable
 from urllib.parse import unquote
 import zipfile
 import xml.etree.ElementTree as ET
@@ -88,37 +90,73 @@ class FileWorkspace:
             raise WorkspaceDenied("Файлы с внешними hardlink не разрешены в выбранной папке")
         return resolved
 
-    def search(self, query: str = "") -> list[FileEntry]:
+    def search(
+        self,
+        query: str = "",
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> list[FileEntry]:
+        """Search the selected workspace with optional cooperative limits.
+
+        ``deadline`` is an absolute ``time.monotonic()`` value. The callback is
+        checked between directory entries so a running plan can stop promptly.
+        """
+        def check_limits() -> None:
+            if is_cancelled is not None and is_cancelled():
+                raise WorkspaceDenied("Поиск отменён пользователем")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise WorkspaceDenied("Истёк лимит времени поиска")
+
         self.checked(".")
+        check_limits()
         result: list[FileEntry] = []
         visited = 0
-        for directory, dirs, files in os.walk(self.root, followlinks=False):
-            visited += 1
-            if visited > self.MAX_VISITED:
-                return result
-            allowed = []
-            for name in dirs:
-                try:
-                    self.checked(str((Path(directory) / name).relative_to(self.root)))
-                    allowed.append(name)
-                except (OSError, WorkspaceDenied):
-                    pass
-            dirs[:] = allowed
-            for name in files:
-                visited += 1
-                if visited > self.MAX_VISITED:
-                    return result
-                if query.casefold() not in name.casefold():
-                    continue
-                relative = str((Path(directory) / name).relative_to(self.root))
-                try:
-                    path = self.checked(relative)
-                    if path.is_file():
-                        result.append(FileEntry(relative, path.stat().st_size))
-                except (OSError, WorkspaceDenied):
-                    continue
-                if len(result) >= self.MAX_RESULTS:
-                    return result
+        pending_directories = [self.root]
+        needle = query.casefold()
+        while pending_directories:
+            check_limits()
+            directory = pending_directories.pop()
+            children: list[Path] = []
+            try:
+                entries = os.scandir(directory)
+            except OSError:
+                continue
+            try:
+                with entries:
+                    for entry in entries:
+                        check_limits()
+                        visited += 1
+                        if visited > self.MAX_VISITED:
+                            return result
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                relative = str(Path(entry.path).relative_to(self.root))
+                                self.checked(relative)
+                                children.append(Path(entry.path))
+                                continue
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                        except (OSError, ValueError, WorkspaceDenied):
+                            continue
+
+                        if needle not in entry.name.casefold():
+                            continue
+                        relative = str(Path(entry.path).relative_to(self.root))
+                        try:
+                            path = self.checked(relative)
+                            if path.is_file():
+                                result.append(FileEntry(relative, path.stat().st_size))
+                        except (OSError, WorkspaceDenied):
+                            continue
+                        if len(result) >= self.MAX_RESULTS:
+                            return result
+            except OSError:
+                continue
+
+            children.sort(key=lambda path: path.name.casefold(), reverse=True)
+            pending_directories.extend(children)
+        check_limits()
         return result
 
     def read_text(self, relative: str) -> str:

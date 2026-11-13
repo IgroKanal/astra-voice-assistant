@@ -2,11 +2,13 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.file_workspace import FileWorkspace
+from src.file_workspace import WorkspaceDenied
 from src.file_transactions import FileTransactions
 from src.skill_executor import ActionPlan, PlanDenied, SkillCall, SkillExecutor
 
@@ -35,6 +37,31 @@ class SkillExecutorTests(unittest.TestCase):
             cancel = threading.Event()
             cancel.set()
             self.assertFalse(executor.execute(plan, cancel=cancel)[0].ok)
+
+    def test_running_search_receives_cancellation_and_shared_plan_deadline(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="astra-skill-cancel-", dir=ROOT) as temp:
+            workspace = FileWorkspace(Path(temp))
+            executor = SkillExecutor(workspace)
+            cancel = threading.Event()
+            observed = {}
+
+            def stop_during_search(_query, *, is_cancelled, deadline):
+                observed["deadline"] = deadline
+                cancel.set()
+                if is_cancelled():
+                    raise WorkspaceDenied("Поиск отменён пользователем")
+                raise AssertionError("cancellation callback did not reflect the event")
+
+            plan = ActionPlan((SkillCall("files.search", {"query": "report"}),))
+            with patch.object(workspace, "search", side_effect=stop_during_search):
+                results = executor.execute(plan, cancel=cancel, budget_seconds=2)
+
+            self.assertEqual(len(results), 1)
+            self.assertFalse(results[0].ok)
+            self.assertEqual(results[0].error, "План отменён или истёк лимит времени")
+            self.assertGreater(observed["deadline"], time.monotonic())
 
     def test_simulation_is_bounded_and_does_not_need_or_use_workspace(self):
         executor = SkillExecutor()

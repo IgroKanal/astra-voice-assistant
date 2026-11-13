@@ -33,6 +33,33 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
 
+    def test_search_stops_when_cancelled_during_directory_scan(self):
+        for index in range(30):
+            (self.root / f"report-{index:02}.txt").write_text("x", encoding="utf-8")
+
+        checks = 0
+
+        def cancel_after_some_entries():
+            nonlocal checks
+            checks += 1
+            return checks >= 8
+
+        with self.assertRaisesRegex(WorkspaceDenied, "отменён"):
+            self.workspace.search("report", is_cancelled=cancel_after_some_entries)
+        self.assertLess(checks, 12)
+
+    def test_search_stops_when_plan_deadline_expires(self):
+        with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+            self.workspace.search("", deadline=time.monotonic() - 1)
+
+    def test_search_checks_deadline_before_returning_empty_results(self):
+        empty_root = self.root / "empty"
+        empty_root.mkdir()
+        empty_workspace = FileWorkspace(empty_root)
+        with patch("src.file_workspace.time.monotonic", side_effect=[1, 1, 51]):
+            with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+                empty_workspace.search("", deadline=50)
+
     def test_conversation_reset_event_roundtrips_through_desktop_bridge_parser(self):
         import json
         from src.runtime_events import PREFIX

@@ -78,9 +78,13 @@ class AstraDesktop:
         self.animate()
 
     def button(self, parent, text, command):
-        return tk.Button(parent, text=text, command=command, bg="#2b3454", fg=TEXT,
+        control = tk.Button(parent, text=text, command=command, bg="#2b3454", fg=TEXT,
                          activebackground=ACCENT, activeforeground=BG, relief="flat",
-                         font=("Segoe UI", 10), padx=16, pady=10, cursor="hand2")
+                         font=("Segoe UI", 10), padx=16, pady=10, cursor="hand2", borderwidth=0,
+                         highlightthickness=1, highlightbackground="#3a4261", highlightcolor=ACCENT)
+        control.bind("<Enter>", lambda _event: control.configure(bg="#3a4264"))
+        control.bind("<Leave>", lambda _event: control.configure(bg="#2b3454"))
+        return control
 
     @staticmethod
     def load_assistant_profile():
@@ -119,6 +123,10 @@ class AstraDesktop:
     def _build(self):
         header = tk.Frame(self.window, bg=BG)
         header.pack(fill="x", padx=28, pady=(22, 16))
+        brand_path = ROOT / "assets" / "branding" / "astra.png"
+        if brand_path.is_file():
+            self.brand_image = tk.PhotoImage(file=str(brand_path)).subsample(24, 24)
+            tk.Label(header, image=self.brand_image, bg=BG).pack(side="left", padx=(0, 12))
         tk.Label(header, text="ASTRA", font=("Segoe UI", 24, "bold"), bg=BG, fg=TEXT).pack(side="left")
         tk.Label(header, text=DISPLAY_VERSION.upper(), font=("Segoe UI", 9), bg=BG, fg=ACCENT).pack(side="left", padx=15)
         self.button(header, "Диагностика", self.diagnose).pack(side="right")
@@ -166,8 +174,12 @@ class AstraDesktop:
         tk.Label(side, text="Голос включается кнопкой.\nДля команд говори «Астра».", wraplength=230, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).grid(row=6, column=0, padx=12, pady=6)
         right = tk.Frame(body, bg=BG)
         right.pack(side="left", fill="both", expand=True)
-        conversation = tk.Frame(right, bg=PANEL)
+        conversation = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground="#303951")
         conversation.pack(fill="both", expand=True)
+        chat_header = tk.Frame(conversation, bg=PANEL)
+        chat_header.pack(fill="x", padx=18, pady=(14, 0))
+        tk.Label(chat_header, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(side="left")
+        tk.Label(chat_header, text="Твоё рабочее пространство", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="right")
         self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word",
                             font=("Segoe UI", 11), padx=18, pady=18, state="disabled")
         scrollbar = tk.Scrollbar(conversation, command=self.chat.yview)
@@ -177,6 +189,12 @@ class AstraDesktop:
         self.chat.tag_configure("user", foreground="#b5a9ff")
         self.chat.tag_configure("system", foreground=MUTED)
         self.chat.tag_configure("assistant", foreground=TEXT)
+        self.chat.tag_configure("user_name", foreground="#c5b7ff", font=("Segoe UI", 10, "bold"), spacing1=12)
+        self.chat.tag_configure("assistant_name", foreground="#71d9d4", font=("Segoe UI", 10, "bold"), spacing1=12)
+        self.chat.tag_configure("system_name", foreground=MUTED, font=("Segoe UI", 9, "bold"), spacing1=8)
+        self.chat.tag_configure("user", background="#252b48", lmargin1=12, lmargin2=12, rmargin=12, spacing1=5, spacing3=10)
+        self.chat.tag_configure("assistant", lmargin1=2, lmargin2=2, spacing1=5, spacing3=10)
+        self.chat.tag_configure("system", font=("Segoe UI", 9), spacing1=3, spacing3=8)
         row = tk.Frame(right, bg=BG)
         row.pack(side="bottom", before=conversation, fill="x", pady=(12, 0))
         self.entry = tk.Entry(row, bg=PANEL, fg=TEXT, insertbackground=TEXT,
@@ -188,7 +206,9 @@ class AstraDesktop:
 
     def append(self, who, text):
         self.chat.configure(state="normal")
-        self.chat.insert("end", f"{who}\n{text}\n\n", "user" if who == "Ты" else "assistant" if who == "Астра" else "system")
+        role = "user" if who == "Ты" else "assistant" if who in {"Астра", self.assistant_name} else "system"
+        self.chat.insert("end", f"{who}\n", role + "_name")
+        self.chat.insert("end", f"{text}\n\n", role)
         if int(self.chat.index("end-1c").split(".")[0]) > 3000:
             self.chat.delete("1.0", "500.0")
         self.chat.configure(state="disabled")
@@ -256,7 +276,8 @@ class AstraDesktop:
         threading.Thread(target=work, daemon=True).start()
 
     def diagnose(self):
-        self.append("Система", "Папка проекта: " + str(ROOT) + "\nРежим: " + self.bridge.mode + "\nПроцесс работает: " + str(self.bridge.running) + "\nПолный тест: tools/run_current_gate.ps1")
+        mode = "Голосовой" if self.bridge.mode == "voice" else "Текстовый"
+        self.append("Система", f"{DISPLAY_VERSION}\nРежим: {mode}\nАссистент: {'подключён' if self.bridge.running else 'остановлен'}\nМикрофон: {'включён' if self.bridge.running and self.bridge.mode == 'voice' else 'выключен'}")
 
     def open_files(self):
         selected = filedialog.askdirectory(parent=self.window, title="Разрешить чтение выбранной папки на эту сессию")

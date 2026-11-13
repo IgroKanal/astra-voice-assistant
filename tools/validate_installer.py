@@ -75,9 +75,15 @@ def validate(installer: Path) -> None:
             env=runtime_env,
             timeout=60,
             cwd=install_root,
-            input_data="Астра, сколько времени\nАстра, стоп\n",
+            input_data="Астра, сколько времени\nАстра, начни новый диалог\nАстра, стоп\n",
         )
-        if launch.returncode != 0 or "Сейчас" not in launch.stdout or "Traceback" in launch.stderr:
+        if (
+            launch.returncode != 0
+            or "Сейчас" not in launch.stdout
+            or '"type": "conversation_reset"' not in launch.stdout
+            or "Начала новый диалог" not in launch.stdout
+            or "Traceback" in launch.stderr
+        ):
             raise RuntimeError(
                 "Installed runtime smoke failed: "
                 f"returncode={launch.returncode}, stdout={launch.stdout[-1000:]!r}, "

@@ -111,6 +111,15 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(client._dialogue[0]["content"], "вопрос 2")
             self.assertEqual(AIClient(settings)._dialogue, [])
 
+    def test_clear_dialogue_removes_only_in_memory_turns(self):
+        client = AIClient(Settings(llm_provider="ollama", llm_base_url="http://127.0.0.1:11434"))
+        client._dialogue.extend([
+            {"role": "user", "content": "вопрос"},
+            {"role": "assistant", "content": "ответ"},
+        ])
+        client.clear_dialogue()
+        self.assertEqual(client._dialogue, [])
+
     def test_context_cannot_add_system_or_tool_messages(self):
         client = OllamaClient()
         with patch.object(client, "models", return_value=["test"]):

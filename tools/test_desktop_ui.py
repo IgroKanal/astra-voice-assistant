@@ -47,6 +47,32 @@ class DesktopUITests(unittest.TestCase):
             app.bridge.stop()
             window.destroy()
 
+    def test_new_dialogue_button_waits_for_runtime_reset_event(self):
+        window = tk.Tk()
+        window.withdraw()
+        app = AstraDesktop(window)
+        sent = []
+        try:
+            self.pump(window, lambda: not app.busy and app.bridge.running)
+            app.append("Ты", "старый пользовательский вопрос")
+            app.bridge.send = lambda text: sent.append(text)
+            with patch("astra_desktop.messagebox.askyesno", return_value=True) as confirm:
+                app.new_dialogue()
+            self.assertEqual(confirm.call_count, 1)
+            self.assertEqual(sent, [f"{app.assistant_name}, начни новый диалог"])
+            self.assertIn("старый пользовательский вопрос", app.chat.get("1.0", "end"))
+            app.bridge.emit("conversation_reset", "")
+            self.pump(window, lambda: "старый пользовательский вопрос" not in app.chat.get("1.0", "end"))
+            self.assertEqual(app.chat.get("1.0", "end").strip(), "")
+            app.bridge.emit("assistant", "Начала новый диалог.")
+            self.pump(window, lambda: "Начала новый диалог." in app.chat.get("1.0", "end"))
+        finally:
+            app.bridge.prevent_restart()
+            app.bridge.stop()
+            window.after_cancel(app.poll_timer)
+            window.after_cancel(app.animation_timer)
+            window.destroy()
+
     def test_close_during_startup_leaves_no_runtime(self):
         window = tk.Tk()
         window.withdraw()

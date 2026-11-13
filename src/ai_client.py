@@ -60,6 +60,10 @@ class AIClient:
     def is_available(self) -> bool:
         return self._client is not None or self._local is not None
 
+    def clear_dialogue(self) -> None:
+        """Forget only the in-memory local conversation history for this session."""
+        self._dialogue.clear()
+
     def _can_create_client(self) -> bool:
         if not self.settings.llm_enabled:
             return False

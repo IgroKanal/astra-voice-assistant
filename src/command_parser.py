@@ -26,6 +26,7 @@ class CommandType(str, Enum):
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
     REMINDER = "reminder"
+    CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -140,6 +141,14 @@ HELP_COMMANDS = (
     "возможности",
     "твои возможности",
     "как пользоваться",
+)
+
+CLEAR_DIALOGUE_COMMANDS = (
+    "начни новый диалог",
+    "начать новый диалог",
+    "новый диалог",
+    "очисти диалог",
+    "сбрось контекст разговора",
 )
 
 
@@ -804,6 +813,7 @@ COMMAND_HINTS = (
     *TIME_COMMANDS,
     *DATE_COMMANDS,
     *HELP_COMMANDS,
+    *CLEAR_DIALOGUE_COMMANDS,
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
@@ -1397,6 +1407,9 @@ def parse_command_text(text: str) -> ParsedCommand:
     normalized = remove_filler_words(text)
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
+
+    if normalized in CLEAR_DIALOGUE_COMMANDS:
+        return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
 
     if normalized.startswith("отмени напоминание"):
         return ParsedCommand(CommandType.REMINDER, text=normalized, target="__cancel_reminder_ui__")

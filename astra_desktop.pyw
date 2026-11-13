@@ -181,7 +181,7 @@ class AstraDesktop:
         chat_header = tk.Frame(conversation, bg=PANEL)
         chat_header.pack(fill="x", padx=18, pady=(14, 0))
         tk.Label(chat_header, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(side="left")
-        tk.Label(chat_header, text="Твоё рабочее пространство", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="right")
+        self.button(chat_header, "Новый диалог", self.new_dialogue).pack(side="right")
         self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word",
                             font=("Segoe UI", 11), padx=18, pady=18, state="disabled")
         scrollbar = tk.Scrollbar(conversation, command=self.chat.yview)
@@ -252,6 +252,32 @@ class AstraDesktop:
             return
         self.append("Ты", text)
         self.entry.delete(0, "end")
+
+    def new_dialogue(self):
+        if self.closing:
+            return
+        if not self.bridge.running or self.bridge.mode != "text":
+            self.append(
+                "Система",
+                "Для кнопки переключись в текстовый режим. В голосовом режиме "
+                f"скажи: «{self.assistant_name}, начни новый диалог».",
+            )
+            return
+        confirmed = messagebox.askyesno(
+            "Astra · новый диалог",
+            "Начать новый диалог? Будет очищен контекст текущего разговора и "
+            "незавершённое уточнение. Сохранённые заметки и напоминания останутся.",
+            parent=self.window,
+        )
+        if not confirmed:
+            return
+        command = f"{self.assistant_name}, начни новый диалог"
+        try:
+            self.bridge.send(command)
+        except Exception as exc:
+            self.append("Система", str(exc))
+            return
+        self.append("Ты", command)
 
     def switch(self, mode):
         if self.closing:
@@ -681,6 +707,10 @@ class AstraDesktop:
                 self._refresh_tray_tooltip()
             elif kind == "transcript":
                 self.append("Ты · голос", text)
+            elif kind == "conversation_reset":
+                self.chat.configure(state="normal")
+                self.chat.delete("1.0", "end")
+                self.chat.configure(state="disabled")
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:

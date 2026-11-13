@@ -33,6 +33,19 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
 
+    def test_conversation_reset_event_roundtrips_through_desktop_bridge_parser(self):
+        import json
+        from src.runtime_events import PREFIX
+        line = PREFIX + json.dumps(
+            {"version": 1, "type": "conversation_reset", "text": ""},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(line), ("conversation_reset", ""))
+        unsupported = PREFIX + json.dumps(
+            {"version": 1, "type": "clear_all_user_data", "text": ""},
+        )
+        self.assertIsNone(parse_event(unsupported))
+
     def test_traversal_secrets_and_absolute_paths(self):
         for value in ("../notes.txt", str(self.root / "notes.txt"), ".env", "notes.txt:stream"):
             with self.subTest(value=value), self.assertRaises(WorkspaceDenied):

@@ -612,3 +612,14 @@
 - Portable ZIP `AstraDesktop-preview-20261113-193008.zip`: 207 entries, secret/forbidden scan, CRC, relocated runtime, action audit/policy/privacy checks, 2D assets и authenticated Godot IPC прошли. SHA-256: `854DB62D1A33A8F1B07FA3C9BEE76FD6EA97ADA5904EE6B266091DC94D8CE885`.
 - Установщик `Astra-Setup-2.4.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением пользовательских данных. SHA-256: `3BF7387A7008ED6D52CC8BAE10200886C06966D7933248CB5CB8140563C4E33F`.
 - Ярлык `Astra` переключён на проверенный portable 2.4. GitHub CI для этого этапа ещё ожидает отправки; ручные voice/visual checks не объявлены пройденными.
+
+## Astra 2.5 Beta · новый диалог в приложении и runtime
+
+- В заголовке чата добавлена кнопка «Новый диалог» с явным подтверждением. Она отправляет команду runtime с текущим именем ассистента и очищает видимую историю только после структурированного события `conversation_reset`.
+- Runtime распознаёт несколько точных русских фраз как локальную команду, требует wake phrase и не направляет её в LLM-router. Сброс очищает историю текущей локальной беседы, отложенное уточнение и временные ссылки на предыдущую задачу; постоянные заметки и напоминания не затрагиваются.
+- Узкие проверки прошли: parser/runtime wake smoke, очистка буфера AIClient, запрет router-источнику и проверка события IPC, кнопочный UI-сценарий.
+- Полный Windows gate прошёл: compileall/desktop compilation, runtime smoke и config validators, `astra_doctor.py`, 168 unit/integration/UI тестов за 160.1 сек. Компоновка основных элементов на окне 840×680 прошла.
+- Portable ZIP прошёл повторную проверку после добавления теста нового диалога: 207 файлов, секретов/запрещённых данных нет, relocated runtime, audit/policy/privacy, 2D-ресурсы и authenticated Godot IPC прошли. SHA-256: `06BD07BAF57B350917FD26BFC821A146354B3344CDF5C04F8BBEE74B034C61BC`.
+- Установщик `Astra-Setup-2.5.0-beta.1.exe` прошёл install/runtime/uninstall; установленный runtime подтвердил событие сброса диалога, а пользовательские данные сохранились. SHA-256: `497C9C5010DC0CB95A6E856D90729E7D65BB9362BD3C0A95AF895C3B662BE272`.
+- После проверки ZIP и установщика ярлык рабочего стола переключён на собранную Astra 2.5. GitHub CI ожидает push; release и публикация не выполнялись.
+- Реальный микрофон, звучание и качество ответа конкретной локальной модели не проверялись; пользовательская voice/visual приёмка остаётся открытой.

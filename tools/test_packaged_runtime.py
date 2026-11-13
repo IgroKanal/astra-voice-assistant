@@ -18,7 +18,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="astra-runtime-check-") as temp:
         env["LOCALAPPDATA"] = temp
         private_marker = "astra-package-private-value"
-        result = subprocess.run([str(runtime), "--text"], input=f"Астра, сколько времени\nАстра, что значит api_key={private_marker}\nАстра, стоп\n", cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        result = subprocess.run([str(runtime), "--text"], input=f"Астра, сколько времени\nАстра, начни новый диалог\nАстра, что значит api_key={private_marker}\nАстра, стоп\n", cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         audit = Path(temp) / "AstraVoiceAssistant" / "actions.sqlite"
         assert audit.is_file(), "Frozen runtime did not create isolated action audit"
         with closing(sqlite3.connect(audit)) as db:
@@ -32,9 +32,11 @@ def main():
         print("PACKAGED_ACTION_AUDIT_PASS: frozen runtime persisted metadata in an isolated user profile")
     assert result.returncode == 0, result.stderr
     assert "Сейчас" in result.stdout, result.stdout + result.stderr
+    assert '"type": "conversation_reset"' in result.stdout, "Frozen runtime did not confirm the new-dialogue reset"
+    assert "Начала новый диалог" in result.stdout, "Frozen runtime did not acknowledge the new dialogue"
     assert "Traceback" not in result.stderr, result.stderr
     assert "@ASTRA_EVENT" in result.stdout, "Structured desktop protocol is missing"
-    print("PACKAGED_RUNTIME_PASS: standalone executable answered a local command and exited cleanly")
+    print("PACKAGED_RUNTIME_PASS: standalone executable answered a local command, reset dialogue and exited cleanly")
 
 
 if __name__ == "__main__":

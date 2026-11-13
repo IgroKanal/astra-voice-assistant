@@ -69,6 +69,7 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.VOICE_FEEDBACK,
     CommandType.ROUTINE,
     CommandType.REMINDER,
+    CommandType.CLEAR_DIALOGUE,
     CommandType.EXIT,
 }
 
@@ -76,6 +77,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.TYPE_TEXT,
     CommandType.SCREENSHOT,
     CommandType.SYSTEM_INFO,
+    CommandType.CLEAR_DIALOGUE,
 }
 
 _ROUTER_BLOCKED_ACTION_TYPES = {
@@ -89,6 +91,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.VOICE_FEEDBACK,
     ActionType.ROUTINE,
     ActionType.REMINDER,
+    ActionType.CLEAR_DIALOGUE,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
@@ -614,6 +617,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
         CommandType.ROUTINE: ActionType.ROUTINE,
         CommandType.REMINDER: ActionType.REMINDER,
+        CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -889,6 +893,18 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.CLEAR_DIALOGUE:
+        ctx.ai_client.clear_dialogue()
+        clear_pending(ctx.state)
+        clear_context(ctx.state)
+        ctx.state.last_recognized_text = ""
+        emit_event("conversation_reset", "")
+        ctx.respond(
+            "Начала новый диалог. Контекст текущего разговора и незавершённое "
+            "уточнение очищены; сохранённые заметки и напоминания не затронуты."
+        )
         return True
 
     if action.type == ActionType.REMINDER:
@@ -1222,7 +1238,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             pending_action.confidence,
         )
         should_continue = handle_action(pending_action, ctx)
-        if pending_action.type != ActionType.VOICE_FEEDBACK and raw_text:
+        if pending_action.type not in {ActionType.VOICE_FEEDBACK, ActionType.CLEAR_DIALOGUE} and raw_text:
             ctx.state.last_recognized_text = raw_text
         return should_continue
 
@@ -1272,7 +1288,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
     clear_pending(ctx.state)
     should_continue = handle_action(action, ctx)
 
-    if action.type != ActionType.VOICE_FEEDBACK and raw_text:
+    if action.type not in {ActionType.VOICE_FEEDBACK, ActionType.CLEAR_DIALOGUE} and raw_text:
         ctx.state.last_recognized_text = raw_text
 
     return should_continue

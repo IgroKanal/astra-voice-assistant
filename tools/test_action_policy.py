@@ -22,6 +22,8 @@ class ActionPolicyTests(unittest.TestCase):
             self.assertFalse(ActionPolicy().check(action).allowed)
         action = AssistantAction(ActionType.OPEN_APP, target="editor", source="llm_router", confidence=0.4)
         self.assertFalse(ActionPolicy().check(action).allowed)
+        reset = AssistantAction(ActionType.CLEAR_DIALOGUE, source="llm_router", confidence=1.0)
+        self.assertFalse(ActionPolicy().check(reset).allowed)
 
     def test_shortcuts_respect_appropriate_scope(self):
         self.assertTrue(ActionPolicy(("media",)).check(AssistantAction(ActionType.KEYBOARD_SHORTCUT, target="media_next")).allowed)

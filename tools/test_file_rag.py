@@ -1,8 +1,10 @@
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -11,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.desktop_settings import AIProfile
 from src.file_rag import FileQuestionSession
 from src.file_workspace import FileWorkspace, WorkspaceDenied
-from src.ollama_client import OllamaClient
+from src.ollama_client import OllamaClient, OllamaRequestCancelled
 
 
 class FileQuestionTests(unittest.TestCase):
@@ -120,6 +122,158 @@ class FileQuestionTests(unittest.TestCase):
                 patch.object(OllamaClient, "chat", side_effect=AssertionError("No request")):
             with self.assertRaisesRegex(WorkspaceDenied, "отмен"):
                 self.session.answer("кодовое слово", self.profile)
+
+    def test_file_question_collects_complete_local_ollama_stream(self):
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def _json(self, value):
+                body = json.dumps(value).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                self._json({"models": [{"name": "test-local"}]})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = self.rfile.read(length)
+                if self.path == "/api/show":
+                    self._json({"capabilities": []})
+                    return
+                if self.path != "/api/chat":
+                    self.send_error(404)
+                    return
+                self.server.chat_payload_streaming = b'"stream": true' in payload
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                for item in (
+                    {"message": {"content": "Кодовое слово: "}, "done": False},
+                    {"message": {"content": "ОРБИТА [1]"}, "done": True, "done_reason": "stop"},
+                ):
+                    chunk = json.dumps(item).encode("utf-8") + b"\n"
+                    self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii") + chunk + b"\r\n")
+                    self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        profile = AIProfile(
+            provider="ollama",
+            model="test-local",
+            base_url=f"http://127.0.0.1:{server.server_port}",
+        )
+        try:
+            result = self.session.answer("Какое кодовое слово проекта?", profile)
+            self.assertEqual(result.text, "Кодовое слово: ОРБИТА [1]")
+            self.assertTrue(result.passages)
+            self.assertTrue(server.chat_payload_streaming)
+        finally:
+            server.shutdown()
+            server.server_close()
+            serving.join(timeout=1)
+
+    def test_cancelling_file_question_aborts_local_ollama_stream(self):
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def _json(self, value):
+                body = json.dumps(value).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/api/tags":
+                    self._json({"models": [{"name": "test-local"}]})
+                else:
+                    self.send_error(404)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = self.rfile.read(length)
+                if self.path == "/api/show":
+                    self._json({"capabilities": []})
+                    return
+                if self.path != "/api/chat":
+                    self.send_error(404)
+                    return
+                self.server.chat_payload_streaming = b'"stream": true' in payload
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                first = json.dumps({"message": {"content": "часть"}, "done": False}).encode("utf-8") + b"\n"
+                self.wfile.write(f"{len(first):X}\r\n".encode("ascii") + first + b"\r\n")
+                self.wfile.flush()
+                self.server.chat_started.set()
+                self.server.allow_followup.wait(5)
+                try:
+                    followup = json.dumps({"message": {"content": " продолжение"}, "done": False}).encode("utf-8") + b"\n"
+                    for _ in range(20):
+                        self.wfile.write(f"{len(followup):X}\r\n".encode("ascii") + followup + b"\r\n")
+                        self.wfile.flush()
+                        threading.Event().wait(0.02)
+                except OSError:
+                    self.server.client_disconnected.set()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.chat_started = threading.Event()
+        server.allow_followup = threading.Event()
+        server.client_disconnected = threading.Event()
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        cancelled = threading.Event()
+        errors = []
+        profile = AIProfile(
+            provider="ollama",
+            model="test-local",
+            base_url=f"http://127.0.0.1:{server.server_port}",
+        )
+
+        def ask():
+            try:
+                self.session.answer("Какое кодовое слово проекта?", profile, cancelled)
+            except Exception as exc:
+                errors.append(exc)
+
+        request_thread = threading.Thread(target=ask, daemon=True)
+        try:
+            request_thread.start()
+            self.assertTrue(server.chat_started.wait(timeout=3), "Ollama did not begin streaming")
+            time.sleep(0.1)
+            cancelled.set()
+            request_thread.join(timeout=2)
+            self.assertFalse(request_thread.is_alive(), "Cancelling did not stop the local request promptly")
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OllamaRequestCancelled)
+            self.assertTrue(server.chat_payload_streaming)
+            server.allow_followup.set()
+            self.assertTrue(server.client_disconnected.wait(timeout=2), "Ollama connection remained open after cancellation")
+        finally:
+            cancelled.set()
+            server.allow_followup.set()
+            request_thread.join(timeout=1)
+            server.shutdown()
+            server.server_close()
+            serving.join(timeout=1)
 
     def test_changed_file_invalidates_answer(self):
         def change(*args, **kwargs):

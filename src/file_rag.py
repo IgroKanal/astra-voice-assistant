@@ -148,7 +148,14 @@ class FileQuestionSession:
             "Ссылайся на каждый факт индексом фрагмента [1], [2]. Не смешивай источники без явной ссылки. "
             "Не утверждай, что прочитаны целые файлы: это ограниченная выборка."
         )
-        answer = OllamaClient(profile.base_url, timeout=120).chat(profile.model, system, question, max_tokens=500, memory_context=context)
+        answer = OllamaClient(profile.base_url, timeout=120).chat(
+            profile.model,
+            system,
+            question,
+            max_tokens=500,
+            memory_context=context,
+            cancelled=lambda: self._is_cancelled(cancelled),
+        )
         self.check(cancelled)
         current = []
         for relative in self.relatives:

@@ -360,10 +360,20 @@ class DesktopUITests(unittest.TestCase):
         window.withdraw()
         app = AstraDesktop(window)
         try:
-            with patch.object(DesktopSettings, "save", side_effect=AssertionError("No automatic save")):
+            with patch.object(DesktopSettings, "load", return_value=AIProfile()), \
+                 patch.object(DesktopSettings, "save", side_effect=AssertionError("No automatic save")):
                 panel = open_ai_settings(window, app.button, lambda: None)
                 window.update()
                 self.assertTrue(panel.winfo_exists())
+                self.assertEqual(panel.astra_local_router_control.cget("state"), "disabled")
+                self.assertFalse(panel.astra_local_router_variable.get())
+                panel.astra_provider_selector.set("Локальный Ollama · без облака")
+                panel.astra_provider_selector.event_generate("<<ComboboxSelected>>")
+                window.update()
+                self.assertEqual(panel.astra_local_router_control.cget("state"), "normal")
+                self.assertFalse(panel.astra_current_profile().local_command_router_enabled)
+                panel.astra_local_router_variable.set(True)
+                self.assertTrue(panel.astra_current_profile().local_command_router_enabled)
                 labels = set()
                 stack = list(panel.winfo_children())
                 while stack:

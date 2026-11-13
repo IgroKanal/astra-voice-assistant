@@ -9,6 +9,7 @@ import win32crypt
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile, AVATAR_PROFILES, DesktopSettings
+from src.action_policy import ActionPolicy
 from src.ollama_client import OllamaClient
 from src.ai_client import AIClient
 
@@ -27,6 +28,10 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(settings.llm_api_key, "")
             self.assertFalse(settings.llm_router_enabled)
             self.assertEqual(settings.llm_fallback_model, "")
+            store.save(AIProfile(provider="ollama", local_command_router_enabled=True))
+            settings = store.apply(Settings(llm_router_enabled=False))
+            self.assertTrue(settings.llm_router_enabled)
+            self.assertTrue(store.load().local_command_router_enabled)
 
     def test_permissions_apply_even_in_env_mode(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -85,6 +90,10 @@ class AIProfileTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 OllamaClient(url)
 
+    def test_local_command_router_option_is_valid_only_for_ollama(self):
+        with self.assertRaises(ValueError):
+            AIProfile(provider="compatible", local_command_router_enabled=True).validate()
+
     def test_local_answer_and_failure_never_create_cloud_client(self):
         settings = Settings(llm_provider="ollama", llm_base_url="http://127.0.0.1:11434", llm_api_key="ignored", llm_model="qwen3:4b")
         with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), patch.object(OllamaClient, "chat", return_value="Привет"):
@@ -94,6 +103,54 @@ class AIProfileTests(unittest.TestCase):
         with patch.object(OllamaClient, "chat", side_effect=TimeoutError):
             self.assertFalse(client.ask("Вопрос").ok)
             self.assertIsNone(client._client)
+
+    def test_local_command_router_requires_opt_in_and_never_falls_back_to_cloud(self):
+        disabled = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=False, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", side_effect=AssertionError("Opt-in required")) as local_chat:
+            result = disabled.route_command("который час", {})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.action.type.value, "unknown")
+            local_chat.assert_not_called()
+
+        enabled = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        response = '{"action":"get_time","target":"","query":"","url":"","confidence":0.93,"reason":"Вопрос о времени"}'
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value=response) as local_chat:
+            result = enabled.route_command("который час", {})
+            self.assertTrue(result.ok)
+            self.assertEqual(result.action.type.value, "get_time")
+            local_chat.assert_called_once()
+            self.assertEqual(local_chat.call_args.kwargs["temperature"], 0)
+            self.assertTrue(ActionPolicy().check(result.action).allowed)
+
+    def test_local_command_router_malformed_output_fails_closed_without_cloud(self):
+        client = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value='{"action":"powershell","confidence":1}'):
+            result = client.route_command("открой приложение", {})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action.type.value, "unknown")
+
+    def test_local_command_router_invalid_json_returns_unknown(self):
+        client = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value="not-json"):
+            result = client.route_command("открой приложение", {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.action.type.value, "unknown")
 
     def test_missing_model_is_not_downloaded(self):
         client = OllamaClient()

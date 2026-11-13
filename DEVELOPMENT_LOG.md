@@ -658,3 +658,12 @@
 - Portable ZIP `AstraDesktop-preview-20261113-210650.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, runtime/policy/privacy, аватары и authenticated Godot IPC. SHA-256: `0A1E6363977EF227647F05D7A9503D09F51F12B1AE453F4B99FBA79C28D04526`.
 - `Astra-Setup-2.8.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением пользовательских данных. SHA-256: `9887590D676AE41B6B70EE55E50D45804D0207A75AEF43C382247C8EB54F7684`.
 - Ярлык переключён с проверенной 2.7 на 2.8 только после package gates; target перечитан и сверен. Визуальная/клавиатурная и микрофонная приёмка остаются открытыми.
+
+## Astra 2.9 Beta · локальная маршрутизация команд
+
+- Добавлен отдельный флажок локального маршрутизатора команд для профиля Ollama. По умолчанию он выключен; профиль шифруется существующим DPAPI-механизмом. Команда идёт только на выбранный локальный endpoint и использует только уже установленную модель; скачивания и облачного fallback нет.
+- Ответ ограничен существующей схемой типизированного действия и проходит общий ActionPolicy, порог уверенности и runtime dispatch. Ошибка/некорректный JSON возвращает безопасное UNKNOWN.
+- Узкие проверки профиля и локального клиента прошли. Полный Windows gate прошёл: compileall, desktop compilation, smoke/config validators, `astra_doctor.py`, все 177 unit/integration/UI тестов за 96.8 сек.
+- Portable ZIP `AstraDesktop-preview-20261113-213650.zip` прошёл 207-entry secret/forbidden scan и relocated runtime/policy/privacy/3D checks. SHA-256: `E1329AFCE806A8A62BFD9306A2264B0DBC5C42153EB80538F357627519C2B7CA`.
+- Установщик `Astra-Setup-2.9.0-beta.1.exe` прошёл install/runtime/LocalAppData/uninstall с сохранением пользовательских данных. SHA-256: `FD6BE31967014F1FAF9CD52363691AA32480D4B26ADF35C55452DD876FA1831D`.
+- После package gate ярлык `Astra.lnk` переключён с проверенной 2.8 на проверенную 2.9; target и working directory перечитаны. Визуальная/клавиатурная приёмка, реальный микрофон и качество установленной модели остаются открытыми.

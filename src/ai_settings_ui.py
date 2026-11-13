@@ -267,6 +267,23 @@ def open_ai_settings(owner, button, on_saved, app=None):
     key = field("API-ключ (для локального Ollama оставь пустым)", profile.api_key, True)
     memory = tk.BooleanVar(value=profile.memory_enabled)
     tk.Checkbutton(content, text="Использовать мои сохранённые заметки только в локальном диалоге", variable=memory, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(padx=20, pady=8)
+    local_router = tk.BooleanVar(value=profile.local_command_router_enabled)
+    local_router_control = tk.Checkbutton(
+        content,
+        text="Распознавать команды локальной моделью Ollama",
+        variable=local_router,
+        bg="#101322", fg="#e9ecff", selectcolor="#191f34",
+        activebackground="#101322", activeforeground="#e9ecff",
+        wraplength=660, justify="left",
+    )
+    local_router_control.pack(anchor="w", padx=20, pady=8)
+
+    def update_router_availability():
+        enabled = provider.get() == labels["ollama"]
+        local_router_control.configure(state="normal" if enabled else "disabled")
+        if not enabled:
+            local_router.set(False)
+
     def provider_changed(_event=None):
         code = next(code for code, label in labels.items() if label == provider.get())
         if code == "ollama":
@@ -278,8 +295,10 @@ def open_ai_settings(owner, button, on_saved, app=None):
             endpoint.insert(0, "https://generativelanguage.googleapis.com/v1beta/openai/")
         if code != "ollama":
             memory.set(False)
+        update_router_availability()
     provider.bind("<<ComboboxSelected>>", provider_changed)
-    tk.Label(content, text="Ollama использует только установленную модель. Новые модели автоматически не скачиваются.\nОблачный режим отправляет вопросы выбранному провайдеру.", bg="#101322", fg="#a2abc9", wraplength=680).pack(padx=20, pady=10)
+    update_router_availability()
+    tk.Label(content, text="Ollama использует только установленную модель. Новые модели автоматически не скачиваются. Локальная маршрутизация выключена, пока ты явно не включишь флажок выше.\nОблачный режим отправляет вопросы выбранному провайдеру.", bg="#101322", fg="#a2abc9", wraplength=680).pack(padx=20, pady=10)
     voice_actions = tk.Frame(voice_page, bg="#101322")
     voice_actions.pack(side="bottom", before=voice_page.astra_canvas, fill="x", pady=10)
     discover_button = tk.Button(voice_actions, text="Обнаружить устройства и голоса", command=discover_audio, bg="#2b3454", fg="#e9ecff", relief="flat", font=("Segoe UI", 10), padx=16, pady=9)
@@ -294,7 +313,11 @@ def open_ai_settings(owner, button, on_saved, app=None):
         selected_voice = voices_map.get(voices.get(), character_profiles[selected_avatar]["voice_id"])
         selected_name = assistant_name.get().strip()
         character_profiles[selected_avatar] = {"assistant_name": selected_name, "voice_id": selected_voice}
-        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles)).validate()
+        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), local_command_router_enabled=local_router.get() and code == "ollama", allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles)).validate()
+    panel.astra_provider_selector = provider
+    panel.astra_local_router_control = local_router_control
+    panel.astra_local_router_variable = local_router
+    panel.astra_current_profile = current
     def save():
         if busy[0]:
             status.set("Дождись завершения проверки или прослушивания")

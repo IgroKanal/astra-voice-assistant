@@ -190,6 +190,46 @@ class AIClient:
 
         LLM ничего не запускает сама. Она только возвращает намерение.
         """
+        if self._local is not None:
+            if not self.settings.llm_router_enabled:
+                return RouteResult(
+                    ok=False,
+                    action=AssistantAction(
+                        type=ActionType.UNKNOWN,
+                        text=user_text,
+                        confidence=0.0,
+                        source="llm_unavailable",
+                        reason="Local command routing is disabled.",
+                    ),
+                )
+            try:
+                # Keep the local classifier on the already selected Ollama model.
+                # It gets no dialogue/memory, cannot call cloud APIs, and returns
+                # only an action that still passes the normal policy/dispatch gates.
+                raw_message = self._local.chat(
+                    self.settings.llm_model,
+                    self._build_router_prompt(apps),
+                    user_text,
+                    max_tokens=500,
+                    temperature=0,
+                ).strip()
+                action = self._action_from_router_json(
+                    self._parse_json_object(raw_message), user_text
+                )
+                return RouteResult(ok=True, action=action, raw_message=raw_message)
+            except Exception:
+                self.logger.warning("Local LLM-router failed; no cloud fallback")
+                return RouteResult(
+                    ok=False,
+                    action=AssistantAction(
+                        type=ActionType.UNKNOWN,
+                        text=user_text,
+                        confidence=0.0,
+                        source="llm_error",
+                        reason="Local LLM router failed.",
+                    ),
+                )
+
         if self._client is None:
             return RouteResult(
                 ok=False,

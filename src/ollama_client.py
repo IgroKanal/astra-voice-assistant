@@ -34,7 +34,7 @@ class OllamaClient:
     def models(self):
         return [item["name"] for item in self._request("/api/tags").get("models", []) if isinstance(item, dict) and isinstance(item.get("name"), str)]
 
-    def chat(self, model, system, question, max_tokens=300, history=None, memory_context=""):
+    def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2):
         if model not in self.models():
             raise ValueError("Модель не установлена в Ollama. Автоматическое скачивание отключено.")
         prior = []
@@ -58,7 +58,9 @@ class OllamaClient:
         # Some installed hybrid templates always open a think block. Enable
         # Ollama's separation for these models and consume ONLY final content.
         thinking = "thinking" in metadata.get("capabilities", [])
-        result = self._request("/api/chat", {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": False, "think": thinking, "options": {"temperature": 0.2, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"})
+        if type(temperature) not in (int, float) or not 0 <= temperature <= 2:
+            raise ValueError("Некорректная температура локальной модели")
+        result = self._request("/api/chat", {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": False, "think": thinking, "options": {"temperature": temperature, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"})
         if result.get("done_reason") == "length":
             raise ValueError("Локальная модель исчерпала лимит ответа")
         content = result.get("message", {}).get("content", "")

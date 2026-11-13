@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,17 +85,38 @@ class AIClient:
             return LLMResult(False, "LLM отключена в настройках.")
 
         if self._local is not None:
+            started = time.perf_counter()
             try:
                 context = self._memory_context(question)
-                answer = self._local.chat(self.settings.llm_model, self._build_answer_system_prompt(), question, self.settings.llm_max_tokens, history=self._dialogue, memory_context=context)
+                answer = self._local.chat(
+                    self.settings.llm_model,
+                    self._build_answer_system_prompt(),
+                    question,
+                    self.settings.llm_max_tokens,
+                    history=self._dialogue,
+                    memory_context=context,
+                    think=self.settings.ollama_thinking_enabled,
+                )
                 clean_answer = self._clean_llm_answer(answer)
                 if not clean_answer:
+                    self.logger.info(
+                        "LLM timing: provider=ollama task=answer result=empty elapsed=%.3fs",
+                        time.perf_counter() - started,
+                    )
                     return LLMResult(False, "Локальная модель не сформировала итоговый ответ.")
                 self._dialogue.extend([{"role": "user", "content": question}, {"role": "assistant", "content": clean_answer}])
                 self._dialogue = self._dialogue[-8:]
+                self.logger.info(
+                    "LLM timing: provider=ollama task=answer result=ok thinking=%s elapsed=%.3fs",
+                    self.settings.ollama_thinking_enabled,
+                    time.perf_counter() - started,
+                )
                 return LLMResult(True, clean_answer)
             except Exception:
-                self.logger.warning("Local model request failed; no cloud fallback")
+                self.logger.warning(
+                    "Local model request failed; no cloud fallback; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
                 return LLMResult(False, "Локальная модель недоступна или не успела ответить. Проверь Ollama и выбранную модель.")
 
         if self._client is None:
@@ -111,6 +133,8 @@ class AIClient:
         last_error_message = "Не удалось получить ответ от LLM."
 
         for model in self._models_to_try():
+            started = time.perf_counter()
+            result_kind = "error"
             try:
                 self.logger.info(
                     "LLM-запрос: provider=%s model=%s",
@@ -130,9 +154,11 @@ class AIClient:
                 message = response.choices[0].message.content if response.choices else ""
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
+                    result_kind = "ok"
                     return LLMResult(True, clean_message)
 
                 self.logger.warning("LLM модель %s вернула пустой ответ", model)
+                result_kind = "empty"
                 last_error_message = "Модель вернула пустой ответ."
             except APITimeoutError:
                 self.logger.warning("LLM timeout для модели %s", model, exc_info=True)
@@ -162,6 +188,14 @@ class AIClient:
                     exc_info=True,
                 )
                 last_error_message = "Произошла непредвиденная ошибка LLM."
+            finally:
+                self.logger.info(
+                    "LLM timing: provider=%s task=answer model=%s result=%s elapsed=%.3fs",
+                    self.settings.llm_provider,
+                    model,
+                    result_kind,
+                    time.perf_counter() - started,
+                )
 
         return LLMResult(False, last_error_message)
 
@@ -202,6 +236,7 @@ class AIClient:
                         reason="Local command routing is disabled.",
                     ),
                 )
+            started = time.perf_counter()
             try:
                 # Keep the local classifier on the already selected Ollama model.
                 # It gets no dialogue/memory, cannot call cloud APIs, and returns
@@ -212,13 +247,21 @@ class AIClient:
                     user_text,
                     max_tokens=500,
                     temperature=0,
+                    think=False,
                 ).strip()
                 action = self._action_from_router_json(
                     self._parse_json_object(raw_message), user_text
                 )
+                self.logger.info(
+                    "LLM timing: provider=ollama task=command_router result=ok thinking=false elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
                 return RouteResult(ok=True, action=action, raw_message=raw_message)
             except Exception:
-                self.logger.warning("Local LLM-router failed; no cloud fallback")
+                self.logger.warning(
+                    "Local LLM-router failed; no cloud fallback; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
                 return RouteResult(
                     ok=False,
                     action=AssistantAction(

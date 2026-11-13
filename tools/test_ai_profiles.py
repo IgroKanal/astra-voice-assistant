@@ -3,7 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import win32crypt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -104,6 +104,52 @@ class AIProfileTests(unittest.TestCase):
             self.assertFalse(client.ask("Вопрос").ok)
             self.assertIsNone(client._client)
 
+    def test_local_answer_uses_fast_no_thinking_mode_by_default(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        with patch.object(OllamaClient, "chat", return_value="Короткий ответ") as chat:
+            result = AIClient(settings).ask("Вопрос для проверки")
+        self.assertTrue(result.ok)
+        self.assertFalse(chat.call_args.kwargs["think"])
+
+    def test_local_thinking_can_be_enabled_through_runtime_settings(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+            ollama_thinking_enabled=True,
+        )
+        with patch.object(OllamaClient, "chat", return_value="Развёрнутый ответ") as chat:
+            result = AIClient(settings).ask("Сложный вопрос")
+        self.assertTrue(result.ok)
+        self.assertTrue(chat.call_args.kwargs["think"])
+
+    def test_cloud_answer_logs_duration_without_question_text(self):
+        settings = Settings(
+            llm_provider="compatible",
+            llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="fast-model",
+            llm_fallback_model="",
+        )
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="Короткий ответ"))]
+        client = Mock()
+        client.chat.completions.create.return_value = response
+
+        with patch("src.ai_client.OpenAI", return_value=client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("уникальный текст вопроса")
+
+        self.assertTrue(result.ok)
+        log_text = "\n".join(captured.output)
+        self.assertIn("task=answer model=fast-model result=ok", log_text)
+        self.assertNotIn("уникальный текст вопроса", log_text)
+
     def test_local_command_router_requires_opt_in_and_never_falls_back_to_cloud(self):
         disabled = AIClient(Settings(
             llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
@@ -128,6 +174,7 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(result.action.type.value, "get_time")
             local_chat.assert_called_once()
             self.assertEqual(local_chat.call_args.kwargs["temperature"], 0)
+            self.assertFalse(local_chat.call_args.kwargs["think"])
             self.assertTrue(ActionPolicy().check(result.action).allowed)
 
     def test_local_command_router_malformed_output_fails_closed_without_cloud(self):

@@ -72,6 +72,7 @@ class Settings:
 
     llm_router_enabled: bool = True
     llm_router_min_confidence: float = 0.55
+    ollama_thinking_enabled: bool = False
 
     speech_language: str = "ru-RU"
     stt_device_index: int | None = None
@@ -407,6 +408,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
             "LLM_ROUTER_MIN_CONFIDENCE",
             0.55,
         ),
+        ollama_thinking_enabled=_bool_from_env("OLLAMA_THINKING_ENABLED", False),
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
         listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 10),
         phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 16),

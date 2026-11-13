@@ -522,28 +522,18 @@ class VoiceIO:
             self.logger.error("Edge TTS недоступен: edge-playback не найден.")
             return
 
-        if self.settings.tts_cache_enabled and self.edge_tts_command is not None:
-            cached = self._ensure_edge_cached_audio(
+        if self.settings.tts_cache_enabled:
+            # Dynamic replies use direct playback on a miss. Persisting every
+            # unique answer duplicates synthesis and can grow the cache forever;
+            # only the explicitly bounded startup prewarm writes new phrases.
+            cached = self._edge_cache_path(
                 text=text,
                 voice=self.settings.tts_edge_voice,
             )
-            if cached is not None and self._play_cached_audio(cached):
+            if cached.is_file() and self._play_cached_audio(cached):
                 self._log_tts_timing(start, "cache")
                 return
-
-            fallback_voice = self.settings.tts_edge_fallback_voice.strip()
-            if fallback_voice:
-                cached_fallback = self._ensure_edge_cached_audio(
-                    text=text,
-                    voice=fallback_voice,
-                )
-                if cached_fallback is not None and self._play_cached_audio(
-                    cached_fallback
-                ):
-                    self._log_tts_timing(start, "cache_fallback_voice")
-                    return
-
-            self.logger.warning("TTS cache fallback: использую edge-playback напрямую.")
+            self.logger.debug("TTS cache miss: using direct playback to avoid synthesis wait")
 
         if self._speak_edge_direct(text, self.settings.tts_edge_voice):
             self._log_tts_timing(start, "direct")

@@ -54,6 +54,7 @@ AMBIGUOUS_MUSIC_TARGET = "__ambiguous_music__"
 UNRESOLVED_CONTEXT_TARGET = "__context_unavailable__"
 CANCEL_REMINDER_UI_TARGET = "__cancel_reminder_ui__"
 CANCEL_NEXT_REMINDER_TARGET = "__cancel_next_reminder__"
+CANCEL_REMINDER_MATCH_PREFIX = "__cancel_reminder_match__:"
 LIST_UPCOMING_REMINDERS_TARGET = "__list_upcoming_reminders__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
@@ -1432,6 +1433,10 @@ def parse_command_text(text: str) -> ParsedCommand:
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=LIST_UPCOMING_REMINDERS_TARGET)
     if normalized in {"отмени ближайшее напоминание", "отмени следующее напоминание"}:
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_NEXT_REMINDER_TARGET)
+    if normalized.startswith("отмени напоминание "):
+        query = normalized[len("отмени напоминание "):].strip()
+        if 2 <= len(query) <= 160:
+            return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_MATCH_PREFIX + query)
     if normalized.startswith("отмени напоминание"):
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_UI_TARGET)
     if normalized.startswith("напомни"):

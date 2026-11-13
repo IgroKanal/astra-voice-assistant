@@ -24,6 +24,7 @@ from src.command_parser import (
     AMBIGUOUS_CHAT_TARGET,
     AMBIGUOUS_MUSIC_TARGET,
     CANCEL_NEXT_REMINDER_TARGET,
+    CANCEL_REMINDER_MATCH_PREFIX,
     CANCEL_REMINDER_UI_TARGET,
     LIST_UPCOMING_REMINDERS_TARGET,
     MIXED_COMMAND_TARGET,
@@ -948,6 +949,24 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.REMINDER:
         if action.target == CANCEL_REMINDER_UI_TARGET:
             ctx.respond("Отменить напоминание можно в разделе «Задачи» приложения Astra.")
+            return True
+        if action.target.startswith(CANCEL_REMINDER_MATCH_PREFIX):
+            query = action.target[len(CANCEL_REMINDER_MATCH_PREFIX):]
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                result, title = ReminderStore(path).cancel_matching(query)
+                if result == "cancelled":
+                    safe_title = " ".join("".join(char if char.isprintable() else " " for char in title).split())
+                    if len(safe_title) > 100:
+                        safe_title = safe_title[:99].rstrip() + "…"
+                    ctx.respond(f"Напоминание «{safe_title}» отменено.")
+                elif result == "ambiguous":
+                    ctx.respond("Нашла несколько таких напоминаний. Скажи более точное название или попроси показать список.")
+                else:
+                    ctx.respond("Активное напоминание с таким названием не найдено.")
+            except Exception:
+                ctx.respond("Не удалось отменить это напоминание. Проверь раздел «Задачи» приложения Astra.")
             return True
         if action.target == LIST_UPCOMING_REMINDERS_TARGET:
             try:

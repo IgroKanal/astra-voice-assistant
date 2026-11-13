@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -124,6 +125,35 @@ class ReminderStore:
                 "UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')",
                 (row[0],),
             ).rowcount == 1
+
+    def cancel_matching(self, query: str) -> tuple[str, str]:
+        """Cancel one active reminder only when its encrypted title has a unique exact fragment match."""
+        normalized_query = re.sub(r"\W+", " ", query.casefold().replace("ё", "е"), flags=re.UNICODE).strip()
+        if not 2 <= len(normalized_query) <= 160:
+            raise ValueError("Фрагмент названия должен содержать от 2 до 160 символов")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT id,payload FROM reminders WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC"
+            ).fetchall()
+            matches = []
+            for identity, payload in rows:
+                title = self.decode(payload)
+                normalized_title = re.sub(
+                    r"\W+", " ", title.casefold().replace("ё", "е"), flags=re.UNICODE
+                ).strip()
+                if normalized_query in normalized_title:
+                    matches.append((identity, title))
+                    if len(matches) > 1:
+                        return "ambiguous", ""
+            if not matches:
+                return "not_found", ""
+            identity, title = matches[0]
+            changed = db.execute(
+                "UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')",
+                (identity,),
+            ).rowcount
+            return ("cancelled", title) if changed == 1 else ("not_found", "")
 
     def unread_count(self) -> int:
         with self.connect() as db:

@@ -70,6 +70,32 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(states[later], "cancelled")
         self.assertEqual(states[delivered], "delivered")
 
+    def test_cancel_matching_requires_one_active_title_fragment_match(self):
+        matching = self.store.add("позвонить про встречу", 100)
+        delivered = self.store.add("встреча уже прошла", 50)
+        claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, claim.token))
+
+        result, title = self.store.cancel_matching("про встречу")
+
+        self.assertEqual((result, title), ("cancelled", "позвонить про встречу"))
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[matching], "cancelled")
+        self.assertEqual(states[delivered], "delivered")
+        self.assertEqual(self.store.cancel_matching("нет такой задачи"), ("not_found", ""))
+
+    def test_cancel_matching_keeps_multiple_matches_untouched(self):
+        first = self.store.add("встреча с Анной", 100)
+        second = self.store.add("план встречи", 200)
+
+        self.assertEqual(self.store.cancel_matching("встреч"), ("ambiguous", ""))
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[first], "pending")
+        self.assertEqual(states[second], "pending")
+        for invalid_query in (" ", "a", "x" * 161):
+            with self.assertRaises(ValueError):
+                self.store.cancel_matching(invalid_query)
+
     def test_list_upcoming_returns_only_active_reminders_in_due_order_and_respects_limit(self):
         later = self.store.add("later", 300)
         earliest = self.store.add("earliest", 100)

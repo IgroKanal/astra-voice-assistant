@@ -53,7 +53,7 @@ class ReminderCommandTests(unittest.TestCase):
             self.assertEqual(parsed.target, "")
 
     def test_only_explicit_nearest_or_next_phrase_selects_one_reminder(self):
-        from src.command_parser import CANCEL_NEXT_REMINDER_TARGET, CANCEL_REMINDER_UI_TARGET
+        from src.command_parser import CANCEL_NEXT_REMINDER_TARGET, CANCEL_REMINDER_MATCH_PREFIX, CANCEL_REMINDER_UI_TARGET
         for phrase in ("отмени ближайшее напоминание", "отмени следующее напоминание"):
             parsed = parse_command_text(phrase)
             self.assertEqual(parsed.type, CommandType.REMINDER)
@@ -64,8 +64,26 @@ class ReminderCommandTests(unittest.TestCase):
         )
         self.assertEqual(
             parse_command_text("отмени напоминание о встрече").target,
-            CANCEL_REMINDER_UI_TARGET,
+            CANCEL_REMINDER_MATCH_PREFIX + "о встрече",
         )
+
+    def test_voice_cancel_by_title_fragment_requires_wake_and_permission(self):
+        from tools.smoke_test_v11_daily_workflow import make_context
+        from main import process_turn
+        ctx, _, ai, *_ = make_context()
+        with patch("src.reminders.ReminderStore") as store:
+            process_turn("отмени напоминание про встречу", ctx)
+            store.assert_not_called()
+            self.assertEqual(ai.ask_calls, 0)
+            self.assertEqual(ai.route_calls, 0)
+
+            process_turn("Астра, отмени напоминание про встречу", ctx)
+            store.return_value.cancel_matching.assert_called_once_with("про встречу")
+
+            ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))
+            store.reset_mock()
+            process_turn("Астра, отмени напоминание про встречу", ctx)
+            store.assert_not_called()
 
     def test_explicit_list_phrases_are_local_reminder_queries(self):
         from src.command_parser import LIST_UPCOMING_REMINDERS_TARGET, is_command_like_text

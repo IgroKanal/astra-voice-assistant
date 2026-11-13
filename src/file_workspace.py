@@ -159,27 +159,45 @@ class FileWorkspace:
         check_limits()
         return result
 
-    def read_text(self, relative: str) -> str:
+    def read_text(
+        self,
+        relative: str,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> str:
+        """Read a supported document while honoring a plan's shared limits."""
+        def check_limits() -> None:
+            if is_cancelled is not None and is_cancelled():
+                raise WorkspaceDenied("Чтение отменено пользователем")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise WorkspaceDenied("Истёк лимит времени чтения")
+
+        check_limits()
         path = self.checked(relative)
         if not path.is_file():
             raise WorkspaceDenied("Выбери обычный файл")
         suffix = path.suffix.casefold()
         limit = self.MAX_DOCUMENT_BYTES if suffix in {".pdf", ".docx", ".xlsx", ".pptx"} else self.MAX_READ_BYTES
-        data = self._read_bounded(relative, limit)
+        data = self._read_bounded(relative, limit, check_limits=check_limits)
+        check_limits()
         if suffix == ".pdf":
-            return self._extract_pdf(data)
-        if suffix == ".docx":
-            return self._extract_docx(data)
-        if suffix == ".xlsx":
-            return self._extract_xlsx(data)
-        if suffix == ".pptx":
-            return self._extract_pptx(data)
-        if b"\x00" in data:
-            raise WorkspaceDenied("Бинарный файл нельзя прочитать как текст")
-        try:
-            return data.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            raise WorkspaceDenied("Пока поддерживаются текстовые файлы UTF-8") from None
+            result = self._extract_pdf(data, check_limits=check_limits)
+        elif suffix == ".docx":
+            result = self._extract_docx(data, check_limits=check_limits)
+        elif suffix == ".xlsx":
+            result = self._extract_xlsx(data, check_limits=check_limits)
+        elif suffix == ".pptx":
+            result = self._extract_pptx(data, check_limits=check_limits)
+        else:
+            if b"\x00" in data:
+                raise WorkspaceDenied("Бинарный файл нельзя прочитать как текст")
+            try:
+                result = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                raise WorkspaceDenied("Пока поддерживаются текстовые файлы UTF-8") from None
+        check_limits()
+        return result
 
     def preview_image(self, relative: str) -> ImagePreview:
         """Decode one explicitly selected image into a bounded, metadata-free PNG."""
@@ -208,7 +226,15 @@ class FileWorkspace:
         except Exception as exc:
             raise WorkspaceDenied("Не удалось безопасно декодировать выбранное изображение") from exc
 
-    def _read_bounded(self, relative: str, limit: int) -> bytes:
+    def _read_bounded(
+        self,
+        relative: str,
+        limit: int,
+        *,
+        check_limits: Callable[[], None] | None = None,
+    ) -> bytes:
+        if check_limits is not None:
+            check_limits()
         path = self.checked(relative)
         info = path.stat()
         if info.st_size > limit:
@@ -216,6 +242,8 @@ class FileWorkspace:
         with path.open("rb") as stream:
             opened = os.fstat(stream.fileno())
             data = stream.read(limit + 1)
+            if check_limits is not None:
+                check_limits()
             current = self.checked(relative).stat()
             opened_identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
             current_identity = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
@@ -226,7 +254,11 @@ class FileWorkspace:
         return data
 
     @classmethod
-    def _extract_docx(cls, data: bytes) -> str:
+    def _extract_docx(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
         try:
             with zipfile.ZipFile(BytesIO(data)) as package:
                 entries = package.infolist()
@@ -237,7 +269,11 @@ class FileWorkspace:
                     raise WorkspaceDenied("DOCX не содержит допустимый основной документ")
                 if document.compress_size == 0 and document.file_size or (document.compress_size and document.file_size / document.compress_size > 250):
                     raise WorkspaceDenied("Подозрительный уровень сжатия DOCX; разбор остановлен")
+                if check_limits is not None:
+                    check_limits()
                 xml = package.read(document)
+                if check_limits is not None:
+                    check_limits()
         except WorkspaceDenied:
             raise
         except (OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
@@ -246,7 +282,11 @@ class FileWorkspace:
         if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
             raise WorkspaceDenied("DOCX с объявлением XML-сущностей не поддерживается")
         try:
+            if check_limits is not None:
+                check_limits()
             root = ET.fromstring(xml)
+            if check_limits is not None:
+                check_limits()
         except ET.ParseError as exc:
             raise WorkspaceDenied("Основной XML документа DOCX повреждён") from exc
         namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -255,8 +295,12 @@ class FileWorkspace:
             raise WorkspaceDenied("В DOCX не найден основной текст")
         paragraphs = []
         for paragraph in body.iter(namespace + "p"):
+            if check_limits is not None:
+                check_limits()
             pieces = []
             for node in paragraph.iter():
+                if check_limits is not None:
+                    check_limits()
                 if node.tag == namespace + "t" and node.text:
                     pieces.append(node.text)
                 elif node.tag == namespace + "tab":
@@ -273,14 +317,23 @@ class FileWorkspace:
         return text
 
     @classmethod
-    def _office_package(cls, data: bytes, label: str) -> zipfile.ZipFile:
+    def _office_package(
+        cls,
+        data: bytes,
+        label: str,
+        check_limits: Callable[[], None] | None = None,
+    ) -> zipfile.ZipFile:
         try:
+            if check_limits is not None:
+                check_limits()
             package = zipfile.ZipFile(BytesIO(data))
             entries = package.infolist()
             if (len(entries) > 2000 or sum(item.file_size for item in entries) > 100_000_000 or
                     len({item.filename for item in entries}) != len(entries)):
                 package.close()
                 raise WorkspaceDenied(f"Слишком сложный или неоднозначный пакет {label}")
+            if check_limits is not None:
+                check_limits()
             return package
         except WorkspaceDenied:
             raise
@@ -288,8 +341,17 @@ class FileWorkspace:
             raise WorkspaceDenied(f"Не удалось прочитать структуру {label}") from exc
 
     @classmethod
-    def _office_xml(cls, package: zipfile.ZipFile, name: str, label: str, total: list[int]) -> ET.Element:
+    def _office_xml(
+        cls,
+        package: zipfile.ZipFile,
+        name: str,
+        label: str,
+        total: list[int],
+        check_limits: Callable[[], None] | None = None,
+    ) -> ET.Element:
         try:
+            if check_limits is not None:
+                check_limits()
             info = package.getinfo(name)
         except KeyError as exc:
             raise WorkspaceDenied(f"В {label} не найден обязательный раздел") from exc
@@ -302,23 +364,41 @@ class FileWorkspace:
             raise WorkspaceDenied(f"XML-содержимое {label} превышает общий лимит 32 МБ")
         try:
             xml = package.read(info)
+            if check_limits is not None:
+                check_limits()
+        except WorkspaceDenied:
+            raise
         except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
             raise WorkspaceDenied(f"Повреждён XML-раздел {label}") from exc
         upper = xml.upper()
         if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
             raise WorkspaceDenied(f"XML-сущности в {label} не поддерживаются")
         try:
-            return ET.fromstring(xml)
+            if check_limits is not None:
+                check_limits()
+            root = ET.fromstring(xml)
+            if check_limits is not None:
+                check_limits()
+            return root
         except ET.ParseError as exc:
             raise WorkspaceDenied(f"XML-раздел {label} повреждён") from exc
 
     @classmethod
-    def _office_relationships(cls, package: zipfile.ZipFile, rels_part: str, label: str, total: list[int]) -> dict[str, str]:
+    def _office_relationships(
+        cls,
+        package: zipfile.ZipFile,
+        rels_part: str,
+        label: str,
+        total: list[int],
+        check_limits: Callable[[], None] | None = None,
+    ) -> dict[str, str]:
         namespace = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-        root = cls._office_xml(package, rels_part, label, total)
+        root = cls._office_xml(package, rels_part, label, total, check_limits)
         base = posixpath.dirname(posixpath.dirname(rels_part))
         relationships = {}
         for relationship in root.findall(namespace + "Relationship"):
+            if check_limits is not None:
+                check_limits()
             identity = relationship.get("Id", "")
             target = relationship.get("Target", "")
             if relationship.get("TargetMode", "Internal") == "External":
@@ -336,32 +416,48 @@ class FileWorkspace:
         return relationships
 
     @classmethod
-    def _extract_xlsx(cls, data: bytes) -> str:
+    def _extract_xlsx(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
         main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
         rel_id = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
         total = [0]
         try:
-            with cls._office_package(data, "XLSX") as package:
-                workbook = cls._office_xml(package, "xl/workbook.xml", "XLSX", total)
-                relationships = cls._office_relationships(package, "xl/_rels/workbook.xml.rels", "XLSX", total)
+            with cls._office_package(data, "XLSX", check_limits) as package:
+                workbook = cls._office_xml(package, "xl/workbook.xml", "XLSX", total, check_limits)
+                relationships = cls._office_relationships(package, "xl/_rels/workbook.xml.rels", "XLSX", total, check_limits)
                 sheets = workbook.find(main + "sheets")
                 if sheets is None or len(sheets) > cls.MAX_OFFICE_SHEETS:
                     raise WorkspaceDenied("XLSX должен содержать не более 100 листов")
                 shared = []
                 if "xl/sharedStrings.xml" in package.namelist():
-                    strings_root = cls._office_xml(package, "xl/sharedStrings.xml", "XLSX", total)
-                    shared = ["".join(node.text or "" for node in item.iter(main + "t")) for item in strings_root.findall(main + "si")]
+                    strings_root = cls._office_xml(package, "xl/sharedStrings.xml", "XLSX", total, check_limits)
+                    for item in strings_root.findall(main + "si"):
+                        if check_limits is not None:
+                            check_limits()
+                        pieces = []
+                        for node in item.iter(main + "t"):
+                            if check_limits is not None:
+                                check_limits()
+                            pieces.append(node.text or "")
+                        shared.append("".join(pieces))
                 output = []
                 cells_seen = 0
                 text_chars = 0
                 for index, sheet in enumerate(sheets, 1):
+                    if check_limits is not None:
+                        check_limits()
                     name = sheet.get("name", f"Лист {index}")[:120]
                     target = relationships.get(sheet.get(rel_id, ""), "")
                     if not target.startswith("xl/worksheets/") or "/../" in f"/{target}/":
                         raise WorkspaceDenied("Лист XLSX ссылается на недопустимый раздел")
-                    worksheet = cls._office_xml(package, target, "XLSX", total)
+                    worksheet = cls._office_xml(package, target, "XLSX", total, check_limits)
                     output.append(f"[Лист: {name}]")
                     for cell in worksheet.iter(main + "c"):
+                        if check_limits is not None:
+                            check_limits()
                         cells_seen += 1
                         if cells_seen > cls.MAX_OFFICE_CELLS:
                             raise WorkspaceDenied("В XLSX больше 200000 ячеек; чтение остановлено")
@@ -376,7 +472,13 @@ class FileWorkspace:
                                 raise WorkspaceDenied("В XLSX повреждён индекс общей строки") from None
                         elif kind == "inlineStr":
                             inline = cell.find(main + "is")
-                            value = "".join(node.text or "" for node in inline.iter(main + "t")) if inline is not None else ""
+                            pieces = []
+                            if inline is not None:
+                                for node in inline.iter(main + "t"):
+                                    if check_limits is not None:
+                                        check_limits()
+                                    pieces.append(node.text or "")
+                            value = "".join(pieces)
                         elif kind == "b" and value:
                             value = "TRUE" if value == "1" else "FALSE"
                         if not value:
@@ -398,26 +500,36 @@ class FileWorkspace:
             raise WorkspaceDenied("Не удалось разобрать XLSX") from exc
 
     @classmethod
-    def _extract_pptx(cls, data: bytes) -> str:
+    def _extract_pptx(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
         presentation_ns = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
         rel_id = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
         drawing_ns = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
         total = [0]
         try:
-            with cls._office_package(data, "PPTX") as package:
-                presentation = cls._office_xml(package, "ppt/presentation.xml", "PPTX", total)
-                relationships = cls._office_relationships(package, "ppt/_rels/presentation.xml.rels", "PPTX", total)
+            with cls._office_package(data, "PPTX", check_limits) as package:
+                presentation = cls._office_xml(package, "ppt/presentation.xml", "PPTX", total, check_limits)
+                relationships = cls._office_relationships(package, "ppt/_rels/presentation.xml.rels", "PPTX", total, check_limits)
                 slide_list = presentation.find(presentation_ns + "sldIdLst")
                 if slide_list is None or len(slide_list) > cls.MAX_PRESENTATION_SLIDES:
                     raise WorkspaceDenied("PPTX должен содержать не более 200 слайдов")
                 output = []
                 text_chars = 0
                 for number, slide_id in enumerate(slide_list, 1):
+                    if check_limits is not None:
+                        check_limits()
                     target = relationships.get(slide_id.get(rel_id, ""), "")
                     if not target.startswith("ppt/slides/") or "/../" in f"/{target}/":
                         raise WorkspaceDenied("Слайд PPTX ссылается на недопустимый раздел")
-                    slide = cls._office_xml(package, target, "PPTX", total)
-                    words = [node.text or "" for node in slide.iter(drawing_ns + "t")]
+                    slide = cls._office_xml(package, target, "PPTX", total, check_limits)
+                    words = []
+                    for node in slide.iter(drawing_ns + "t"):
+                        if check_limits is not None:
+                            check_limits()
+                        words.append(node.text or "")
                     text = " ".join(" ".join(words).split())
                     if text:
                         output.append(f"[Слайд {number}]\n{text}")
@@ -434,10 +546,18 @@ class FileWorkspace:
             raise WorkspaceDenied("Не удалось разобрать PPTX") from exc
 
     @classmethod
-    def _extract_pdf(cls, data: bytes) -> str:
+    def _extract_pdf(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
         try:
+            if check_limits is not None:
+                check_limits()
             from pypdf import PdfReader
             reader = PdfReader(BytesIO(data), strict=False)
+            if check_limits is not None:
+                check_limits()
             if reader.is_encrypted:
                 raise WorkspaceDenied("Зашифрованный PDF не читается без отдельного разрешения")
             if len(reader.pages) > cls.MAX_PDF_PAGES:
@@ -446,15 +566,21 @@ class FileWorkspace:
             total_content = 0
             total_text = 0
             for index, page in enumerate(reader.pages, 1):
+                if check_limits is not None:
+                    check_limits()
                 contents = page.get_contents()
                 if contents is not None:
                     size = len(contents.get_data())
+                    if check_limits is not None:
+                        check_limits()
                     if size > cls.MAX_PDF_PAGE_CONTENT_BYTES:
                         raise WorkspaceDenied("Страница PDF слишком сложная; разбор остановлен")
                     total_content += size
                     if total_content > cls.MAX_PDF_TOTAL_CONTENT_BYTES:
                         raise WorkspaceDenied("PDF содержит слишком много данных страниц; разбор остановлен")
                 page_text = page.extract_text() or ""
+                if check_limits is not None:
+                    check_limits()
                 if page_text.strip():
                     extracted.append(f"[Страница {index}]\n{page_text.strip()}")
                     total_text += len(extracted[-1])

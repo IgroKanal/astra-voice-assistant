@@ -675,6 +675,7 @@
 - Сетевой STT получил настраиваемый тайм-аут (12 секунд по умолчанию) и отдельные capture/recognition/total timing без transcript в timing-сообщении.
 - Edge TTS получил настраиваемый общий лимит (25 секунд по умолчанию); резервный голос использует только оставшееся время, зависший subprocess получает timeout, а cache miss не создаёт второй уникальный mp3.
 - Локальный планировщик теперь передаёт отмену и общий deadline внутрь файлового поиска; обход прекращается при отмене или истечении бюджета, а результат отмечается как отменённый.
-- Локальный gate прошёл: compileall, все 208 unit/integration/UI тестов, 9 smoke tests, 4 config validators и `astra_doctor.py`. Ранее реальный короткий warmup установленной `qwen3:4b` на localhost прошёл за 11.0 сек; модель не скачивалась.
-- Базовый voice-core 3.0 прошёл GitHub Windows CI `43489284075`, включая portable-package validation; новый follow-up кооперативной отмены поиска должен пройти отдельный push-triggered gate.
+- Файловое чтение из плана теперь получает тот же cancel callback/deadline; разбор проверяет лимиты между PDF-страницами, DOCX-узлами, XLSX-ячейками и PPTX-слайдами/текстовыми узлами.
+- Локальный gate прошёл: compileall, все 212 unit/integration/UI тестов, 9 smoke tests, 4 config validators и `astra_doctor.py`. Ранее реальный короткий warmup установленной `qwen3:4b` на localhost прошёл за 11.0 сек; модель не скачивалась.
+- Базовый voice-core 3.0 прошёл GitHub Windows CI `43489284075`, а отмена файлового поиска — Windows CI `43493497060`, включая portable-package validation. Расширенная отмена чтения документов ещё ждёт собственного CI.
 - Проверка реального голоса, микрофона и p50/p95 от wake до первого звука остаётся за Егором; локальный installer/portable build не создавался.

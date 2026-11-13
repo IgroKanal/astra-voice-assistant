@@ -60,6 +60,49 @@ class WorkspaceTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
                 empty_workspace.search("", deadline=50)
 
+    def test_read_text_passes_cancellation_into_document_parser(self):
+        import threading
+
+        (self.root / "report.pdf").write_bytes(b"mock pdf")
+        cancelled = threading.Event()
+
+        def cancel_during_parse(_data, *, check_limits):
+            cancelled.set()
+            check_limits()
+
+        with patch.object(self.workspace, "_extract_pdf", side_effect=cancel_during_parse):
+            with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+                self.workspace.read_text("report.pdf", is_cancelled=cancelled.is_set)
+
+    def test_read_text_rejects_an_expired_plan_deadline(self):
+        with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+            self.workspace.read_text("notes.txt", deadline=time.monotonic() - 1)
+
+    def test_pdf_extraction_checks_limits_between_pages(self):
+        from types import SimpleNamespace
+
+        class Page:
+            def get_contents(self):
+                return None
+
+            def extract_text(self):
+                return "страница"
+
+        pages = [Page(), Page(), Page()]
+        reader = SimpleNamespace(is_encrypted=False, pages=pages)
+        checks = 0
+
+        def stop_before_second_page():
+            nonlocal checks
+            checks += 1
+            if checks >= 5:
+                raise WorkspaceDenied("Чтение отменено пользователем")
+
+        with patch("pypdf.PdfReader", return_value=reader):
+            with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+                FileWorkspace._extract_pdf(b"mock pdf", check_limits=stop_before_second_page)
+        self.assertEqual(checks, 5)
+
     def test_conversation_reset_event_roundtrips_through_desktop_bridge_parser(self):
         import json
         from src.runtime_events import PREFIX

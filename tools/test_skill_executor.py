@@ -63,6 +63,31 @@ class SkillExecutorTests(unittest.TestCase):
             self.assertEqual(results[0].error, "План отменён или истёк лимит времени")
             self.assertGreater(observed["deadline"], time.monotonic())
 
+    def test_running_document_read_receives_cancellation_and_shared_deadline(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="astra-skill-read-cancel-", dir=ROOT) as temp:
+            workspace = FileWorkspace(Path(temp))
+            executor = SkillExecutor(workspace)
+            cancel = threading.Event()
+            observed = {}
+
+            def stop_during_read(_path, *, is_cancelled, deadline):
+                observed["deadline"] = deadline
+                cancel.set()
+                if is_cancelled():
+                    raise WorkspaceDenied("Чтение отменено пользователем")
+                raise AssertionError("cancellation callback did not reflect the event")
+
+            plan = ActionPlan((SkillCall("files.read_text", {"path": "report.pdf"}),))
+            with patch.object(workspace, "read_text", side_effect=stop_during_read):
+                results = executor.execute(plan, cancel=cancel, budget_seconds=2)
+
+            self.assertEqual(len(results), 1)
+            self.assertFalse(results[0].ok)
+            self.assertEqual(results[0].error, "План отменён или истёк лимит времени")
+            self.assertGreater(observed["deadline"], time.monotonic())
+
     def test_simulation_is_bounded_and_does_not_need_or_use_workspace(self):
         executor = SkillExecutor()
         plan = ActionPlan((

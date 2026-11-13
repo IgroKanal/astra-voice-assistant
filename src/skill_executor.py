@@ -176,7 +176,11 @@ class SkillExecutor:
                         deadline=deadline,
                     )
                 elif step.name == "files.read_text":
-                    value = self.workspace.read_text(step.arguments["path"])
+                    value = self.workspace.read_text(
+                        step.arguments["path"],
+                        is_cancelled=cancel.is_set if cancel is not None else None,
+                        deadline=deadline,
+                    )
                 else:
                     assert self.transactions is not None and transaction_previews is not None
                     value = self.transactions.execute(transaction_previews[index])

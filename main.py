@@ -790,7 +790,8 @@ def build_help_text(topic: str = "general") -> str:
         "general": (
             "Я умею открывать сайты, приложения и папки, управлять вкладками, "
             "VPN, окнами, музыкой, громкостью и рабочим столом. "
-            "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв. "
+            "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв, "
+            "или напомни завтра в 9 позвонить. "
             "В приложении открой «Команды», чтобы найти пример и вставить его в чат. "
             "Для новой темы скажи: имя ассистента, начни новый диалог."
         ),
@@ -974,7 +975,10 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             if not isinstance(data, dict) or set(data) != {"delay", "text"} or type(data["delay"]) is not int or not 1 <= data["delay"] <= 30 * 86400 or not isinstance(data["text"], str) or not 1 <= len(data["text"]) <= 1000:
                 raise ValueError("Invalid reminder")
         except (ValueError, TypeError):
-            ctx.respond("Скажи: Астра, напомни через пять минут сделать перерыв.")
+            ctx.respond(
+                "Скажи: Астра, напомни через пять минут сделать перерыв, "
+                "или Астра, напомни завтра в 9 позвонить."
+            )
             return True
         try:
             from src.reminders import ReminderStore

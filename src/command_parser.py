@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import json
+import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta, time as datetime_time
 from enum import Enum
 
 
@@ -1433,6 +1435,28 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized.startswith("отмени напоминание"):
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_UI_TARGET)
     if normalized.startswith("напомни"):
+        dated_match = re.fullmatch(
+            r"напомни(?: мне)? (сегодня|завтра|послезавтра) в (\d{1,2})(?: (\d{2}))? (.+)",
+            normalized,
+        )
+        if dated_match:
+            day_offsets = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
+            hour = int(dated_match[2])
+            minute = int(dated_match[3] or "0")
+            text_to_remember = dated_match[4]
+            if 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+                local_now = datetime.now().astimezone()
+                target_date = local_now.date() + timedelta(days=day_offsets[dated_match[1]])
+                target_local = datetime.combine(target_date, datetime_time(hour, minute)).astimezone()
+                delay = math.ceil(target_local.timestamp() - local_now.timestamp())
+                if 1 <= delay <= 30 * 86400:
+                    return ParsedCommand(
+                        CommandType.REMINDER,
+                        text=normalized,
+                        target=json.dumps({"delay": delay, "text": text_to_remember}, ensure_ascii=False),
+                    )
+            return ParsedCommand(CommandType.REMINDER, text=normalized)
+
         match = re.fullmatch(r"напомни(?: мне)? через (\d{1,5}|одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать|шестьдесят) (секунд[уы]?|минут[уы]?|час(?:а|ов)?) (.+)", normalized)
         if match:
             words = {"одну": 1, "один": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5, "десять": 10, "пятнадцать": 15, "двадцать": 20, "тридцать": 30, "шестьдесят": 60}

@@ -18,6 +18,34 @@ class ReminderCommandTests(unittest.TestCase):
             self.assertEqual(parsed.type, CommandType.REMINDER)
             self.assertEqual(json.loads(parsed.target)["delay"], delay)
 
+    def test_local_calendar_time_reminders(self):
+        for phrase, upper_bound in (
+            ("напомни завтра в 9 позвонить", 48 * 3600),
+            ("напомни мне завтра в 9 30 позвонить", 48 * 3600),
+            ("напомни послезавтра в 23 59 проверить файл", 72 * 3600),
+        ):
+            with self.subTest(phrase=phrase):
+                parsed = parse_command_text(phrase)
+                self.assertEqual(parsed.type, CommandType.REMINDER)
+                payload = json.loads(parsed.target)
+                self.assertEqual(set(payload), {"delay", "text"})
+                self.assertGreater(payload["delay"], 0)
+                self.assertLessEqual(payload["delay"], upper_bound)
+
+    def test_calendar_time_reminders_reject_past_today_and_invalid_clock(self):
+        for phrase in (
+            "напомни сегодня в 0 позвонить",
+            "напомни сегодня в 24 00 позвонить",
+            "напомни сегодня в 9 60 позвонить",
+            "напомни завтра в 24 позвонить",
+            "напомни завтра в 9 99 позвонить",
+            "напомни завтра в 9",
+        ):
+            with self.subTest(phrase=phrase):
+                parsed = parse_command_text(phrase)
+                self.assertEqual(parsed.type, CommandType.REMINDER)
+                self.assertEqual(parsed.target, "")
+
     def test_invalid_duration_stays_local(self):
         for phrase in ("напомни завтра", "напомни через 0 минут x", "напомни через 99999 часов x"):
             parsed = parse_command_text(phrase)

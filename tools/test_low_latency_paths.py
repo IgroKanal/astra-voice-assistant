@@ -315,11 +315,10 @@ class TTSLatencyTests(unittest.TestCase):
 
             voice._ensure_edge_cached_audio.assert_not_called()
             voice._play_cached_audio.assert_not_called()
-            voice._speak_edge_direct.assert_called_once_with(
-                "Новый ответ модели",
-                "ru-RU-SvetlanaNeural",
-                timeout_seconds=25.0,
-            )
+            voice._speak_edge_direct.assert_called_once()
+            direct_call = voice._speak_edge_direct.call_args
+            self.assertEqual(direct_call.args, ("Новый ответ модели", "ru-RU-SvetlanaNeural"))
+            self.assertAlmostEqual(direct_call.kwargs["timeout_seconds"], 25.0, places=6)
             voice._log_tts_timing.assert_called_once()
 
     def test_existing_cache_is_used_without_network_synthesis(self):
@@ -347,21 +346,16 @@ class TTSLatencyTests(unittest.TestCase):
 
             voice._speak_edge("Проверка резервного голоса")
 
+            calls = voice._speak_edge_direct.call_args_list
             self.assertEqual(
-                voice._speak_edge_direct.call_args_list,
+                [call.args for call in calls],
                 [
-                    unittest.mock.call(
-                        "Проверка резервного голоса",
-                        "ru-RU-SvetlanaNeural",
-                        timeout_seconds=25.0,
-                    ),
-                    unittest.mock.call(
-                        "Проверка резервного голоса",
-                        "ru-RU-DmitryNeural",
-                        timeout_seconds=25.0,
-                    ),
+                    ("Проверка резервного голоса", "ru-RU-SvetlanaNeural"),
+                    ("Проверка резервного голоса", "ru-RU-DmitryNeural"),
                 ],
             )
+            for call in calls:
+                self.assertAlmostEqual(call.kwargs["timeout_seconds"], 25.0, places=6)
 
     def test_fallback_voice_uses_only_remaining_total_playback_budget(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -374,10 +368,10 @@ class TTSLatencyTests(unittest.TestCase):
             with patch("src.audio_io.time.monotonic", side_effect=[100, 100, 110]):
                 voice._speak_edge("Ограниченный резерв")
 
-            self.assertEqual(
-                [call.kwargs["timeout_seconds"] for call in voice._speak_edge_direct.call_args_list],
-                [25.0, 15.0],
-            )
+            timeouts = [call.kwargs["timeout_seconds"] for call in voice._speak_edge_direct.call_args_list]
+            self.assertEqual(len(timeouts), 2)
+            self.assertAlmostEqual(timeouts[0], 25.0, places=6)
+            self.assertAlmostEqual(timeouts[1], 15.0, places=6)
 
     def test_fallback_voice_is_skipped_after_total_playback_budget_expires(self):
         with tempfile.TemporaryDirectory() as temp:

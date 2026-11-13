@@ -472,6 +472,49 @@ class DesktopUITests(unittest.TestCase):
                 window.after_cancel(app.animation_timer)
                 window.destroy()
 
+    def test_permission_center_scrolls_cards_and_keeps_actions_visible(self):
+        import os
+        from src.ai_settings_ui import open_ai_settings
+        with tempfile.TemporaryDirectory(prefix="astra-permission-layout-") as temp, patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+            window = tk.Tk()
+            window.withdraw()
+            app = AstraDesktop(window)
+            try:
+                panel = open_ai_settings(window, app.button, lambda: None)
+                panel.geometry("780x668")
+                tabs = next(item for item in panel.winfo_children() if isinstance(item, ttk.Notebook))
+                tabs.select(2)
+                window.update()
+                permissions = tabs.nametowidget(tabs.tabs()[2])
+                self.assertTrue(panel.astra_permission_save.winfo_ismapped())
+                self.assertTrue(panel.astra_permission_backup.winfo_ismapped())
+                self.assertLessEqual(
+                    panel.astra_permission_save.winfo_rooty() + panel.astra_permission_save.winfo_height(),
+                    panel.winfo_rooty() + panel.winfo_height(),
+                )
+                self.assertLessEqual(
+                    panel.astra_permission_backup.winfo_rooty() + panel.astra_permission_backup.winfo_height(),
+                    panel.winfo_rooty() + panel.winfo_height(),
+                )
+                canvas = permissions.astra_canvas
+                self.assertGreater(canvas.winfo_height(), 0)
+                last_card = panel.astra_permission_cards["reminders"]
+                last_card.event_generate("<FocusIn>")
+                window.update()
+                self.assertGreater(canvas.yview()[0], 0)
+                self.assertLessEqual(
+                    last_card.winfo_rooty() + last_card.winfo_height(),
+                    canvas.winfo_rooty() + canvas.winfo_height(),
+                )
+                self.assertTrue(last_card.winfo_ismapped())
+            finally:
+                app.bridge.prevent_restart()
+                app.bridge.stop()
+                window.after_cancel(app.poll_timer)
+                window.after_cancel(app.animation_timer)
+                panel.destroy()
+                window.destroy()
+
     def test_character_selector_changes_default_name_and_persists_choice(self):
         import os
         from src.ai_settings_ui import open_ai_settings

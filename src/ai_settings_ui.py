@@ -25,7 +25,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
     tabs.pack(fill="both", expand=True, padx=12, pady=12)
     content_page, content = scroll_section(tabs)
     voice_page, voice_tab = scroll_section(tabs)
-    permissions = tk.Frame(tabs, bg="#101322")
+    permissions, permission_content = scroll_section(tabs)
     tabs.add(content_page, text="ИИ и память")
     tabs.add(voice_page, text="Голос и микрофон")
     tabs.add(permissions, text="Разрешения навыков")
@@ -193,11 +193,64 @@ def open_ai_settings(owner, button, on_saved, app=None):
                 voice_rows = None
             mailbox.put(("audio", (microphone_rows, voice_rows)))
         threading.Thread(target=work, name="astra-audio-devices", daemon=True).start()
-    scope_labels = {"apps": "Приложения из разрешённого списка", "browser": "Браузер и поиск", "folders": "Открытие известных папок", "media": "Медиа и громкость", "windows": "Управление окнами", "typing": "Ввод текста и клавиши", "system": "Сведения о системе и скриншоты", "vpn": "Заданный VPN", "routines": "Пользовательские режимы", "reminders": "Создание напоминаний"}
+    scope_labels = {
+        "apps": "Приложения из разрешённого списка",
+        "browser": "Браузер и поиск",
+        "folders": "Открытие известных папок",
+        "media": "Медиа и громкость",
+        "windows": "Управление окнами",
+        "typing": "Ввод текста и клавиши",
+        "system": "Сведения о системе и скриншоты",
+        "vpn": "Заданный VPN",
+        "routines": "Пользовательские режимы",
+        "reminders": "Создание напоминаний",
+    }
+    scope_descriptions = {
+        "apps": "Запуск приложений, которые Astra распознаёт по имени.",
+        "browser": "Открытие браузера, поиск и переход к запрошенной странице.",
+        "folders": "Открытие известных папок Windows и выбранных пользователем папок.",
+        "media": "Управление воспроизведением и системной громкостью.",
+        "windows": "Сворачивание, разворачивание и переключение окон.",
+        "typing": "Ввод подготовленного текста и поддерживаемые сочетания клавиш.",
+        "system": "Чтение ограниченных сведений о системе и создание скриншотов.",
+        "vpn": "Управление только VPN-подключением, заданным в настройках Astra.",
+        "routines": "Запуск пользовательских режимов; каждое действие режима проверяется отдельно.",
+        "reminders": "Создание, просмотр и отметка локальных напоминаний.",
+    }
     scope_vars = {scope: tk.BooleanVar(value=scope in profile.allowed_scopes) for scope in ALL_SCOPES}
-    tk.Label(permissions, text="Отключённые навыки блокируются перед исполнением,\nвключая шаги пользовательских режимов. Файловая запись\nразрешается отдельно в выбранной папке.", bg="#101322", fg="#a2abc9").pack(pady=18)
+    tk.Label(
+        permission_content,
+        text="Разрешения Astra",
+        bg="#101322", fg="#e9ecff", font=("Segoe UI", 17, "bold"),
+    ).pack(anchor="w", padx=24, pady=(20, 4))
+    tk.Label(
+        permission_content,
+        text="Отключённый навык блокируется до выполнения, в том числе внутри пользовательского режима. Запись в файлы разрешается отдельно для выбранной папки.",
+        bg="#101322", fg="#a2abc9", wraplength=650, justify="left",
+    ).pack(anchor="w", padx=24, pady=(0, 14))
+    permission_cards = {}
     for scope, variable in scope_vars.items():
-        tk.Checkbutton(permissions, text=scope_labels[scope], variable=variable, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(anchor="w", padx=30, pady=4)
+        card = tk.Frame(
+            permission_content, bg="#191f34", highlightthickness=1,
+            highlightbackground="#242c46", highlightcolor="#9786ff",
+        )
+        card.pack(fill="x", padx=24, pady=5)
+        checkbox = tk.Checkbutton(
+            card, text=scope_labels[scope], variable=variable,
+            bg="#191f34", fg="#e9ecff", selectcolor="#242c46",
+            activebackground="#191f34", activeforeground="#e9ecff",
+            anchor="w", justify="left", wraplength=620,
+            font=("Segoe UI", 11, "bold"), relief="flat",
+            highlightthickness=0, takefocus=True, padx=12, pady=8,
+        )
+        checkbox.pack(fill="x")
+        tk.Label(
+            card, text=scope_descriptions[scope], bg="#191f34", fg="#a2abc9",
+            wraplength=600, justify="left", anchor="w", font=("Segoe UI", 9),
+        ).pack(fill="x", padx=(42, 12), pady=(0, 10))
+        checkbox.bind("<FocusIn>", lambda _event, frame=card: frame.configure(highlightbackground="#9786ff"), add="+")
+        checkbox.bind("<FocusOut>", lambda _event, frame=card: frame.configure(highlightbackground="#242c46"), add="+")
+        permission_cards[scope] = checkbox
     labels = {"env": "Настройки существующего проекта (.env)", "disabled": "ИИ выключен · только команды", "ollama": "Локальный Ollama · без облака", "gemini": "Облачный Gemini", "compatible": "Облачный совместимый API"}
     tk.Label(content, text="Интеллект Astra", bg="#101322", fg="#e9ecff", font=("Segoe UI", 19)).pack(pady=20)
     provider = ttk.Combobox(content, values=list(labels.values()), state="readonly", font=("Segoe UI", 11))
@@ -348,12 +401,20 @@ def open_ai_settings(owner, button, on_saved, app=None):
     voice_save_row.pack(fill="x")
     button(voice_save_row, "Прослушать выбранный голос", lambda: preview_voice()).pack(side="left", padx=(20, 8))
     button(voice_save_row, "Сохранить голос и микрофон", save).pack(side="right", padx=(8, 20))
-    button(permissions, "Сохранить разрешения", save).pack(pady=15)
+    save_permissions_button = button(permissions, "Сохранить разрешения", save)
+    save_permissions_button.pack(side="bottom", fill="x", padx=24, pady=(6, 10))
     backup_row = tk.Frame(permissions, bg="#101322")
-    backup_row.pack(pady=(0, 14))
+    backup_row.pack(side="bottom", fill="x", padx=16, pady=(4, 0))
     button(backup_row, "Экспорт профиля…", backup_export).pack(side="left", padx=5)
     button(backup_row, "Импорт профиля…", backup_import).pack(side="left", padx=5)
-    tk.Label(permissions, text="Профильная копия может содержать API-ключ, но только внутри шифрования. Нужна парольная фраза от 12 символов; потерянную фразу восстановить нельзя. Импорт заменит настройки профиля, но не затронет память и напоминания.", bg="#101322", fg="#a2abc9", wraplength=650, justify="left").pack(padx=24, pady=(0, 12))
+    tk.Label(
+        permission_content,
+        text="Зашифрованная копия профиля может содержать API-ключ. Для неё нужна парольная фраза от 12 символов; восстановить потерянную фразу нельзя. Импорт заменяет настройки профиля, но не память и напоминания.",
+        bg="#101322", fg="#a2abc9", wraplength=620, justify="left",
+    ).pack(anchor="w", padx=24, pady=(14, 20))
+    panel.astra_permission_cards = permission_cards
+    panel.astra_permission_save = save_permissions_button
+    panel.astra_permission_backup = backup_row
     def preview_voice():
         if busy[0]:
             return

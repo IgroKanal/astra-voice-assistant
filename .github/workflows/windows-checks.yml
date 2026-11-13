@@ -34,7 +34,13 @@ jobs:
       - name: Existing regression tests
         shell: pwsh
         run: |
-          $tests = @('smoke_test_v09_parser.py','smoke_test_v10_parser.py','smoke_test_v11_wake_runtime.py','smoke_test_v100_beta.py','smoke_test_v101_beta.py','smoke_test_v11_daily_workflow.py','smoke_test_v12_native_music.py','smoke_test_v13_media_control.py','smoke_test_v13_window_actions.py')
+          $tests = @(
+            'smoke_test_v08_parser.py', 'smoke_test_v09_parser.py',
+            'smoke_test_v10_parser.py', 'smoke_test_v11_wake_runtime.py',
+            'smoke_test_v100_beta.py', 'smoke_test_v101_beta.py',
+            'smoke_test_v11_daily_workflow.py', 'smoke_test_v12_native_music.py',
+            'smoke_test_v13_media_control.py', 'smoke_test_v13_window_actions.py'
+          )
           foreach ($test in $tests) {
             & .\.venv\Scripts\python.exe (Join-Path tools $test)
             if ($LASTEXITCODE -ne 0) { throw "Failed: $test" }

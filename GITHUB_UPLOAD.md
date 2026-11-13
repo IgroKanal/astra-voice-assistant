@@ -85,3 +85,15 @@ git diff --check
 
 Файл `.env` не должен попадать на GitHub. Он уже добавлен в `.gitignore`.
 На GitHub можно загружать только `.env.example`, потому что там нет настоящего API-ключа.
+
+## Astra v1.3 commit gate
+
+After the complete automated gate, real Windows voice checks, package validation
+and an independent `COMMIT` verdict, use the reviewed file list only. Suggested
+commit message:
+
+```text
+Add v1.3 native media control and safe app actions
+```
+
+Do not stage `.env`, logs, cache files, generated audio or ZIP packages.

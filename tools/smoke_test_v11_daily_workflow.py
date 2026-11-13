@@ -95,12 +95,20 @@ class FakeAppManager:
             open_command=["Яндекс Музыка.exe"],
             process_name="Яндекс Музыка.exe",
         )
+        self.local_player = AppConfig(
+            name="медиаплеер",
+            aliases=["локальный плеер", "медиаплеер", "проигрыватель"],
+            open_command=["MediaPlayer.exe"],
+            process_name="Microsoft.Media.Player.exe",
+        )
 
     def find_app(self, target: str):
         if target.lower() in {"telegram", "телеграм"}:
             return self.telegram
         if target.lower() in {"яндекс музыка", "яндекс музыку", "yandex music"}:
             return self.yandex_music
+        if target.lower() in {"медиаплеер", "локальный плеер", "проигрыватель"}:
+            return self.local_player
         return None
 
     def open_app(self, target: str):
@@ -288,12 +296,13 @@ def test_context_pronoun_and_previous_window() -> None:
 
 
 def test_music_follow_up_and_youtube_search() -> None:
-    ctx, responses, ai, _apps, _keyboard, folders, _windows = make_context()
+    ctx, responses, ai, apps, _keyboard, folders, _windows = make_context()
     process_turn("Астра, включи музыку", ctx)
     assert ctx.state.pending_kind == "ambiguous_music"
     assert "локальную" in responses[-1]
     process_turn("локальную", ctx)
-    assert folders.opened == ["музыку"], folders.opened
+    assert apps.opened == ["медиаплеер"], apps.opened
+    assert folders.opened == [], folders.opened
 
     opened_urls: list[str] = []
     original_open = astra_main.webbrowser.open

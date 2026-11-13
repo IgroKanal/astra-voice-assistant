@@ -1,4 +1,13 @@
-# Astra Voice Assistant — v1.2 Beta
+# Astra Voice Assistant — v2.0.0-beta.3
+
+## Desktop Preview (разработка следующего поколения)
+
+Окно приложения запускается двойным щелчком по `start_astra_app.vbs`.
+Переносимые сборки запускаются через `Astra.exe`, без Python/PowerShell.
+Чат, голосовой переключатель, 2D-персонаж, чтение разрешённой папки и
+локальная зашифрованная память описаны в [DESKTOP_PREVIEW.md](DESKTOP_PREVIEW.md).
+Это dev-версия поверх v1.3 R3; следующие beta контрольные точки получают номер после прохождения критериев.
+Ход работ: [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md), план: [PLANS.md](PLANS.md).
 
 Astra is a Windows-only voice assistant for PC.
 
@@ -6,7 +15,10 @@ Current beta focus:
 
 - wake-only voice runtime: Astra reacts after the wake phrase `Астра`;
 - local safe skills for apps, sites, browser tabs, folders, VPN, windows, screenshots and system info;
-- exact-match safe routines, bounded recent-action context and global media keys;
+- exact-match safe routines and bounded recent-action context;
+- native/global media control with deterministic previous-track behavior;
+- Groove Music-first local-player resolution and fixed process/title media targeting;
+- active and named-window minimize/maximize/restore actions;
 - local YouTube search and previous-window switching;
 - native Yandex Music open/close/focus with an explicit website fallback;
 - Gemini/OpenAI-compatible LLM fallback only for normal questions after wake phrase;
@@ -54,7 +66,7 @@ LLM_ENABLED=false
 Apply beta-safe wake settings:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\apply_v12_beta_env.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v13_beta_env.ps1
 ```
 
 ---
@@ -103,6 +115,11 @@ Daily workflow examples:
 локальную
 Астра, пауза
 Астра, следующий трек
+Астра, верни предыдущий трек
+Астра, начни трек заново
+Астра, открой локальный плеер
+Астра, включи локальную музыку
+Астра, предыдущий трек в локальном плеере
 Астра, открой Яндекс Музыку
 Астра, переключись на Яндекс Музыку
 Астра, открой сайт Яндекс Музыки
@@ -119,6 +136,24 @@ allowlisted step types; invalid or privileged steps stop Astra at startup.
 standard `%LOCALAPPDATA%` installation and registered StartApps entry. For a
 non-standard installation, set `ASTRA_YANDEX_MUSIC_PATH` in the local `.env`.
 Use `открой сайт Яндекс Музыки` when the website is intended.
+
+`локальную` after the generic `включи музыку` prompt now opens a supported local
+media player instead of only opening the Music folder. Astra resolves a fixed
+known player, Start Menu shortcut or registered Windows music protocol. For a
+non-standard player, set `ASTRA_LOCAL_MEDIA_PLAYER_PATH` in the local `.env`.
+Recognized speech is never used as an executable path.
+
+Window size commands use the normal Windows minimize/maximize/restore states:
+
+```text
+Астра, сверни Telegram
+Астра, разверни Яндекс Музыку
+Астра, разверни окно на весь экран
+Астра, верни обычный размер окна
+Астра, верни на обычный размер
+```
+
+This maximize action is the normal square-button state, not browser F11.
 
 ### Text mode
 
@@ -179,13 +214,13 @@ Remove autostart:
 powershell -ExecutionPolicy Bypass -File .\tools\uninstall_autostart.ps1
 ```
 
-Autostart is optional for v1.2 Beta.
+Autostart is optional for v1.3 Beta.
 
 ---
 
 ## 6. Safety model
 
-Astra v1.2 Beta intentionally does not support:
+Astra v1.3 Beta intentionally does not support:
 
 - arbitrary shell/cmd/powershell commands from voice;
 - shutdown/reboot/delete commands;
@@ -246,9 +281,12 @@ python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
 python tools\smoke_test_v11_daily_workflow.py
 python tools\smoke_test_v12_native_music.py
+python tools\smoke_test_v13_media_control.py
+python tools\smoke_test_v13_window_actions.py
 python tools\validate_v10_config.py
 python tools\validate_v11_config.py
 python tools\validate_v12_config.py
+python tools\validate_v13_config.py
 python tools\astra_doctor.py
 ```
 
@@ -269,6 +307,14 @@ Manual voice checklist:
 Астра, вернись обратно
 Астра, включи рабочий режим
 Астра, следующий трек
+Астра, верни предыдущий трек
+Астра, начни трек заново
+Астра, открой локальный плеер
+Астра, включи локальную музыку
+Астра, предыдущий трек в локальном плеере
+Астра, сверни Telegram
+Астра, разверни окно на весь экран
+Астра, верни обычный размер окна
 Астра, найди на ютубе Python 3.12
 Астра, открой Яндекс Музыку
 Астра, переключись на Яндекс Музыку
@@ -304,8 +350,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_beta_package.ps1
 Do not publish real `.env` or API keys.
 
 The build scripts run `tools\validate_package.py` automatically. Expected
-archives are `astra-v1.2-beta-review-package.zip` and
-`astra-v1.2-beta-release.zip` in `C:\Projects`.
+archives are `astra-v1.3-beta-review-package-r3.zip` and
+`astra-v1.3-beta-release-r3.zip` in `C:\Projects`.
 
 ---
 

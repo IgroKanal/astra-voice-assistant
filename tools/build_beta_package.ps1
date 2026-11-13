@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $ProjectParent = Split-Path -Parent $ProjectRoot
 
-$OutZip = Join-Path $ProjectParent "astra-v1.2-beta-release.zip"
-$TempDir = Join-Path $ProjectParent "astra-v12-beta-release-clean"
+$OutZip = Join-Path $ProjectParent "astra-v1.3-beta-release-r3.zip"
+$TempDir = Join-Path $ProjectParent "astra-v13-r3-beta-release-clean"
 $ContextDir = Join-Path $TempDir "_RELEASE_CONTEXT"
 
 if (Test-Path $OutZip) {
@@ -76,7 +76,7 @@ else {
 }
 
 $ReadmeLines = @(
-    "# Astra v1.2 Beta release package",
+    "# Astra v1.3 Beta R3 release package",
     "",
     "This package excludes .git, .venv, real .env, logs, caches, pyc and mp3 cache files.",
     "",
@@ -89,9 +89,12 @@ $ReadmeLines = @(
     "python tools\smoke_test_v101_beta.py",
     "python tools\smoke_test_v11_daily_workflow.py",
     "python tools\smoke_test_v12_native_music.py",
+    "python tools\smoke_test_v13_media_control.py",
+    "python tools\smoke_test_v13_window_actions.py",
     "python tools\validate_v10_config.py",
     "python tools\validate_v11_config.py",
     "python tools\validate_v12_config.py",
+    "python tools\validate_v13_config.py",
     "python tools\astra_doctor.py",
     "",
     "Use .env.example to create a local .env. Never publish a real .env with API keys."

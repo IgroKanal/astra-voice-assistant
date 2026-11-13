@@ -1,53 +1,35 @@
-# Astra v1.2 patch
+# Astra v1.3 R3 patch
 
-Version: **v1.2 — Native Music App Integration & Workflow Reliability (Beta)**
+Version: **v1.3 — Native Media Control & Safe App Actions (Beta)**
 
-Base commit: `1f6bfc3` (`Add v1.1 safe daily workflow and bounded context`).
+Base commit: `6b4eba3` (`Add v1.2 native Yandex Music integration`).
 
-## Confirmed fix
+## Release goal
 
-Normal Yandex Music commands now use the installed native Windows client.
-The website remains available only through an explicit site/URL request. The
-resolver does not hardcode a user profile path and gives an honest failure if
-the application cannot be found.
+Stabilize voice recognition, Groove Music playback and safe window-state
+continuity without weakening wake-only, application whitelist or terminal guards.
 
 ## Install patch
 
-The command automatically selects the newest v1.2 patch ZIP from Downloads:
+Extract the patch into `C:\Projects\astra-voice-assistant`, replacing files,
+then run:
 
 ```powershell
-$ProjectDir = "C:\Projects\astra-voice-assistant"
-$DownloadsDir = Join-Path $env:USERPROFILE "Downloads"
-$PatchFile = Get-ChildItem -Path (Join-Path $DownloadsDir "astra-v1.2-patch*.zip") -File |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-$PatchDir = Join-Path $env:TEMP "astra-v1.2-patch"
-
-if ($null -eq $PatchFile) {
-    throw "astra-v1.2-patch*.zip не найден в $DownloadsDir"
-}
-$PatchZip = $PatchFile.FullName
-
-if (Test-Path $PatchDir) {
-    Remove-Item $PatchDir -Recurse -Force
-}
-
-Expand-Archive -LiteralPath $PatchZip -DestinationPath $PatchDir -Force
-Get-ChildItem -LiteralPath $PatchDir -Force |
-    Copy-Item -Destination $ProjectDir -Recurse -Force
-
-Set-Location $ProjectDir
+cd C:\Projects\astra-voice-assistant
 .\.venv\Scripts\Activate.ps1
-powershell -ExecutionPolicy Bypass -File .\tools\apply_v12_beta_env.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\apply_v13_beta_env.ps1
 ```
 
-For a non-standard installation only, set a local path in `.env`:
+The environment helper changes only known beta settings. It does not modify API
+keys, `ASTRA_YANDEX_MUSIC_PATH` or `ASTRA_LOCAL_MEDIA_PLAYER_PATH`.
+
+For a non-standard local player, set its executable in the local `.env`:
 
 ```text
-ASTRA_YANDEX_MUSIC_PATH=C:\Path\To\Яндекс Музыка.exe
+ASTRA_LOCAL_MEDIA_PLAYER_PATH=C:\Path\To\Player.exe
 ```
 
-The environment helper preserves this value and never changes API keys.
+Do not put that path into `config/apps.json` or a voice command.
 
 ## Automated verification
 
@@ -60,59 +42,93 @@ python tools\smoke_test_v100_beta.py
 python tools\smoke_test_v101_beta.py
 python tools\smoke_test_v11_daily_workflow.py
 python tools\smoke_test_v12_native_music.py
+python tools\smoke_test_v13_media_control.py
+python tools\smoke_test_v13_window_actions.py
 python tools\validate_v10_config.py
 python tools\validate_v11_config.py
 python tools\validate_v12_config.py
+python tools\validate_v13_config.py
 python tools\astra_doctor.py
 ```
 
 ## Manual Windows verification
 
-Run `python main.py`, then check:
+### Media
 
 ```text
-открой Яндекс Музыку
-Астра, открой Яндекс Музыку
-Астра, включи музыку
-Яндекс музыку
-Астра, переключись на Яндекс Музыку
-Астра, закрой Яндекс Музыку
-Астра, открой сайт Яндекс Музыки
-Астра, открой cmd
-Астра, открой powershell
+выключи музыку
+Астра, следующий трек
+Астра, верни предыдущий трек
+Астра, начни трек заново
+Астра, останови музыку
+Астра, выключи музыку
 ```
 
 Expected:
 
-- the first no-wake command is ignored and does not reach LLM-router;
-- direct and follow-up commands open the desktop client without a console;
-- focus targets the existing Yandex Music window;
-- close targets only `Яндекс Музыка.exe` and may lose unsaved app state because
-  the existing close implementation uses `taskkill /F`;
-- the explicit site command opens `https://music.yandex.ru`;
-- cmd and PowerShell remain rejected.
+- the no-wake command is ignored before actions and LLM routing;
+- previous moves away from the current track using two bounded events;
+- restart starts the current track again using one event;
+- stop leaves the player open;
+- shutdown closes only allowlisted Yandex Music.
 
-Also repeat the complete wake-only, terminal typing/Enter, VPN, window, URL and
-TTS checklist from `BETA_CHECKLIST.md`.
+### Local player
 
-## Build and validate review package
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\build_review_package.ps1
-python .\tools\validate_package.py C:\Projects\astra-v1.2-beta-review-package.zip `
-    --source-root C:\Projects\astra-voice-assistant
+```text
+Астра, открой локальный плеер
+Астра, включи локальную музыку
+Астра, включи локальный плеер
+Астра, следующий трек в локальном плеере
+Астра, предыдущий трек в локальном плеере
+Астра, поставь локальный плеер на паузу
+Астра, останови локальный плеер
 ```
 
-Expected archive: `C:\Projects\astra-v1.2-beta-review-package.zip`.
+Expected:
+
+- Windows 10 Groove Music is preferred through the fixed `mswindowsmusic:` protocol;
+- `включи...` opens the player and sends a fixed PLAY app-command;
+- explicit commands target only fixed local-player process/title aliases;
+- unsupported players return an honest failure;
+- no speech text is used as an executable or process name.
+
+### Windows
+
+```text
+Астра, сверни окно
+Астра, разверни окно на весь экран
+Астра, верни обычный размер окна
+Астра, верни на обычный размер
+Астра, сверни Telegram
+Астра, разверни Яндекс Музыку
+Астра, восстанови локальный плеер
+```
+
+Expected:
+
+- commands use normal Windows minimize/maximize/restore states;
+- maximize/restore after a minimize reuses the same recent window for 45 seconds;
+- targeted commands affect an existing visible window only;
+- browser F11 is not used by the maximize commands;
+- no Alt+F4, shell or arbitrary keyboard input is introduced.
+
+### Existing safety
+
+```text
+Астра, открой сайт Яндекс Музыки
+Астра, открой cmd
+Астра, открой powershell
+Астра, открой Windows Terminal
+```
+
+The website remains a URL action. Terminal applications remain rejected and the
+terminal typing/Enter guards remain active.
 
 ## Commit gate
 
-Do not commit yet. Commit is allowed only after the complete automated gate,
-manual Windows verification, package validation and an independent reviewer
-verdict `COMMIT`.
-
-Suggested message after that verdict:
+Do not commit until automated checks, manual Windows verification, package
+validation and independent review all pass. Suggested commit message:
 
 ```text
-Add v1.2 native Yandex Music integration
+Add v1.3 native media control and safe app actions
 ```

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +13,7 @@ from openai import OpenAIError
 
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
+from src.ollama_client import OllamaClient
 
 
 @dataclass(frozen=True)
@@ -41,8 +44,11 @@ class AIClient:
         self.settings = settings
         self.logger = logger or logging.getLogger(__name__)
         self._client: OpenAI | None = None
+        self._dialogue: list[dict[str, str]] = []
+        self._memory_stamp = None
+        self._local = OllamaClient(settings.llm_base_url, settings.llm_timeout_seconds) if settings.llm_enabled and settings.llm_provider == "ollama" else None
 
-        if self._can_create_client():
+        if self._local is None and self._can_create_client():
             self._client = OpenAI(
                 api_key=self.settings.llm_api_key,
                 base_url=self.settings.llm_base_url or None,
@@ -52,7 +58,7 @@ class AIClient:
 
     @property
     def is_available(self) -> bool:
-        return self._client is not None
+        return self._client is not None or self._local is not None
 
     def _can_create_client(self) -> bool:
         if not self.settings.llm_enabled:
@@ -73,12 +79,29 @@ class AIClient:
         if not self.settings.llm_enabled:
             return LLMResult(False, "LLM отключена в настройках.")
 
+        if self._local is not None:
+            try:
+                context = self._memory_context(question)
+                answer = self._local.chat(self.settings.llm_model, self._build_answer_system_prompt(), question, self.settings.llm_max_tokens, history=self._dialogue, memory_context=context)
+                clean_answer = self._clean_llm_answer(answer)
+                if not clean_answer:
+                    return LLMResult(False, "Локальная модель не сформировала итоговый ответ.")
+                self._dialogue.extend([{"role": "user", "content": question}, {"role": "assistant", "content": clean_answer}])
+                self._dialogue = self._dialogue[-8:]
+                return LLMResult(True, clean_answer)
+            except Exception:
+                self.logger.warning("Local model request failed; no cloud fallback")
+                return LLMResult(False, "Локальная модель недоступна или не успела ответить. Проверь Ollama и выбранную модель.")
+
         if self._client is None:
             return LLMResult(
                 False,
                 "LLM API-ключ не настроен. Я могу выполнять локальные команды, "
                 "но не могу отвечать на вопросы.",
             )
+
+        # Personal notes never enter the cloud branch, even if a caller passes
+        # an inconsistent Settings object with the memory flag enabled.
 
         system_prompt = self._build_answer_system_prompt()
         last_error_message = "Не удалось получить ответ от LLM."
@@ -138,6 +161,21 @@ class AIClient:
 
         return LLMResult(False, last_error_message)
 
+    def _memory_context(self, question: str) -> str:
+        if not self.settings.personal_memory_enabled or self._local is None:
+            return ""
+        from src.personal_memory import PersonalMemory
+        path = Path(self.settings.personal_memory_path) if self.settings.personal_memory_path else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "memory.sqlite"
+        stamp = (path.stat().st_mtime_ns, path.stat().st_size) if path.exists() else (0, 0)
+        if self._memory_stamp is not None and stamp != self._memory_stamp:
+            self._dialogue.clear()
+        if not path.exists():
+            self._memory_stamp = stamp
+            return ""
+        context = PersonalMemory(path).context(question)
+        self._memory_stamp = (path.stat().st_mtime_ns, path.stat().st_size)
+        return context
+
     def route_command(
         self,
         user_text: str,
@@ -165,7 +203,7 @@ class AIClient:
 
         for model in self._models_to_try():
             try:
-                self.logger.info("LLM-router запрос: model=%s text=%s", model, user_text)
+                self.logger.info("LLM-router запрос: model=%s characters=%s", model, len(user_text))
                 response = self._client.chat.completions.create(
                     model=model,
                     messages=[
@@ -271,6 +309,7 @@ class AIClient:
 
     def _build_answer_system_prompt(self) -> str:
         return (
+            f"Твоё имя ассистента — {getattr(self.settings, 'assistant_name', 'Астра')}.\n"
             f"{self.settings.llm_system_prompt}\n"
             "Отвечай только финальным ответом для пользователя.\n"
             "Запрещено выводить <thought>, <think>, Draft, Option, Analysis, "

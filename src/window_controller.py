@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import ntpath
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +22,7 @@ class WindowInfo:
 class WindowActionResult:
     ok: bool
     message: str
+    completed: bool | None = None
 
 
 SW_RESTORE = 9
@@ -36,7 +40,8 @@ class WindowController:
     - перечисляет видимые окна;
     - показывает активное окно;
     - переключает фокус на окно по названию приложения/процесса/заголовку;
-    - не закрывает окна и не нажимает Alt+F4.
+    - именованный graceful close допускается только по точному process allowlist;
+    - не использует Alt+F4 или принудительное завершение процесса.
     """
 
     def __init__(
@@ -49,6 +54,9 @@ class WindowController:
         self.user32 = ctypes.windll.user32
         self.kernel32 = ctypes.windll.kernel32
         self._previous_hwnd = 0
+        self._last_state_hwnd = 0
+        self._last_state_at = 0.0
+        self._state_context_ttl_seconds = 45.0
         self._configure_ctypes()
 
     def _configure_ctypes(self) -> None:
@@ -58,6 +66,10 @@ class WindowController:
         self.user32.IsWindowVisible.restype = ctypes.c_int
         self.user32.IsWindow.argtypes = [ctypes.c_void_p]
         self.user32.IsWindow.restype = ctypes.c_int
+        self.user32.IsIconic.argtypes = [ctypes.c_void_p]
+        self.user32.IsIconic.restype = ctypes.c_int
+        self.user32.IsZoomed.argtypes = [ctypes.c_void_p]
+        self.user32.IsZoomed.restype = ctypes.c_int
         self.user32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
         self.user32.GetWindowTextLengthW.restype = ctypes.c_int
         self.user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
@@ -71,6 +83,8 @@ class WindowController:
         self.user32.GetForegroundWindow.restype = ctypes.c_void_p
         self.user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.user32.ShowWindow.restype = ctypes.c_int
+        self.user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+        self.user32.PostMessageW.restype = ctypes.c_int
         self.user32.BringWindowToTop.argtypes = [ctypes.c_void_p]
         self.user32.BringWindowToTop.restype = ctypes.c_int
         self.user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
@@ -115,20 +129,108 @@ class WindowController:
         return WindowActionResult(True, f"Активное окно: {self._short_window_label(info)}.")
 
     def minimize_active_window(self) -> WindowActionResult:
-        hwnd = self.user32.GetForegroundWindow()
+        hwnd = int(self.user32.GetForegroundWindow() or 0)
         if not hwnd:
             return WindowActionResult(False, "Активное окно не найдено.")
-
-        self.user32.ShowWindow(ctypes.c_void_p(hwnd), SW_MINIMIZE)
-        return WindowActionResult(True, "Сворачиваю окно.")
+        return self._set_window_state(hwnd, "minimize", "Сворачиваю окно.")
 
     def maximize_active_window(self) -> WindowActionResult:
-        hwnd = self.user32.GetForegroundWindow()
+        hwnd = self._generic_state_target("maximize")
         if not hwnd:
             return WindowActionResult(False, "Активное окно не найдено.")
+        return self._set_window_state(hwnd, "maximize", "Разворачиваю окно.")
 
-        self.user32.ShowWindow(ctypes.c_void_p(hwnd), SW_MAXIMIZE)
-        return WindowActionResult(True, "Разворачиваю окно.")
+    def restore_active_window(self) -> WindowActionResult:
+        hwnd = self._generic_state_target("restore")
+        if not hwnd:
+            return WindowActionResult(False, "Активное окно не найдено.")
+        return self._set_window_state(hwnd, "restore", "Возвращаю обычный размер окна.")
+
+    def _generic_state_target(self, state: str) -> int:
+        """Keep generic minimize/maximize/restore on the same recent window.
+
+        After Windows minimizes a foreground window, another window immediately
+        becomes foreground.  Without this bounded context, «разверни окно» acts
+        on the wrong application.
+        """
+        current = int(self.user32.GetForegroundWindow() or 0)
+        last = int(getattr(self, "_last_state_hwnd", 0) or 0)
+        last_at = float(getattr(self, "_last_state_at", 0.0) or 0.0)
+        ttl = float(getattr(self, "_state_context_ttl_seconds", 45.0) or 45.0)
+
+        if last and time.monotonic() - last_at <= ttl:
+            hwnd_value = ctypes.c_void_p(last)
+            if self.user32.IsWindow(hwnd_value):
+                if state == "maximize" and self.user32.IsIconic(hwnd_value):
+                    return last
+                if state == "restore" and (
+                    self.user32.IsIconic(hwnd_value) or self.user32.IsZoomed(hwnd_value)
+                ):
+                    return last
+
+        return current
+
+    def minimize_target(self, target: str) -> WindowActionResult:
+        return self._set_target_window_state(target, "minimize")
+
+    def maximize_target(self, target: str) -> WindowActionResult:
+        return self._set_target_window_state(target, "maximize")
+
+    def restore_target(self, target: str) -> WindowActionResult:
+        return self._set_target_window_state(target, "restore")
+
+    def _set_target_window_state(self, target: str, state: str) -> WindowActionResult:
+        target = (target or "").strip()
+        if not target:
+            return WindowActionResult(False, "Назови окно.")
+
+        info = self.find_window(target)
+        if info is None:
+            return WindowActionResult(False, "Не нашёл такое открытое окно.")
+
+        labels = {
+            "minimize": f"Сворачиваю {self._short_window_label(info)}.",
+            "maximize": f"Разворачиваю {self._short_window_label(info)}.",
+            "restore": f"Возвращаю обычный размер окна {self._short_window_label(info)}.",
+        }
+        return self._set_window_state(info.hwnd, state, labels[state])
+
+    def _set_window_state(self, hwnd: int, state: str, message: str) -> WindowActionResult:
+        commands = {
+            "minimize": SW_MINIMIZE,
+            "maximize": SW_MAXIMIZE,
+            "restore": SW_RESTORE,
+        }
+        command = commands.get(state)
+        if command is None or not self.user32.IsWindow(ctypes.c_void_p(hwnd)):
+            return WindowActionResult(False, "Окно больше недоступно.")
+
+        try:
+            hwnd_value = ctypes.c_void_p(hwnd)
+            self.user32.ShowWindow(hwnd_value, command)
+
+            # Maximize/restore should also surface the selected window, but
+            # minimizing must never steal focus just before hiding it.
+            if state in {"maximize", "restore"}:
+                self.user32.BringWindowToTop(hwnd_value)
+                self.user32.SetForegroundWindow(hwnd_value)
+
+            if state == "minimize" and not self.user32.IsIconic(hwnd_value):
+                return WindowActionResult(False, "Не удалось свернуть окно.")
+            if state == "maximize" and not self.user32.IsZoomed(hwnd_value):
+                return WindowActionResult(False, "Не удалось развернуть окно.")
+            if state == "restore" and (
+                self.user32.IsIconic(hwnd_value) or self.user32.IsZoomed(hwnd_value)
+            ):
+                return WindowActionResult(False, "Не удалось вернуть обычный размер окна.")
+
+            self._last_state_hwnd = hwnd
+            self._last_state_at = time.monotonic()
+            self.logger.info("Window state changed: hwnd=%s state=%s", hwnd, state)
+            return WindowActionResult(True, message)
+        except Exception:
+            self.logger.exception("Window state change failed: hwnd=%s state=%s", hwnd, state)
+            return WindowActionResult(False, "Не удалось изменить состояние окна.")
 
     def show_desktop(self) -> WindowActionResult:
         try:
@@ -188,7 +290,7 @@ class WindowController:
             return None
         return self._window_info(int(hwnd))
 
-    def list_windows(self) -> list[WindowInfo]:
+    def list_windows(self, deduplicate: bool = True) -> list[WindowInfo]:
         hwnds: list[int] = []
 
         CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -211,12 +313,36 @@ class WindowController:
             if not self._is_useful_window(info):
                 continue
             key = (info.process_name.lower(), info.title.lower())
-            if key in seen:
+            if deduplicate and key in seen:
                 continue
             seen.add(key)
             result.append(info)
 
         return result
+
+    def request_close_processes(self, process_names, wait_seconds: float = 0.6) -> WindowActionResult:
+        allowed = {ntpath.basename(name).lower().removesuffix(".exe") for name in process_names}
+        allowed.discard("")
+        candidates = [window for window in self.list_windows(deduplicate=False) if window.process_name.lower().removesuffix(".exe") in allowed]
+        if not candidates:
+            return WindowActionResult(False, "Не нашёл подходящее окно. Принудительное завершение отключено.", False)
+        active = self.active_window()
+        selected = next((window for window in candidates if active and window.hwnd == active.hwnd), None)
+        if selected is None:
+            if len(candidates) != 1:
+                return WindowActionResult(False, "У приложения несколько окон. Выбери нужное окно и повтори команду.", False)
+            selected = candidates[0]
+        current = self._window_info(selected.hwnd)
+        if current is None or current.pid != selected.pid or current.process_name.lower() != selected.process_name.lower():
+            return WindowActionResult(False, "Окно изменилось; закрытие отменено.", False)
+        if not self.user32.PostMessageW(ctypes.c_void_p(selected.hwnd), 0x0010, 0, 0):
+            return WindowActionResult(False, "Не удалось отправить запрос закрытия окна.", False)
+        deadline = time.monotonic() + max(0, min(1.0, wait_seconds))
+        while time.monotonic() < deadline:
+            if not self.user32.IsWindow(ctypes.c_void_p(selected.hwnd)):
+                return WindowActionResult(True, "Окно закрыто обычным способом.", True)
+            time.sleep(0.05)
+        return WindowActionResult(True, "Запрос закрытия отправлен. Если появилось сохранение, выбери действие в приложении.", False)
 
     def find_window(self, target: str) -> WindowInfo | None:
         normalized = self._normalize_target(target)
@@ -354,6 +480,13 @@ class WindowController:
             "code": "VS Code",
             "telegram": "Telegram",
             "яндекс музыка": "Яндекс Музыка",
+            "music.ui": "Локальный плеер",
+            "microsoft.media.player": "Локальный плеер",
+            "wmplayer": "Windows Media Player",
+            "aimp": "AIMP",
+            "aimp64": "AIMP",
+            "vlc": "VLC",
+            "foobar2000": "foobar2000",
             "notepad": "Блокнот",
             "explorer": "Проводник",
             "powershell": "PowerShell",
@@ -382,6 +515,37 @@ class WindowController:
                 "яндекс музыку",
                 "яндекс мьюзик",
             },
+            "microsoft.media.player": {
+                "локальный плеер",
+                "локальный проигрыватель",
+                "медиаплеер",
+                "медиа плеер",
+                "проигрыватель",
+                "плеер",
+                "media player",
+            },
+            "music.ui": {
+                "локальный плеер",
+                "локальный проигрыватель",
+                "медиаплеер",
+                "медиа плеер",
+                "проигрыватель",
+                "плеер",
+                "groove music",
+                "музыка groove",
+                "музыка грув",
+                "грув музыка",
+            },
+            "wmplayer": {
+                "локальный плеер",
+                "локальный проигрыватель",
+                "windows media player",
+                "проигрыватель windows media",
+                "плеер",
+            },
+            "aimp": {"aimp", "аимп", "локальный плеер", "плеер"},
+            "vlc": {"vlc", "влс", "локальный плеер", "плеер"},
+            "foobar2000": {"foobar2000", "foobar", "фубар", "локальный плеер"},
             "notepad": {"notepad", "блокнот", "bloknot", "блакнот"},
             "explorer": {"explorer", "проводник"},
             "amneziawg": {"amneziawg", "amnezia", "амнезия", "впн", "vpn"},
@@ -394,5 +558,20 @@ class WindowController:
             if target in values:
                 aliases.add(process)
                 aliases.update(values)
+
+        if target in {
+            "локальный плеер",
+            "локальный проигрыватель",
+            "медиаплеер",
+            "медиа плеер",
+            "проигрыватель",
+            "плеер",
+        }:
+            configured_path = os.getenv("ASTRA_LOCAL_MEDIA_PLAYER_PATH", "").strip()
+            if configured_path:
+                configured_name = ntpath.basename(os.path.expandvars(configured_path))
+                configured_process = Path(configured_name).stem.lower()
+                if configured_process:
+                    aliases.add(configured_process)
 
         return {item for item in aliases if item}

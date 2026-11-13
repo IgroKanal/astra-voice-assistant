@@ -16,6 +16,7 @@ import pyttsx3
 import speech_recognition as sr
 
 from src.config_loader import Settings
+from src.runtime_events import emit_event
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,8 @@ class VoiceIO:
 
     def _init_microphone(self) -> None:
         try:
-            self.microphone = sr.Microphone()
+            device_index = getattr(self.settings, "stt_device_index", None)
+            self.microphone = sr.Microphone(device_index=device_index)
             with self.microphone as source:
                 self.recognizer.adjust_for_ambient_noise(
                     source,
@@ -326,6 +328,8 @@ class VoiceIO:
         prompt: str = "Слушаю...",
     ) -> ListenResult:
         if self.microphone is None:
+            emit_event("error", "Микрофон недоступен. Переключись в текстовый режим.")
+            time.sleep(0.2)
             return ListenResult(False, error="Микрофон не доступен.")
 
         start = time.perf_counter()
@@ -342,6 +346,7 @@ class VoiceIO:
 
         try:
             with self.microphone as source:
+                emit_event("state", "Слушаю · микрофон включён")
                 if prompt:
                     print(prompt)
                 audio = self.recognizer.listen(
@@ -350,12 +355,14 @@ class VoiceIO:
                     phrase_time_limit=phrase_time_limit,
                 )
 
+            emit_event("state", "Распознаю речь…")
             alternatives = self._recognize_google_alternatives(audio)
             if not alternatives:
                 return ListenResult(False, error="Не удалось распознать речь.")
 
             text = self._select_best_stt_alternative(alternatives)
-            self.logger.info("Распознано: %s", text)
+            emit_event("transcript", text)
+            self.logger.info("Речь распознана: %s символов", len(text))
 
             elapsed = time.perf_counter() - start
             self.logger.info("STT timing: %.2fs [ok]", elapsed)
@@ -487,17 +494,26 @@ class VoiceIO:
         if not text:
             return
 
-        print(f"Астра: {text}")
-        self.logger.info("Ответ: %s", text)
+        if not emit_event("assistant", text):
+            print(f"Астра: {text}")
+        self.logger.info("Ответ подготовлен: %s символов", len(text))
 
         if not self.settings.tts_enabled:
             return
 
         if self.settings.tts_engine == "edge":
-            self._speak_edge(text)
+            emit_event("state", "Говорю…")
+            try:
+                self._speak_edge(text)
+            finally:
+                emit_event("state", "Голосовой режим · микрофон включён")
             return
 
-        self._speak_sapi(text)
+        emit_event("state", "Говорю…")
+        try:
+            self._speak_sapi(text)
+        finally:
+            emit_event("state", "Голосовой режим · микрофон включён")
 
     def _speak_edge(self, text: str) -> None:
         start = time.perf_counter()

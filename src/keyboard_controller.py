@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import ntpath
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ VK_LWIN = 0x5B
 
 KEYEVENTF_KEYUP = 0x0002
 SW_RESTORE = 9
+WM_APPCOMMAND = 0x0319
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -108,6 +111,57 @@ _MEDIA_KEYS = {
     "media_play_pause": 0xB3,
 }
 
+# WM_APPCOMMAND values from the Windows shell API.  These fixed constants let
+# Astra target a visible media-player window without interpolating speech into
+# a process name, executable path or shell command.
+_MEDIA_APP_COMMANDS = {
+    "media_next": 11,
+    "media_previous": 12,
+    "media_stop": 13,
+    "media_play_pause": 14,
+    # APPCOMMAND_MEDIA_PLAY is separate from play/pause and therefore does not
+    # accidentally pause a player that is already stopped.
+    "media_play": 46,
+}
+
+_LOCAL_MEDIA_PROCESS_NAMES = {
+    "music.ui",
+    "microsoft.media.player",
+    "wmplayer",
+    "aimp",
+    "aimp64",
+    "vlc",
+    "foobar2000",
+    "potplayermini",
+    "potplayermini64",
+    "mpc-hc",
+    "mpc-hc64",
+    "mpc-be",
+    "mpc-be64",
+}
+
+_YANDEX_MEDIA_PROCESS_NAMES = {
+    "яндекс музыка",
+    "yandexmusic",
+}
+
+_LOCAL_MEDIA_TITLE_KEYWORDS = (
+    "музыка groove",
+    "groove music",
+    "музыка грув",
+    "проигрыватель мультимедиа",
+    "media player",
+    "windows media player",
+    "aimp",
+    "vlc",
+    "foobar2000",
+)
+
+_YANDEX_MEDIA_TITLE_KEYWORDS = (
+    "яндекс музыка",
+    "yandex music",
+)
+
 _SHORTCUT_MESSAGES = {
     "close_tab": "Закрываю вкладку.",
     "new_tab": "Открываю новую вкладку.",
@@ -142,6 +196,7 @@ _SHORTCUT_MESSAGES = {
     "volume_down": "Тише.",
     "volume_mute": "Переключаю звук.",
     "media_play_pause": "Переключаю паузу.",
+    "media_play": "Включаю воспроизведение.",
     "media_next": "Следующий трек.",
     "media_previous": "Предыдущий трек.",
     "media_stop": "Останавливаю музыку.",
@@ -219,6 +274,13 @@ class KeyboardController:
 
         self.user32.GetForegroundWindow.argtypes = []
         self.user32.GetForegroundWindow.restype = ctypes.c_void_p
+        self.user32.SendMessageW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        self.user32.SendMessageW.restype = ctypes.c_void_p
         self.user32.GetWindowThreadProcessId.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_ulong),
@@ -274,11 +336,8 @@ class KeyboardController:
                 return KeyboardActionResult(True, _SHORTCUT_MESSAGES.get(name, "Готово."))
             return KeyboardActionResult(False, "Не удалось изменить громкость.")
 
-        if name in _MEDIA_KEYS:
-            ok = self._press_virtual_key(_MEDIA_KEYS[name])
-            if ok:
-                return KeyboardActionResult(True, _SHORTCUT_MESSAGES[name])
-            return KeyboardActionResult(False, "Не удалось управлять воспроизведением.")
+        if name in _MEDIA_APP_COMMANDS:
+            return self.send_media_shortcut(name)
 
         combo = _SHORTCUTS.get(name)
         if combo is None:
@@ -294,6 +353,126 @@ class KeyboardController:
             return KeyboardActionResult(True, _SHORTCUT_MESSAGES.get(name, "Готово."))
 
         return KeyboardActionResult(False, "Не удалось выполнить клавиатурную команду.")
+
+    def send_media_shortcut(
+        self,
+        name: str,
+        *,
+        target: str = "",
+        repeat: int = 1,
+        interval_seconds: float = 0.14,
+    ) -> KeyboardActionResult:
+        """Send a fixed media command to a selected player or global session.
+
+        Selection is intentionally bounded:
+        - ``local`` targets only a fixed list of common local-player processes;
+        - ``yandex`` targets only the fixed Yandex Music process aliases;
+        - an empty target prefers a foreground known media player and otherwise
+          falls back to the normal global Windows media key.
+
+        A targeted WM_APPCOMMAND helps legacy/local players that ignore global
+        media keys while they are open.  No recognized text becomes a process
+        name or Windows message value.
+        """
+        if name not in _MEDIA_APP_COMMANDS:
+            return KeyboardActionResult(False, "Не знаю такую media-команду.")
+        if name != "media_play" and name not in _MEDIA_KEYS:
+            return KeyboardActionResult(False, "Не знаю такую media-команду.")
+
+        clean_target = (target or "").strip().lower()
+        if clean_target not in {"", "local", "yandex"}:
+            return KeyboardActionResult(False, "Неизвестная цель управления музыкой.")
+
+        repeat_count = min(2, max(1, int(repeat)))
+        hwnd = self._media_target_window(clean_target)
+
+        if clean_target and not hwnd:
+            return KeyboardActionResult(False, "Не нашёл открытый выбранный медиаплеер.")
+
+        for index in range(repeat_count):
+            if hwnd:
+                ok = self._send_app_command(hwnd, _MEDIA_APP_COMMANDS[name])
+            elif name == "media_play":
+                # Global Windows has only a play/pause virtual key.  It is used
+                # only for untargeted commands; explicit targets never guess.
+                ok = self._press_virtual_key(_MEDIA_KEYS["media_play_pause"])
+            else:
+                ok = self._press_virtual_key(_MEDIA_KEYS[name])
+
+            if not ok:
+                return KeyboardActionResult(False, "Не удалось управлять воспроизведением.")
+
+            if index + 1 < repeat_count:
+                time.sleep(max(0.05, min(0.30, interval_seconds)))
+
+        if name == "media_previous" and repeat_count == 2:
+            message = "Переключаю на предыдущий трек."
+        else:
+            message = _SHORTCUT_MESSAGES[name]
+        return KeyboardActionResult(True, message)
+
+    def _media_target_window(self, target: str) -> int:
+        foreground_hwnd = int(self.user32.GetForegroundWindow() or 0)
+        foreground_process = self._foreground_process_name()
+
+        local_allowed = self._configured_local_media_process_names()
+        if target == "local":
+            allowed = local_allowed
+        elif target == "yandex":
+            allowed = _YANDEX_MEDIA_PROCESS_NAMES
+        else:
+            allowed = local_allowed | _YANDEX_MEDIA_PROCESS_NAMES
+
+        if foreground_hwnd and foreground_process in allowed:
+            return foreground_hwnd
+
+        # Explicit targets may safely search only their fixed process allowlist.
+        # Generic actions retain Windows' active-media-session semantics instead
+        # of guessing between several background players.
+        if target:
+            title_keywords = (
+                _LOCAL_MEDIA_TITLE_KEYWORDS
+                if target == "local"
+                else _YANDEX_MEDIA_TITLE_KEYWORDS
+            )
+            for _pid, hwnd, process_name, title in self._visible_windows():
+                clean = process_name.lower().removesuffix(".exe")
+                title_clean = title.lower()
+                if clean in allowed or any(keyword in title_clean for keyword in title_keywords):
+                    return hwnd
+
+        return 0
+
+    @staticmethod
+    def _configured_local_media_process_names() -> set[str]:
+        names = set(_LOCAL_MEDIA_PROCESS_NAMES)
+        configured_path = os.getenv("ASTRA_LOCAL_MEDIA_PLAYER_PATH", "").strip()
+        if configured_path:
+            expanded = os.path.expandvars(configured_path)
+            configured_name = ntpath.basename(expanded)
+            configured_stem = Path(configured_name).stem.lower()
+            if configured_name.lower().endswith(".exe") and configured_stem:
+                names.add(configured_stem)
+        return names
+
+    def _send_app_command(self, hwnd: int, app_command: int) -> bool:
+        try:
+            hwnd_value = ctypes.c_void_p(hwnd)
+            lparam = ctypes.c_void_p(int(app_command) << 16)
+            self.user32.SendMessageW(
+                hwnd_value,
+                WM_APPCOMMAND,
+                hwnd_value,
+                lparam,
+            )
+            return True
+        except Exception:
+            self.logger.exception(
+                "WM_APPCOMMAND failed: hwnd=%s command=%s",
+                hwnd,
+                app_command,
+            )
+            return False
 
     def type_text(self, text: str, app_process_name: str = "") -> KeyboardActionResult:
         text = text.strip()

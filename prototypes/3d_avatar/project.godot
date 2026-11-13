@@ -1,0 +1,17 @@
+; Astra's renderer spike. Engine and cache are not part of the desktop package.
+config_version=5
+
+[application]
+config/name="Astra 3D Avatar Prototype"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=720
+window/size/viewport_height=820
+window/size/window_width_override=720
+window/size/window_height_override=820
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.0627451, 0.0745098, 0.117647, 1)

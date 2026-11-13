@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import json
+import os
 import platform
 import re
 import sys
@@ -13,6 +15,8 @@ from pathlib import Path
 from typing import Callable
 
 from src.ai_client import AIClient
+from src.action_policy import ActionPolicy
+from src.action_audit import record_action
 from src.audio_io import VoiceIO
 from src.command_parser import (
     CommandType,
@@ -31,6 +35,8 @@ from src.command_parser import (
 from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config, load_settings
 from src.folder_controller import FolderController
 from src.keyboard_controller import KeyboardController
+from src.media_controller import MediaController
+from src.runtime_events import emit_event
 from src.routine_controller import RoutineConfigError, RoutineController, RoutineDefinition
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
@@ -56,11 +62,13 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.GET_TIME,
     CommandType.GET_DATE,
     CommandType.KEYBOARD_SHORTCUT,
+    CommandType.MEDIA_CONTROL,
     CommandType.HELP,
     CommandType.VPN_CONTROL,
     CommandType.WINDOW_CONTROL,
     CommandType.VOICE_FEEDBACK,
     CommandType.ROUTINE,
+    CommandType.REMINDER,
     CommandType.EXIT,
 }
 
@@ -72,6 +80,7 @@ _WAKE_REQUIRED_TYPES = {
 
 _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.KEYBOARD_SHORTCUT,
+    ActionType.MEDIA_CONTROL,
     ActionType.TYPE_TEXT,
     ActionType.SCREENSHOT,
     ActionType.SYSTEM_INFO,
@@ -79,6 +88,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.WINDOW_CONTROL,
     ActionType.VOICE_FEEDBACK,
     ActionType.ROUTINE,
+    ActionType.REMINDER,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
@@ -115,6 +125,8 @@ class TurnContext:
     respond_to_unknown: bool
     state: TurnState
     routines: RoutineController | None = None
+    media: MediaController | None = None
+    audit: Callable | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -193,7 +205,7 @@ def score_stt_alternative(
         else:
             score -= 40
 
-    if parsed.type == CommandType.KEYBOARD_SHORTCUT:
+    if parsed.type in {CommandType.KEYBOARD_SHORTCUT, CommandType.MEDIA_CONTROL}:
         score += 80
     if parsed.type in {CommandType.GET_TIME, CommandType.GET_DATE, CommandType.HELP}:
         score += 70
@@ -216,6 +228,58 @@ def score_stt_alternative(
     return score
 
 
+def _repair_stt_command_candidate(text: str) -> list[str]:
+    """Return bounded canonical variants for frequent command-only STT errors.
+
+    Repairs are intentionally narrow: they only normalize known local-player
+    and window phrases.  No repaired token becomes a path, process name, shell
+    command or free-form typed text.
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return []
+
+    repaired: list[str] = []
+
+    local_short_tails = (" вока", " лока", " локо", " лака", " loco")
+    media_markers = (
+        "следующий трек",
+        "следующая песня",
+        "предыдущий трек",
+        "предыдущая песня",
+        "поставь на паузу",
+        "продолжи",
+        "останови",
+        "перезапусти",
+        "начни трек заново",
+    )
+    if any(marker in normalized for marker in media_markers):
+        for tail in local_short_tails:
+            if normalized.endswith(tail):
+                repaired.append(normalized[: -len(tail)] + " в локальном плеере")
+                break
+
+    local_phrase_repairs = {
+        "в вокальном плеере": "в локальном плеере",
+        "в вокальном пуэре": "в локальном плеере",
+        "в локальном пуэре": "в локальном плеере",
+        "в вокальном pueri": "в локальном плеере",
+        "в локальном pueri": "в локальном плеере",
+    }
+    if any(marker in normalized for marker in media_markers):
+        for bad, good in local_phrase_repairs.items():
+            if bad in normalized:
+                repaired.append(normalized.replace(bad, good))
+
+    if normalized in {"вока", "лока", "локо", "лака", "loco"}:
+        repaired.append("локальную")
+
+    if "верни на обычный размер" in normalized:
+        repaired.append(normalized.replace("верни на обычный размер", "верни обычный размер окна"))
+
+    return list(dict.fromkeys(item for item in repaired if item and item != normalized))
+
+
 def choose_stt_alternative(
     alternatives: list[str],
     settings: Settings,
@@ -225,10 +289,21 @@ def choose_stt_alternative(
     if not alternatives:
         return ""
 
+    candidates: list[tuple[str, int, int]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(alternatives):
+        clean = raw.strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            candidates.append((clean, index, 0))
+        for repaired in _repair_stt_command_candidate(clean):
+            if repaired not in seen:
+                seen.add(repaired)
+                candidates.append((repaired, index, 6))
+
     scored = [
-        (score_stt_alternative(item, settings, app_manager), index, item.strip())
-        for index, item in enumerate(alternatives)
-        if item.strip()
+        (score_stt_alternative(item, settings, app_manager) + repair_bonus, index, item)
+        for item, index, repair_bonus in candidates
     ]
     if not scored:
         return ""
@@ -237,7 +312,7 @@ def choose_stt_alternative(
     selected = scored[0][2]
 
     if selected != alternatives[0].strip():
-        logger.info("STT command-aware selected: %r from scored=%s", selected, scored)
+        logger.info("STT command-aware selected: characters=%s candidates=%s", len(selected), len(scored))
 
     return selected
 
@@ -284,7 +359,7 @@ def remember_context(ctx: TurnContext, kind: str, target: str) -> None:
     ctx.state.last_context_kind = kind
     ctx.state.last_context_target = clean_target
     ctx.state.last_context_at = time.monotonic()
-    ctx.logger.info("context_saved kind=%s target=%r", kind, clean_target)
+    ctx.logger.info("context_saved kind=%s", kind)
 
 
 def clear_context(state: TurnState) -> None:
@@ -449,9 +524,31 @@ def resolve_pending_follow_up(raw_text: str, ctx: TurnContext) -> AssistantActio
         if any(token in target for token in ("яндекс", "yandex")):
             parsed = parse_command_text("открой яндекс музыку")
             return parsed_to_action(parsed, source="pending_followup")
-        if target in {"локальную", "локальная", "скачанную", "скачанные", "файлы"}:
-            parsed = parse_command_text("открой музыку")
-            return parsed_to_action(parsed, source="pending_followup")
+        if target in {
+            "локальную",
+            "локальная",
+            "локальный плеер",
+            "локальный проигрыватель",
+            "медиаплеер",
+            "медиа плеер",
+            "плеер",
+            "вока",
+            "лока",
+            "локо",
+            "лака",
+            "loco",
+            "groove",
+            "грув",
+            "музыка groove",
+            "музыка грув",
+        }:
+            return AssistantAction(
+                type=ActionType.MEDIA_CONTROL,
+                text=raw_text,
+                target="open_play_local",
+                confidence=1.0,
+                source="pending_followup",
+            )
 
     if kind == "window_focus":
         return AssistantAction(
@@ -508,6 +605,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.GET_TIME: ActionType.GET_TIME,
         CommandType.GET_DATE: ActionType.GET_DATE,
         CommandType.KEYBOARD_SHORTCUT: ActionType.KEYBOARD_SHORTCUT,
+        CommandType.MEDIA_CONTROL: ActionType.MEDIA_CONTROL,
         CommandType.TYPE_TEXT: ActionType.TYPE_TEXT,
         CommandType.SCREENSHOT: ActionType.SCREENSHOT,
         CommandType.SYSTEM_INFO: ActionType.SYSTEM_INFO,
@@ -515,6 +613,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.WINDOW_CONTROL: ActionType.WINDOW_CONTROL,
         CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
         CommandType.ROUTINE: ActionType.ROUTINE,
+        CommandType.REMINDER: ActionType.REMINDER,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -556,7 +655,7 @@ def parse_without_wake_if_allowed(
         if logger is not None:
             logger.info(
                 "Команда требует wake phrase и пропущена без имени: %s",
-                direct_command,
+                direct_command.type.value,
             )
         return ParsedCommand(
             CommandType.NO_WAKE,
@@ -566,7 +665,7 @@ def parse_without_wake_if_allowed(
 
     if direct_command.type in _DIRECT_COMMAND_TYPES:
         if logger is not None:
-            logger.info("Команда без wake phrase разрешена: %s", direct_command)
+            logger.info("Команда без wake phrase разрешена: %s", direct_command.type.value)
         return direct_command
 
     return ParsedCommand(CommandType.NO_WAKE, text=raw_text)
@@ -600,7 +699,7 @@ def resolve_action(
     if command_like and not had_wake and not ctx.settings.allow_commands_without_wake:
         ctx.logger.info(
             "Command-like phrase without wake phrase blocked before LLM-router: %s",
-            raw_text,
+            "[command content omitted]",
         )
         return AssistantAction(
             type=ActionType.UNKNOWN,
@@ -626,7 +725,7 @@ def resolve_action(
 
         if route.ok:
             action = route.action
-            ctx.logger.info("LLM-router: %s", action)
+            ctx.logger.info("LLM-router action=%s", action.type.value)
 
             if action.type in _ROUTER_BLOCKED_ACTION_TYPES:
                 ctx.logger.warning(
@@ -684,7 +783,7 @@ def build_help_text(topic: str = "general") -> str:
         "general": (
             "Я умею открывать сайты, приложения и папки, управлять вкладками, "
             "VPN, окнами, музыкой, громкостью и рабочим столом. "
-            "Также доступен рабочий режим. "
+            "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв. "
             "Скажи: команды браузера, команды VPN или команды окон."
         ),
         "browser": (
@@ -697,7 +796,8 @@ def build_help_text(topic: str = "general") -> str:
         ),
         "window": (
             "Окна: какие окна открыты, активное окно, переключись на Firefox, "
-            "сверни окно, разверни окно, покажи рабочий стол."
+            "сверни Telegram, разверни окно на весь экран, верни обычный размер, "
+            "покажи рабочий стол."
         ),
         "system": (
             "Система: Астра, статус интернета, сколько памяти, сколько места, "
@@ -726,6 +826,10 @@ def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int,
     for step in routine.steps:
         ok = False
         detail = ""
+        step_type = {"open_app": ActionType.OPEN_APP, "open_url": ActionType.OPEN_URL, "open_folder": ActionType.OPEN_FOLDER}.get(step.action)
+        if step_type is None or not ActionPolicy(ctx.settings.action_permissions).check(AssistantAction(type=step_type, target=step.target, source="routine")).allowed:
+            ctx.logger.info("policy routine step denied: action=%s", step.action)
+            continue
 
         if step.action == "open_app":
             app = ctx.app_manager.find_app(step.target)
@@ -779,6 +883,34 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     Возвращает False, если нужно завершить приложение.
     """
+    decision = ActionPolicy(ctx.settings.action_permissions).check(action)
+    if getattr(ctx, "audit", None) is not None:
+        ctx.audit(getattr(action.type, "value", "unknown"), "dispatch_allowed" if decision.allowed else "blocked")
+    ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
+    if not decision.allowed:
+        ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.REMINDER:
+        if action.target == "__cancel_reminder_ui__":
+            ctx.respond("Отменить напоминание можно в разделе «Задачи» приложения Astra.")
+            return True
+        try:
+            data = json.loads(action.target)
+            if not isinstance(data, dict) or set(data) != {"delay", "text"} or type(data["delay"]) is not int or not 1 <= data["delay"] <= 30 * 86400 or not isinstance(data["text"], str) or not 1 <= len(data["text"]) <= 1000:
+                raise ValueError("Invalid reminder")
+        except (ValueError, TypeError):
+            ctx.respond("Скажи: Астра, напомни через пять минут сделать перерыв.")
+            return True
+        try:
+            from src.reminders import ReminderStore
+            path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+            ReminderStore(path).add(data["text"], time.time() + data["delay"])
+            ctx.respond("Напоминание сохранено. Оно появится в запущенном приложении Astra.")
+        except Exception:
+            ctx.respond("Не удалось сохранить напоминание. Проверь раздел «Задачи».")
+        return True
+
     if action.type == ActionType.EXIT:
         ctx.respond("Завершаю работу.")
         return False
@@ -871,8 +1003,44 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             ctx.respond("Не удалось открыть поиск.")
         return True
 
+    if action.type == ActionType.MEDIA_CONTROL:
+        if ctx.media is None:
+            media_target = (action.target or action.query).split(":", 1)[0]
+            if media_target == "open_play_local":
+                result = ctx.app_manager.open_app("медиаплеер")
+                ctx.respond(result.message)
+                return True
+            fallback = {
+                "play_pause": "media_play_pause",
+                "next": "media_next",
+                "previous": "media_previous",
+                "restart_current": "media_previous",
+                "stop": "media_stop",
+            }.get(media_target)
+            if fallback:
+                result = ctx.keyboard.send_shortcut(fallback)
+                ctx.respond(result.message)
+            else:
+                ctx.respond("Управление музыкой недоступно.")
+            return True
+        result = ctx.media.execute(action.target or action.query)
+        ctx.respond(result.message)
+        return True
+
     if action.type == ActionType.KEYBOARD_SHORTCUT:
-        result = ctx.keyboard.send_shortcut(action.target or action.query)
+        target = action.target or action.query
+        media_map = {
+            "media_play_pause": "play_pause",
+            "media_play": "play",
+            "media_next": "next",
+            "media_previous": "previous",
+            "media_restart_current": "restart_current",
+            "media_stop": "stop",
+        }
+        if target in media_map and ctx.media is not None:
+            result = ctx.media.execute(media_map[target])
+        else:
+            result = ctx.keyboard.send_shortcut(target)
         ctx.respond(result.message)
         return True
 
@@ -931,6 +1099,14 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             result = ctx.windows.minimize_active_window()
         elif window_action == "maximize":
             result = ctx.windows.maximize_active_window()
+        elif window_action == "restore":
+            result = ctx.windows.restore_active_window()
+        elif window_action.startswith("minimize:"):
+            result = ctx.windows.minimize_target(window_action.removeprefix("minimize:"))
+        elif window_action.startswith("maximize:"):
+            result = ctx.windows.maximize_target(window_action.removeprefix("maximize:"))
+        elif window_action.startswith("restore:"):
+            result = ctx.windows.restore_target(window_action.removeprefix("restore:"))
         elif window_action == "show_desktop":
             result = ctx.windows.show_desktop()
         elif window_action == "previous":
@@ -1004,6 +1180,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.ASK_LLM:
         question = action.query or action.text
+        emit_event("state", "Думаю · локальная модель" if ctx.settings.llm_provider == "ollama" else "Думаю · выбранный ИИ")
         result = ctx.ai_client.ask(question)
         ctx.respond(result.message)
         return True
@@ -1148,6 +1325,7 @@ def run_text_mode(
     ai_client: AIClient,
     logger: logging.Logger,
     routines: RoutineController | None = None,
+    media: MediaController | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -1174,7 +1352,8 @@ def run_text_mode(
 
     def respond(message: str) -> None:
         state.last_assistant_response = message
-        print(f"Астра: {message}")
+        if not emit_event("assistant", message):
+            print(f"Астра: {message}")
 
     def get_follow_up() -> str:
         try:
@@ -1197,8 +1376,10 @@ def run_text_mode(
         get_follow_up=get_follow_up,
         allow_conversation_without_wake=settings.allow_text_conversation_without_wake,
         respond_to_unknown=True,
+        audit=record_action,
         state=state,
         routines=routines,
+        media=media,
     )
 
     while True:
@@ -1249,7 +1430,7 @@ def _listen_pending_voice_follow_up(
         ctx.respond("Не расслышал, повтори.")
         return True
 
-    logger.info("pending_command_session_text=%r", follow_up.text)
+    logger.info("pending_command_session characters=%s", len(follow_up.text))
     return process_turn(follow_up.text, ctx)
 
 
@@ -1265,8 +1446,13 @@ def run_voice_mode(
     ai_client: AIClient,
     logger: logging.Logger,
     routines: RoutineController | None = None,
+    media: MediaController | None = None,
 ) -> None:
     voice = VoiceIO(settings=settings, logger=logger)
+    if voice.microphone is None:
+        emit_event("error", "Микрофон недоступен. Выбери текстовый режим.")
+        logger.error("Voice runtime stopped: microphone unavailable")
+        return
     voice.set_alternative_selector(
         lambda alternatives: choose_stt_alternative(
             alternatives,
@@ -1282,7 +1468,7 @@ def run_voice_mode(
     def respond(message: str) -> None:
         shortened = shorten_voice_response(message, settings)
         if shortened != message:
-            logger.info("Voice response shortened. full=%r shortened=%r", message, shortened)
+            logger.info("Voice response shortened. full_characters=%s shortened_characters=%s", len(message), len(shortened))
         state.last_assistant_response = shortened
         voice.speak(shortened)
 
@@ -1312,8 +1498,10 @@ def run_voice_mode(
         get_follow_up=get_follow_up,
         allow_conversation_without_wake=settings.allow_voice_conversation_without_wake,
         respond_to_unknown=False,
+        audit=record_action,
         state=state,
         routines=routines,
+        media=media,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -1343,7 +1531,7 @@ def run_voice_mode(
             )
 
             if parsed.type == CommandType.NO_WAKE:
-                logger.info("Wake ignored: no wake phrase in %r", wake_result.text)
+                logger.info("Wake ignored: no wake phrase; characters=%s", len(wake_result.text))
                 continue
 
             if parsed.type == CommandType.WAKE_ONLY:
@@ -1363,8 +1551,8 @@ def run_voice_mode(
                     continue
 
                 logger.info(
-                    "command_session_text=%r",
-                    command_result.text,
+                    "command_session characters=%s",
+                    len(command_result.text),
                 )
                 should_continue = process_turn(
                     _voice_command_text_with_wake(settings, command_result.text),
@@ -1383,7 +1571,7 @@ def run_voice_mode(
                     return
                 continue
 
-            logger.info("wake_detected: direct_command text=%r", wake_result.text)
+            logger.info("wake_detected: direct_command characters=%s", len(wake_result.text))
             if not settings.wake_allow_direct_command:
                 logger.info("Direct wake command disabled by WAKE_ALLOW_DIRECT_COMMAND=false")
                 if settings.wake_response_enabled:
@@ -1446,6 +1634,12 @@ def main() -> int:
 
     try:
         settings = load_settings()
+        if os.environ.get("ASTRA_IGNORE_DESKTOP_SETTINGS") != "1":
+            from src.desktop_settings import DesktopSettings
+            try:
+                settings = DesktopSettings().apply(settings)
+            except Exception:
+                raise ConfigError("Не удалось прочитать защищённые настройки приложения. Проверь их в окне Astra.") from None
         apps = load_apps_config()
     except ConfigError as exc:
         logger.error("Ошибка конфигурации: %s", exc)
@@ -1484,6 +1678,7 @@ def main() -> int:
         browser_preferred=settings.browser_preferred,
     )
     ai_client = AIClient(settings=settings, logger=logger)
+    media = MediaController(keyboard=keyboard, app_manager=app_manager, logger=logger)
 
     try:
         if args.stt_test:
@@ -1491,12 +1686,12 @@ def main() -> int:
         elif args.text:
             run_text_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines,
+                windows, ai_client, logger, routines, media,
             )
         else:
             run_voice_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines,
+                windows, ai_client, logger, routines, media,
             )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")

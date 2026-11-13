@@ -452,31 +452,47 @@ class AstraDesktop:
             return
         panel = tk.Toplevel(self.window)
         panel.title("Astra · личная память")
-        panel.geometry("780x710")
+        panel.geometry("940x720")
+        panel.minsize(780, 620)
         panel.configure(bg=BG)
-        tk.Label(panel, text="Только явно сохранённые заметки · шифрование Windows DPAPI", bg=BG, fg=TEXT, font=("Segoe UI", 12)).pack(pady=(18, 6))
+        tk.Label(panel, text="Личная память", bg=BG, fg=TEXT, font=("Segoe UI", 21, "bold")).pack(anchor="w", padx=24, pady=(22, 6))
         tk.Label(panel, text="В облако не отправляется. Для локального диалога включи разрешение в «ИИ».", bg=BG, fg=MUTED).pack(pady=6)
-        listing = tk.Listbox(panel, bg=PANEL, fg=TEXT, font=("Segoe UI", 11), relief="flat", height=7)
-        listing.pack(fill="x", padx=20, pady=10)
-        title = tk.Entry(panel, bg=PANEL, fg=TEXT, insertbackground=TEXT, font=("Segoe UI", 12))
-        title.pack(fill="x", padx=20, ipady=8)
+        footer = tk.Frame(panel, bg=BG)
+        footer.pack(side="bottom", fill="x", padx=20, pady=12)
+        body = tk.Frame(panel, bg=BG)
+        body.pack(fill="both", expand=True, padx=24, pady=14)
+        sidebar = tk.Frame(body, bg=PANEL, width=240)
+        sidebar.pack(side="left", fill="y", padx=(0, 16))
+        sidebar.pack_propagate(False)
+        query = tk.StringVar()
+        tk.Label(sidebar, text="ПОИСК ЗАМЕТОК", bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=12, pady=(14, 6))
+        search = tk.Entry(sidebar, textvariable=query, bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat")
+        search.pack(fill="x", padx=12, ipady=8, pady=(0, 10))
+        listing = tk.Listbox(sidebar, bg=PANEL, fg=TEXT, font=("Segoe UI", 11), relief="flat", height=7, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        editor = tk.Frame(body, bg=BG)
+        editor.pack(side="left", fill="both", expand=True)
+        tk.Label(editor, text="Название", bg=BG, fg=MUTED).pack(anchor="w", pady=(0, 6))
+        title = tk.Entry(editor, bg=PANEL, fg=TEXT, insertbackground=TEXT, font=("Segoe UI", 13))
+        title.pack(fill="x", ipady=10)
         title.insert(0, "Новая заметка")
-        content = tk.Text(panel, bg=PANEL, fg=TEXT, insertbackground=TEXT, wrap="word", font=("Segoe UI", 11), relief="flat", height=10)
-        content.pack(fill="both", expand=True, padx=20, pady=10)
+        tk.Label(editor, text="Содержимое заметки", bg=BG, fg=MUTED).pack(anchor="w", pady=(16, 6))
+        content = tk.Text(editor, bg=PANEL, fg=TEXT, insertbackground=TEXT, wrap="word", font=("Segoe UI", 11), relief="flat", height=10, padx=12, pady=12)
+        content.pack(fill="both", expand=True)
         status = tk.StringVar()
-        tk.Label(panel, textvariable=status, bg=BG, fg=MUTED).pack()
+        tk.Label(footer, textvariable=status, bg=BG, fg=MUTED).pack()
         notes = []
         def refresh():
             nonlocal notes
             try:
-                notes = memory.search()
+                notes = memory.search(query.get())
             except Exception:
                 status.set("Не удалось расшифровать память. Проверь учётную запись Windows и резервную копию.")
                 return
             listing.delete(0, "end")
             for note in notes:
                 listing.insert("end", note.title)
-            status.set(f"Сохранено: {len(notes)}. Пароли и API-ключи здесь не храни.")
+            status.set(f"Найдено записей: {len(notes)}. Пароли и API-ключи здесь не храни.")
         def select(_event=None):
             if listing.curselection():
                 note = notes[listing.curselection()[0]]
@@ -588,19 +604,20 @@ class AstraDesktop:
                 status.set(f"Добавлено: {restored}. Пропущено совпадений: {skipped}; текущие записи не перезаписаны.")
             except Exception as exc:
                 messagebox.showerror("Astra · восстановление", str(exc), parent=panel)
-        row = tk.Frame(panel, bg=BG)
+        row = tk.Frame(footer, bg=BG)
         row.pack(pady=12)
         self.button(row, "Сохранить новую", save).pack(side="left", padx=6)
         self.button(row, "Забыть выбранную", forget).pack(side="left", padx=6)
-        backup_row = tk.Frame(panel, bg=BG)
+        backup_row = tk.Frame(footer, bg=BG)
         backup_row.pack(pady=(0, 12))
         self.button(backup_row, "Создать резервную копию", backup).pack(side="left", padx=6)
         self.button(backup_row, "Восстановить из копии", restore).pack(side="left", padx=6)
-        portable_row = tk.Frame(panel, bg=BG)
+        portable_row = tk.Frame(footer, bg=BG)
         portable_row.pack(pady=(0, 12))
         self.button(portable_row, "Создать переносимую копию", portable_backup).pack(side="left", padx=6)
         self.button(portable_row, "Восстановить переносимую копию", portable_restore).pack(side="left", padx=6)
         listing.bind("<<ListboxSelect>>", select)
+        query.trace_add("write", lambda *_: refresh())
         refresh()
 
     def poll(self):

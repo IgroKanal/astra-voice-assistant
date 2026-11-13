@@ -11,21 +11,23 @@ from src.profile_backup import export_profile, import_profile
 from src.action_policy import ALL_SCOPES
 from src.ollama_client import OllamaClient
 from src.version import DISPLAY_VERSION
+from src.scroll_section import scroll_section
 
 
 def open_ai_settings(owner, button, on_saved, app=None):
     store = DesktopSettings()
     panel = tk.Toplevel(owner)
     panel.title("Astra · настройки ИИ")
-    panel.geometry("780x820")
+    panel.geometry(f"780x{min(820, max(560, owner.winfo_screenheight() - 100))}")
+    panel.minsize(680, 520)
     panel.configure(bg="#101322")
     tabs = ttk.Notebook(panel)
     tabs.pack(fill="both", expand=True, padx=12, pady=12)
-    content = tk.Frame(tabs, bg="#101322")
-    voice_tab = tk.Frame(tabs, bg="#101322")
+    content_page, content = scroll_section(tabs)
+    voice_page, voice_tab = scroll_section(tabs)
     permissions = tk.Frame(tabs, bg="#101322")
-    tabs.add(content, text="ИИ и память")
-    tabs.add(voice_tab, text="Голос и микрофон")
+    tabs.add(content_page, text="ИИ и память")
+    tabs.add(voice_page, text="Голос и микрофон")
     tabs.add(permissions, text="Разрешения навыков")
     profile_load_failed = False
     try:
@@ -340,8 +342,10 @@ def open_ai_settings(owner, button, on_saved, app=None):
     actions.pack(pady=10)
     button(actions, "Проверить Ollama", check_local).pack(side="left", padx=5)
     button(actions, "Сохранить и применить", save).pack(side="left", padx=5)
-    button(voice_tab, "Прослушать выбранный голос", lambda: preview_voice()).pack(pady=(2, 8))
-    button(voice_tab, "Сохранить голос и микрофон", save).pack(pady=5)
+    voice_actions = tk.Frame(voice_page, bg="#101322")
+    voice_actions.pack(side="bottom", before=voice_page.astra_canvas, fill="x", pady=10)
+    button(voice_actions, "Прослушать выбранный голос", lambda: preview_voice()).pack(side="left", padx=(20, 8))
+    button(voice_actions, "Сохранить голос и микрофон", save).pack(side="right", padx=(8, 20))
     button(permissions, "Сохранить разрешения", save).pack(pady=15)
     backup_row = tk.Frame(permissions, bg="#101322")
     backup_row.pack(pady=(0, 14))

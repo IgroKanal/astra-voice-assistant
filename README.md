@@ -1,4 +1,4 @@
-# Astra Voice Assistant — v2.0.0-beta.3
+# Astra Voice Assistant — v2.1.0-beta.1
 
 ## Desktop Preview (разработка следующего поколения)
 

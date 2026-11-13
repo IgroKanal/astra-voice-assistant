@@ -21,7 +21,7 @@ class AvatarPreviewTests(unittest.TestCase):
         project.mkdir(parents=True)
         godot.write_bytes(b"test stub; never executed")
         (project / "project.godot").write_text("config_version=5\n", encoding="utf-8")
-        return godot, project
+        return godot.resolve(), project.resolve()
 
     def test_launch_uses_packaged_runtime_and_fixed_argument_list_without_shell(self):
         with tempfile.TemporaryDirectory() as temp:

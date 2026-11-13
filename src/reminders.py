@@ -72,6 +72,18 @@ class ReminderStore:
             rows = db.execute("SELECT id,due,state,payload FROM reminders ORDER BY due DESC LIMIT 1000").fetchall()
         return [Reminder(identity, self.decode(payload), due, state) for identity, due, state, payload in rows]
 
+    def list_upcoming(self, limit: int = 4) -> list[Reminder]:
+        """Return a small, ordered snapshot of active reminders for voice replies."""
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("Лимит списка напоминаний должен быть от 1 до 10")
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id,due,state,payload FROM reminders "
+                "WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [Reminder(identity, self.decode(payload), due, state) for identity, due, state, payload in rows]
+
     def claim_due(self, now: float | None = None, lease_seconds: float = 30) -> list[Reminder]:
         now = time.time() if now is None else now
         if not math.isfinite(now) or not 1 <= lease_seconds <= 300:

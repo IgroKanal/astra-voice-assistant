@@ -70,6 +70,26 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(states[later], "cancelled")
         self.assertEqual(states[delivered], "delivered")
 
+    def test_list_upcoming_returns_only_active_reminders_in_due_order_and_respects_limit(self):
+        later = self.store.add("later", 300)
+        earliest = self.store.add("earliest", 100)
+        delivered = self.store.add("delivered", 50)
+        claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, claim.token))
+        delivering = self.store.add("delivering", 75)
+        self.store.claim_due(75)
+        cancelled = self.store.add("cancelled", 80)
+        self.assertTrue(self.store.cancel(cancelled))
+
+        items = self.store.list_upcoming(limit=2)
+
+        self.assertEqual([item.text for item in items], ["delivering", "earliest"])
+        self.assertEqual([item.id for item in items], [delivering, earliest])
+        self.assertNotIn(later, [item.id for item in items])
+        for invalid_limit in (0, 11, True, 2.0):
+            with self.assertRaises(ValueError):
+                self.store.list_upcoming(invalid_limit)
+
     def test_delivered_reminder_stays_unread_across_restart(self):
         identity = self.store.add("x", 100)
         claim = self.store.claim_due(100)[0]

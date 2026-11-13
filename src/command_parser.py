@@ -52,6 +52,17 @@ AMBIGUOUS_MUSIC_TARGET = "__ambiguous_music__"
 UNRESOLVED_CONTEXT_TARGET = "__context_unavailable__"
 CANCEL_REMINDER_UI_TARGET = "__cancel_reminder_ui__"
 CANCEL_NEXT_REMINDER_TARGET = "__cancel_next_reminder__"
+LIST_UPCOMING_REMINDERS_TARGET = "__list_upcoming_reminders__"
+LIST_REMINDER_PHRASES = frozenset({
+    "покажи напоминания",
+    "покажи мои напоминания",
+    "какие у меня напоминания",
+    "какие у меня есть напоминания",
+    "какие у меня ближайшие напоминания",
+    "какие ближайшие напоминания",
+    "назови ближайшие напоминания",
+    "что у меня с напоминаниями",
+})
 
 
 OPEN_PREFIXES = (
@@ -972,6 +983,8 @@ def is_command_like_text(text: str) -> bool:
 
     if re.search(r"(?<!\w)(напомни|отмени (?:ближайшее |следующее )?напоминание)(?!\w)", normalized):
         return True
+    if any(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) for phrase in LIST_REMINDER_PHRASES):
+        return True
 
     hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
     for hint in hints:
@@ -1413,6 +1426,8 @@ def parse_command_text(text: str) -> ParsedCommand:
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
 
+    if normalized in LIST_REMINDER_PHRASES:
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=LIST_UPCOMING_REMINDERS_TARGET)
     if normalized in {"отмени ближайшее напоминание", "отмени следующее напоминание"}:
         return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_NEXT_REMINDER_TARGET)
     if normalized.startswith("отмени напоминание"):

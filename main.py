@@ -10,7 +10,7 @@ import sys
 import time
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -25,6 +25,7 @@ from src.command_parser import (
     AMBIGUOUS_MUSIC_TARGET,
     CANCEL_NEXT_REMINDER_TARGET,
     CANCEL_REMINDER_UI_TARGET,
+    LIST_UPCOMING_REMINDERS_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -885,6 +886,38 @@ def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int,
 
     return succeeded, len(routine.steps)
 
+
+def _format_upcoming_reminders(reminders, now: datetime | None = None) -> str:
+    """Build a short, factual local-time summary for a voice reminder query."""
+    items = list(reminders)
+    if not items:
+        return "Активных напоминаний нет."
+
+    local_now = (now or datetime.now().astimezone()).astimezone()
+    tomorrow = local_now.date() + timedelta(days=1)
+    summaries = []
+    for item in items[:3]:
+        due = datetime.fromtimestamp(item.due).astimezone()
+        if due.date() == local_now.date():
+            due_text = f"сегодня в {due:%H:%M}"
+        elif due.date() == tomorrow:
+            due_text = f"завтра в {due:%H:%M}"
+        elif due.year == local_now.year:
+            due_text = due.strftime("%d.%m в %H:%M")
+        else:
+            due_text = due.strftime("%d.%m.%Y в %H:%M")
+
+        safe_text = " ".join("".join(char if char.isprintable() else " " for char in item.text).split())
+        if len(safe_text) > 100:
+            safe_text = safe_text[:99].rstrip() + "…"
+        summaries.append(f"{due_text} — {safe_text or 'напоминание без текста'}")
+
+    response = "Ближайшие напоминания: " + "; ".join(summaries) + "."
+    if len(items) > 3:
+        response += " Полный список есть в разделе «Задачи» приложения Astra."
+    return response
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -914,6 +947,15 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.REMINDER:
         if action.target == CANCEL_REMINDER_UI_TARGET:
             ctx.respond("Отменить напоминание можно в разделе «Задачи» приложения Astra.")
+            return True
+        if action.target == LIST_UPCOMING_REMINDERS_TARGET:
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                reminders = ReminderStore(path).list_upcoming(limit=4)
+                ctx.respond(_format_upcoming_reminders(reminders))
+            except Exception:
+                ctx.respond("Не удалось прочитать напоминания. Проверь раздел «Задачи» приложения Astra.")
             return True
         if action.target == CANCEL_NEXT_REMINDER_TARGET:
             try:

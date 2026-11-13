@@ -39,6 +39,66 @@ class ReminderCommandTests(unittest.TestCase):
             CANCEL_REMINDER_UI_TARGET,
         )
 
+    def test_explicit_list_phrases_are_local_reminder_queries(self):
+        from src.command_parser import LIST_UPCOMING_REMINDERS_TARGET, is_command_like_text
+        phrases = (
+            "покажи напоминания",
+            "покажи мои напоминания",
+            "какие у меня напоминания",
+            "какие у меня есть напоминания",
+            "какие у меня ближайшие напоминания",
+            "какие ближайшие напоминания",
+            "назови ближайшие напоминания",
+            "что у меня с напоминаниями",
+        )
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                parsed = parse_command_text(phrase)
+                self.assertEqual(parsed.type, CommandType.REMINDER)
+                self.assertEqual(parsed.target, LIST_UPCOMING_REMINDERS_TARGET)
+                self.assertTrue(is_command_like_text(phrase))
+
+    def test_voice_list_requires_wake_and_reminder_permission(self):
+        from src.reminders import Reminder
+        from tools.smoke_test_v11_daily_workflow import make_context
+        from main import process_turn
+        ctx, responses, ai, *_ = make_context()
+        ctx = replace(ctx, allow_conversation_without_wake=True)
+        sample = Reminder("id", "проверить письмо", 1_800_000_000, "pending")
+        with patch("src.reminders.ReminderStore") as store:
+            store.return_value.list_upcoming.return_value = [sample]
+            process_turn("какие у меня ближайшие напоминания", ctx)
+            store.assert_not_called()
+            self.assertEqual(ai.ask_calls, 0)
+            self.assertEqual(ai.route_calls, 0)
+
+            process_turn("Астра, какие у меня ближайшие напоминания", ctx)
+            store.return_value.list_upcoming.assert_called_once_with(limit=4)
+            self.assertIn("проверить письмо", responses[-1])
+
+            ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))
+            store.reset_mock()
+            process_turn("Астра, покажи напоминания", ctx)
+            store.assert_not_called()
+
+    def test_voice_list_formats_only_bounded_items_and_local_times(self):
+        from datetime import datetime
+        from src.reminders import Reminder
+        from main import _format_upcoming_reminders
+        local_timezone = datetime.now().astimezone().tzinfo
+        now = datetime(2026, 11, 14, 12, 0, tzinfo=local_timezone)
+        items = [
+            Reminder(str(index), f"задача {index}" + ("x" * 150), now.timestamp() + 60, "pending")
+            for index in range(4)
+        ]
+        response = _format_upcoming_reminders(items, now=now)
+        self.assertIn("Ближайшие напоминания", response)
+        self.assertIn("сегодня в 12:01", response)
+        self.assertIn("задача 0", response)
+        self.assertIn("Полный список есть", response)
+        self.assertLessEqual(response.count("задача "), 3)
+        self.assertTrue(_format_upcoming_reminders([]).startswith("Активных напоминаний нет"))
+
     def test_wake_and_permission_required_before_storage(self):
         from tools.smoke_test_v11_daily_workflow import make_context
         from main import process_turn

@@ -633,5 +633,17 @@
 - Полный Windows gate прошёл: compileall/desktop compilation, smoke и config validators, `astra_doctor.py`, 171 unit/integration/UI тест за 102.1 сек.
 - Portable ZIP `AstraDesktop-preview-20261113-202910.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, audit/policy/privacy, аватары и authenticated Godot IPC. SHA-256: `FE91108B48F8C5B8527C488847F9ECFEB72935A15AB078F7C9993F3D50282C79`.
 - `Astra-Setup-2.6.0-beta.1.exe` прошёл install/runtime/uninstall; установленный runtime выполнил команду нового диалога, пользовательские данные сохранились. SHA-256: `4E83417C599C951933C16DCE29510A704EADAA9CBF96C53C46A15D040538FC54`.
-- После package gate ярлык переключён на Astra 2.6. GitHub CI ожидает push; публикация release не выполнялась.
+- После package gate ярлык переключён на Astra 2.6. GitHub Actions run `43464767244` для коммита `708220a` завершился успешно; публикация release не выполнялась.
 - Реальная проверка микрофона, визуальная оценка каталога и выбранной локальной модели остаются за пользователем.
+
+## Astra 2.7 Beta · удобная история действий
+
+- Журнал действий получил поиск по локализованному названию действия, типу события и результату; регистр и «ё/е» нормализуются.
+- Добавлен фильтр по исходам: передано на исполнение, заблокировано, выполнено, ошибка и отменено. Окно показывает количество видимых событий среди 500 последних записей.
+- Таблица продолжает показывать только время, тип события и исход; пользовательские команды, аргументы, пути и данные документов в UI не извлекаются и не добавляются.
+- Узкие Windows UI и audit tests прошли: пустое/заполненное состояние, поиск, фильтр и повторное обновление.
+- Полный Windows gate прошёл: compileall, desktop compile, legacy smoke и config validators, `astra_doctor.py`, все 171 unit/integration/UI тест за 103.6 сек.
+- Portable ZIP `AstraDesktop-preview-20261113-204953.zip` прошёл 207-entry secret/forbidden scan, CRC, relocated runtime, runtime/policy/privacy, встроенные аватары, Godot IPC и проверку набора модулей. SHA-256: `0649AE11C1307DB4EFB28898CC4DB433CC653D7BDF4BB52C2A4C84EED481FB7C`.
+- `Astra-Setup-2.7.0-beta.1.exe` прошёл install/runtime/uninstall с сохранением LocalAppData. SHA-256: `F8FF081A9B786A14F73475787BB294166F10C135A6E456D81E1BA297F15C86D1`.
+- После этих проверок ярлык Astra переключён с проверенной 2.6 на 2.7; target перечитан и сверен. Реальная визуальная/клавиатурная приёмка журнала и микрофона остаётся открытой.
+- Визуальная и клавиатурная приёмка остаётся открытой. 2.7 Beta не закрывает общие gates v2–v5.

@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -72,6 +73,18 @@ class ReminderStore:
             rows = db.execute("SELECT id,due,state,payload FROM reminders ORDER BY due DESC LIMIT 1000").fetchall()
         return [Reminder(identity, self.decode(payload), due, state) for identity, due, state, payload in rows]
 
+    def list_upcoming(self, limit: int = 4) -> list[Reminder]:
+        """Return a small, ordered snapshot of active reminders for voice replies."""
+        if type(limit) is not int or not 1 <= limit <= 10:
+            raise ValueError("Лимит списка напоминаний должен быть от 1 до 10")
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id,due,state,payload FROM reminders "
+                "WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [Reminder(identity, self.decode(payload), due, state) for identity, due, state, payload in rows]
+
     def claim_due(self, now: float | None = None, lease_seconds: float = 30) -> list[Reminder]:
         now = time.time() if now is None else now
         if not math.isfinite(now) or not 1 <= lease_seconds <= 300:
@@ -98,6 +111,49 @@ class ReminderStore:
     def cancel(self, identity: str) -> bool:
         with self.connect() as db:
             return db.execute("UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')", (identity,)).rowcount == 1
+
+    def cancel_next(self) -> bool:
+        """Cancel one earliest pending or delivering reminder atomically."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT id FROM reminders WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return False
+            return db.execute(
+                "UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')",
+                (row[0],),
+            ).rowcount == 1
+
+    def cancel_matching(self, query: str) -> tuple[str, str]:
+        """Cancel one active reminder only when its encrypted title has a unique exact fragment match."""
+        normalized_query = re.sub(r"\W+", " ", query.casefold().replace("ё", "е"), flags=re.UNICODE).strip()
+        if not 2 <= len(normalized_query) <= 160:
+            raise ValueError("Фрагмент названия должен содержать от 2 до 160 символов")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                "SELECT id,payload FROM reminders WHERE state IN ('pending','delivering') ORDER BY due ASC,id ASC"
+            ).fetchall()
+            matches = []
+            for identity, payload in rows:
+                title = self.decode(payload)
+                normalized_title = re.sub(
+                    r"\W+", " ", title.casefold().replace("ё", "е"), flags=re.UNICODE
+                ).strip()
+                if normalized_query in normalized_title:
+                    matches.append((identity, title))
+                    if len(matches) > 1:
+                        return "ambiguous", ""
+            if not matches:
+                return "not_found", ""
+            identity, title = matches[0]
+            changed = db.execute(
+                "UPDATE reminders SET state='cancelled',lease=0,token='' WHERE id=? AND state IN ('pending','delivering')",
+                (identity,),
+            ).rowcount
+            return ("cancelled", title) if changed == 1 else ("not_found", "")
 
     def unread_count(self) -> int:
         with self.connect() as db:

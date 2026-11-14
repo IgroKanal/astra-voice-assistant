@@ -7,14 +7,16 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
 from src.ai_client import AIClient
+from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
 from src.audio_io import VoiceIO
@@ -23,6 +25,21 @@ from src.command_parser import (
     ParsedCommand,
     AMBIGUOUS_CHAT_TARGET,
     AMBIGUOUS_MUSIC_TARGET,
+    CANCEL_NEXT_REMINDER_TARGET,
+    CANCEL_REMINDER_MATCH_PREFIX,
+    CANCEL_REMINDER_UI_TARGET,
+    LIST_UPCOMING_REMINDERS_TARGET,
+    MEMORY_FORGET_PREFIX,
+    MEMORY_HELP_TARGET,
+    MEMORY_LIST_TARGET,
+    MEMORY_SAVE_TARGET,
+    MEMORY_SEARCH_PREFIX,
+    FILE_OPEN_HELP_TARGET,
+    FILE_READ_HELP_TARGET,
+    FILE_READ_NEXT_TARGET,
+    FILE_QUESTION_HELP_TARGET,
+    FILE_SEARCH_HELP_TARGET,
+    BACKGROUND_TASK_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -41,6 +58,7 @@ from src.routine_controller import RoutineConfigError, RoutineController, Routin
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
+from src.streaming_speech import FirstSentenceBuffer
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -69,6 +87,7 @@ _DIRECT_COMMAND_TYPES = {
     CommandType.VOICE_FEEDBACK,
     CommandType.ROUTINE,
     CommandType.REMINDER,
+    CommandType.CLEAR_DIALOGUE,
     CommandType.EXIT,
 }
 
@@ -76,6 +95,16 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.TYPE_TEXT,
     CommandType.SCREENSHOT,
     CommandType.SYSTEM_INFO,
+    CommandType.MEMORY_NOTE,
+    CommandType.FILE_SEARCH,
+    CommandType.FILE_OPEN,
+    CommandType.FILE_READ,
+    CommandType.FILE_QUESTION,
+    CommandType.BACKGROUND_ASK,
+    CommandType.BACKGROUND_LIST,
+    CommandType.BACKGROUND_CANCEL,
+    CommandType.BACKGROUND_RESULT,
+    CommandType.CLEAR_DIALOGUE,
 }
 
 _ROUTER_BLOCKED_ACTION_TYPES = {
@@ -89,6 +118,16 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.VOICE_FEEDBACK,
     ActionType.ROUTINE,
     ActionType.REMINDER,
+    ActionType.MEMORY_NOTE,
+    ActionType.FILE_SEARCH,
+    ActionType.FILE_OPEN,
+    ActionType.FILE_READ,
+    ActionType.FILE_QUESTION,
+    ActionType.BACKGROUND_ASK,
+    ActionType.BACKGROUND_LIST,
+    ActionType.BACKGROUND_CANCEL,
+    ActionType.BACKGROUND_RESULT,
+    ActionType.CLEAR_DIALOGUE,
 }
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
@@ -105,6 +144,16 @@ class TurnState:
     last_context_kind: str = ""
     last_context_target: str = ""
     last_context_at: float = 0.0
+    private_read_filename: str = ""
+    private_read_offset: int = 0
+    private_read_updated_at: float = 0.0
+    private_read_workspace_generation: int = 0
+
+    def clear_private_read_cursor(self) -> None:
+        self.private_read_filename = ""
+        self.private_read_offset = 0
+        self.private_read_updated_at = 0.0
+        self.private_read_workspace_generation = 0
 
 
 @dataclass(frozen=True)
@@ -127,6 +176,14 @@ class TurnContext:
     routines: RoutineController | None = None
     media: MediaController | None = None
     audit: Callable | None = None
+    file_search: Callable | None = None
+    file_open: Callable | None = None
+    file_read: Callable | None = None
+    file_question: Callable | None = None
+    speak_private_local: Callable[[str], bool] | None = None
+    speak_partial: Callable[[str], bool] | None = None
+    respond_streamed: Callable[[str, str], None] | None = None
+    background_tasks: BackgroundTaskManager | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -614,6 +671,16 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.VOICE_FEEDBACK: ActionType.VOICE_FEEDBACK,
         CommandType.ROUTINE: ActionType.ROUTINE,
         CommandType.REMINDER: ActionType.REMINDER,
+        CommandType.MEMORY_NOTE: ActionType.MEMORY_NOTE,
+        CommandType.FILE_SEARCH: ActionType.FILE_SEARCH,
+        CommandType.FILE_OPEN: ActionType.FILE_OPEN,
+        CommandType.FILE_READ: ActionType.FILE_READ,
+        CommandType.FILE_QUESTION: ActionType.FILE_QUESTION,
+        CommandType.BACKGROUND_ASK: ActionType.BACKGROUND_ASK,
+        CommandType.BACKGROUND_LIST: ActionType.BACKGROUND_LIST,
+        CommandType.BACKGROUND_CANCEL: ActionType.BACKGROUND_CANCEL,
+        CommandType.BACKGROUND_RESULT: ActionType.BACKGROUND_RESULT,
+        CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
         CommandType.EXIT: ActionType.EXIT,
@@ -625,6 +692,18 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     query = parsed.target
     if parsed.type == CommandType.ASK_LLM:
         query = parsed.target or parsed.text
+    elif parsed.type == CommandType.MEMORY_NOTE and parsed.target == MEMORY_SAVE_TARGET:
+        query = parsed.text
+    elif parsed.type == CommandType.FILE_SEARCH:
+        query = parsed.target
+    elif parsed.type == CommandType.FILE_OPEN:
+        query = parsed.target
+    elif parsed.type == CommandType.FILE_READ:
+        query = parsed.target
+    elif parsed.type == CommandType.FILE_QUESTION:
+        query = parsed.query
+    elif parsed.type == CommandType.BACKGROUND_ASK:
+        query = parsed.query
 
     return AssistantAction(
         type=mapping.get(parsed.type, ActionType.UNKNOWN),
@@ -783,8 +862,12 @@ def build_help_text(topic: str = "general") -> str:
         "general": (
             "Я умею открывать сайты, приложения и папки, управлять вкладками, "
             "VPN, окнами, музыкой, громкостью и рабочим столом. "
-            "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв. "
-            "Скажи: команды браузера, команды VPN или команды окон."
+            "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв, "
+            "или напомни завтра в 9 позвонить. "
+            "С локальным Ollama можно запустить вопрос в фоне фразой «спроси в фоне …», "
+            "узнать состояние и забрать ответ позже. "
+            "В приложении открой «Команды», чтобы найти пример и вставить его в чат. "
+            "Для новой темы скажи: имя ассистента, начни новый диалог."
         ),
         "browser": (
             "Браузер: открой ютуб, закрой вкладку, обнови страницу, "
@@ -805,7 +888,8 @@ def build_help_text(topic: str = "general") -> str:
         ),
         "voice": (
             "Голос: повтори, что ты услышала, стоп. "
-            "Если фраза обрезалась, скажи команду короче или ответь на уточнение."
+            "Если фраза обрезалась, скажи команду короче или ответь на уточнение. "
+            "Для нового диалога назови имя ассистента и скажи: начни новый диалог."
         ),
     }
 
@@ -877,6 +961,185 @@ def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int,
 
     return succeeded, len(routine.steps)
 
+
+def _format_upcoming_reminders(reminders, now: datetime | None = None) -> str:
+    """Build a short, factual local-time summary for a voice reminder query."""
+    items = list(reminders)
+    if not items:
+        return "Активных напоминаний нет."
+
+    local_now = (now or datetime.now().astimezone()).astimezone()
+    tomorrow = local_now.date() + timedelta(days=1)
+    summaries = []
+    for item in items[:3]:
+        due = datetime.fromtimestamp(item.due).astimezone()
+        if due.date() == local_now.date():
+            due_text = f"сегодня в {due:%H:%M}"
+        elif due.date() == tomorrow:
+            due_text = f"завтра в {due:%H:%M}"
+        elif due.year == local_now.year:
+            due_text = due.strftime("%d.%m в %H:%M")
+        else:
+            due_text = due.strftime("%d.%m.%Y в %H:%M")
+
+        safe_text = " ".join("".join(char if char.isprintable() else " " for char in item.text).split())
+        if len(safe_text) > 100:
+            safe_text = safe_text[:99].rstrip() + "…"
+        summaries.append(f"{due_text} — {safe_text or 'напоминание без текста'}")
+
+    response = "Ближайшие напоминания: " + "; ".join(summaries) + "."
+    if len(items) > 3:
+        response += " Полный список есть в разделе «Задачи» приложения Astra."
+    return response
+
+
+def _format_background_task_status(task_id: int, status: str) -> str:
+    names = {
+        "queued": "в очереди",
+        "running": "выполняется",
+        "cancelling": "отменяется",
+        "done": "готов",
+        "failed": "завершился с ошибкой",
+        "cancelled": "отменён",
+    }
+    return f"Фоновый запрос {task_id}: {names.get(status, 'состояние неизвестно')}."
+
+
+def _notify_background_task(task_id: int, status: str) -> None:
+    label = "готов" if status == "done" else "завершился с ошибкой"
+    message = (
+        f"Фоновый запрос {task_id} {label}. Чтобы получить результат, "
+        f"скажи: результат фонового запроса {task_id}."
+    )
+    if not emit_event("assistant", message):
+        print(f"Астра: {message}")
+
+
+def _handle_background_action(action: AssistantAction, ctx: TurnContext) -> bool:
+    manager = ctx.background_tasks
+    if manager is None:
+        ctx.respond("Фоновые запросы сейчас недоступны в этом режиме запуска Astra.")
+        return True
+
+    if action.type == ActionType.BACKGROUND_ASK:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: спроси в фоне и затем вопрос. Например: спроси в фоне, как устроен DNS.")
+            return True
+        try:
+            task_id = manager.start(action.query)
+        except BackgroundTaskError as exc:
+            ctx.respond(str(exc))
+            return True
+        ctx.respond(
+            f"Фоновый запрос {task_id} поставлен в очередь. Он использует только локальный Ollama. "
+            f"Вопрос и ответ хранятся только в памяти до закрытия Astra. "
+            f"Результат можно запросить фразой: результат фонового запроса {task_id}."
+        )
+        return True
+
+    if action.type == ActionType.BACKGROUND_LIST:
+        if action.target:
+            try:
+                task_id = int(action.target)
+            except (TypeError, ValueError):
+                ctx.respond("Назови номер фонового запроса.")
+                return True
+            task = manager.get_result(task_id)
+            ctx.respond(
+                _format_background_task_status(task_id, task.status)
+                if task is not None
+                else f"Фоновый запрос {task_id} не найден."
+            )
+            return True
+        tasks = manager.list_tasks(limit=5)
+        if not tasks:
+            ctx.respond("Фоновых запросов пока нет.")
+        else:
+            ctx.respond("Последние фоновые запросы: " + " ".join(
+                _format_background_task_status(task.id, task.status)
+                for task in tasks
+            ))
+        return True
+
+    if action.type == ActionType.BACKGROUND_CANCEL:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: отмени фоновый запрос и его номер.")
+            return True
+        try:
+            task_id = int(action.target)
+        except (TypeError, ValueError):
+            ctx.respond("Назови номер фонового запроса для отмены.")
+            return True
+        status = manager.cancel(task_id)
+        messages = {
+            "cancelled": f"Фоновый запрос {task_id} отменён.",
+            "cancelling": f"Останавливаю фоновый запрос {task_id}.",
+            "done": f"Запрос {task_id} уже готов. Его результат можно получить голосом.",
+            "failed": f"Запрос {task_id} уже завершился с ошибкой.",
+            "not_found": f"Фоновый запрос {task_id} не найден.",
+        }
+        ctx.respond(messages.get(status, f"Запрос {task_id} уже не выполняется."))
+        return True
+
+    if action.type == ActionType.BACKGROUND_RESULT:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: результат фонового запроса и его номер.")
+            return True
+        try:
+            task_id = int(action.target)
+        except (TypeError, ValueError):
+            ctx.respond("Назови номер фонового запроса.")
+            return True
+        task = manager.get_result(task_id)
+        if task is None:
+            ctx.respond(f"Фоновый запрос {task_id} не найден.")
+        elif task.status == "done":
+            ctx.respond(task.result)
+        elif task.status == "failed":
+            ctx.respond(task.error or "Локальная модель не смогла ответить.")
+        else:
+            ctx.respond(_format_background_task_status(task_id, task.status))
+        return True
+
+    return False
+
+
+def _personal_memory_store(settings: Settings):
+    from src.personal_memory import PersonalMemory
+
+    path = (
+        Path(settings.personal_memory_path)
+        if settings.personal_memory_path
+        else Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+        / "AstraVoiceAssistant"
+        / "memory.sqlite"
+    )
+    return PersonalMemory(path)
+
+
+def _safe_memory_voice_text(value: str, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    clean = " ".join(
+        "".join(char if char.isprintable() else " " for char in value).split()
+    )
+    return clean[:limit].rstrip()
+
+
+def _format_personal_memory_list(notes) -> str:
+    items = list(notes)
+    if not items:
+        return "Сохранённых заметок нет."
+    summaries = []
+    for note in items[:3]:
+        title = _safe_memory_voice_text(note.title, 100)
+        summaries.append(title or "заметка без названия")
+    response = "Сохранённые заметки: " + "; ".join(summaries) + "."
+    if len(items) > 3:
+        response += " Другую заметку можно найти голосом по фрагменту её текста."
+    return response
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -891,16 +1154,381 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         ctx.respond(decision.reason)
         return True
 
+    if action.type in {
+        ActionType.BACKGROUND_ASK,
+        ActionType.BACKGROUND_LIST,
+        ActionType.BACKGROUND_CANCEL,
+        ActionType.BACKGROUND_RESULT,
+    }:
+        return _handle_background_action(action, ctx)
+
+    if action.type == ActionType.FILE_SEARCH:
+        if action.target == FILE_SEARCH_HELP_TARGET:
+            ctx.respond("Скажи: найди файл и его имя. Сначала выбери папку в разделе «Файлы» приложения Astra.")
+            return True
+        if not callable(ctx.file_search):
+            ctx.respond("Голосовой поиск доступен в настольном приложении. Сначала выбери папку в разделе «Файлы».")
+            return True
+        try:
+            result = ctx.file_search(action.query)
+        except (ValueError, TypeError):
+            ctx.respond("Скажи имя файла без пути. Можно искать фрагмент от двух до 120 символов.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось выполнить поиск в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Голосовой поиск недоступен. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» приложения Astra и выбери папку для поиска.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Поиск отменён: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.respond("Поиск не завершился. Попробуй уточнить имя файла.")
+        elif (
+            type(result.get("count")) is not int
+            or not 0 <= result.get("count") <= 500
+            or not isinstance(result.get("files"), list)
+            or len(result.get("files")) > 3
+            or any(not isinstance(value, str) for value in result.get("files", []))
+        ):
+            ctx.respond("Получен некорректный ответ от поиска файлов.")
+        elif result.get("count") == 0:
+            ctx.respond("В выбранной папке файл с таким именем не найден.")
+        else:
+            files = [
+                _safe_memory_voice_text(value, 180)
+                for value in result.get("files", [])[:3]
+                if isinstance(value, str)
+            ]
+            count = result.get("count", 0)
+            count_text = "не менее 500" if count >= 500 else str(count)
+            count_word = "совпадение" if count == 1 else "совпадения" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "совпадений"
+            if files:
+                ctx.respond(f"Нашла {count_text} {count_word}: " + "; ".join(files) + ".")
+            else:
+                ctx.respond(f"Нашла {count_text} {count_word} по имени. Подробный список открой в окне «Файлы».")
+        return True
+
+    if action.type == ActionType.FILE_OPEN:
+        if action.target == FILE_OPEN_HELP_TARGET:
+            ctx.respond("Скажи: открой файл и его точное имя с расширением. Сначала выбери папку в разделе «Файлы».")
+            return True
+        if not callable(ctx.file_open):
+            ctx.respond("Голосовое открытие доступно в настольном приложении. Сначала выбери папку в разделе «Файлы».")
+            return True
+        try:
+            result = ctx.file_open(action.query)
+        except (ValueError, TypeError):
+            ctx.respond("Назови точное имя файла с расширением, без пути.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось проверить файл в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Голосовое открытие недоступно. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» приложения Astra и выбери папку.")
+        elif result.get("status") == "not_found":
+            ctx.respond("Файл с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.respond("В выбранной папке несколько файлов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.respond("Этот тип файла или ссылка не разрешены для голосового открытия.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Открытие отменено: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.respond("Не удалось открыть файл. Проверь, что для него установлено приложение.")
+        elif (
+            type(result.get("count")) is not int
+            or result.get("count") != 1
+            or not isinstance(result.get("files"), list)
+            or len(result.get("files")) != 1
+            or not isinstance(result.get("files")[0], str)
+        ):
+            ctx.respond("Получен некорректный ответ от открытия файла.")
+        else:
+            filename = _safe_memory_voice_text(result["files"][0].replace("\\", "/").rsplit("/", 1)[-1], 160)
+            ctx.respond(f"Открываю файл {filename}.")
+        return True
+
+    if action.type == ActionType.FILE_READ:
+        if action.target == FILE_READ_HELP_TARGET:
+            ctx.respond("Скажи: прочитай файл и его точное имя с расширением. Чтобы озвучить следующий отрывок, скажи: прочитай дальше. Сначала выбери папку в разделе «Файлы» и отдельно включи чтение документов в разрешениях.")
+            return True
+        if not ctx.settings.tts_enabled or ctx.settings.tts_engine != "sapi" or not callable(ctx.speak_private_local):
+            ctx.respond("Приватное чтение документов доступно только с включённым локальным голосом Windows SAPI в голосовом режиме.")
+            return True
+        if not callable(ctx.file_read):
+            ctx.respond("Голосовое чтение доступно в настольном приложении. Открой раздел «Файлы» и выбери папку.")
+            return True
+        continuing = action.target == FILE_READ_NEXT_TARGET
+        if continuing:
+            if (
+                not ctx.state.private_read_filename
+                or not ctx.state.private_read_workspace_generation
+                or time.monotonic() - ctx.state.private_read_updated_at > 180.0
+            ):
+                ctx.state.clear_private_read_cursor()
+                ctx.respond("Нет активного чтения для продолжения. Назови документ командой «прочитай файл».")
+                return True
+            filename = ctx.state.private_read_filename
+            offset = ctx.state.private_read_offset
+            workspace_generation = ctx.state.private_read_workspace_generation
+        else:
+            ctx.state.clear_private_read_cursor()
+            filename = action.query
+            offset = 0
+            workspace_generation = 0
+        try:
+            result = (
+                ctx.file_read(filename, offset=offset, workspace_generation=workspace_generation)
+                if continuing else ctx.file_read(filename)
+            )
+        except (ValueError, TypeError):
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Назови точное имя документа с расширением, без пути.")
+            return True
+        except Exception:
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Не удалось проверить документ в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Голосовое чтение недоступно. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Сначала открой раздел «Файлы» и выбери папку для чтения.")
+        elif result.get("status") == "not_found":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Документ с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("В выбранной папке несколько документов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Этот тип файла или ссылка не разрешены для голосового чтения.")
+        elif result.get("status") == "cancelled":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Чтение отменено: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.state.clear_private_read_cursor()
+            ctx.respond("Не удалось прочитать выбранный файл. Поддерживаются текстовые, конфигурационные, исходные и офисные файлы.")
+        else:
+            from src.desktop_file_search import make_file_read_result
+            try:
+                checked = make_file_read_result(
+                    result.get("request_id"), result.get("status"),
+                    result.get("filename"), result.get("text"),
+                    result.get("next_offset", 0), result.get("has_more", False),
+                    result.get("workspace_generation", 0),
+                )
+            except (TypeError, ValueError):
+                ctx.state.clear_private_read_cursor()
+                ctx.respond("Получен некорректный ответ чтения документа.")
+                return True
+            filename = checked["filename"]
+            if checked["has_more"]:
+                ctx.state.private_read_filename = filename
+                ctx.state.private_read_offset = checked["next_offset"]
+                ctx.state.private_read_updated_at = time.monotonic()
+                ctx.state.private_read_workspace_generation = checked["workspace_generation"]
+            else:
+                ctx.state.clear_private_read_cursor()
+            part_label = "следующую часть" if continuing else "начало документа"
+            ctx.respond(f"Читаю {part_label} «{filename}» локальным голосом. Текст не попадёт в чат.")
+            try:
+                spoken = ctx.speak_private_local(checked["text"])
+            except Exception as exc:
+                ctx.logger.error("Приватная локальная озвучка завершилась ошибкой (%s)", type(exc).__name__)
+                spoken = False
+            if not spoken:
+                ctx.state.clear_private_read_cursor()
+                ctx.respond("Не удалось озвучить документ локальным голосом. Проверь настройки Windows SAPI и русский голос.")
+            elif continuing and not checked["has_more"]:
+                ctx.respond("В документе больше нет текста.")
+        return True
+
+    if action.type == ActionType.FILE_QUESTION:
+        if action.target == FILE_QUESTION_HELP_TARGET:
+            ctx.respond("Скажи: спроси по файлу, точное имя с расширением, вопрос, затем сам вопрос. Например: спроси по файлу договор.pdf вопрос какие сроки указаны. Нужны открытая выбранная папка, разрешение «Вопросы по выбранным файлам», локальный Ollama и голос Windows SAPI.")
+            return True
+        if not ctx.settings.tts_enabled or ctx.settings.tts_engine != "sapi" or not callable(ctx.speak_private_local):
+            ctx.respond("Приватный ответ по документу доступен только с включённым локальным голосом Windows SAPI. Содержимое документа не появится в чате и не отправится облачному синтезу.")
+            return True
+        if not ctx.settings.llm_enabled or ctx.settings.llm_provider != "ollama":
+            ctx.respond("Вопросы по документам работают только с выбранным локальным Ollama. Облачная модель для этого навыка не используется.")
+            return True
+        if not callable(ctx.file_question):
+            ctx.respond("Голосовой вопрос по файлу доступен в настольном приложении. Открой раздел «Файлы» и выбери папку.")
+            return True
+        try:
+            result = ctx.file_question(action.target, action.query, timeout_seconds=50.0)
+        except (ValueError, TypeError):
+            ctx.respond("Назови точное имя одного документа и задай вопрос длиной до 1000 символов.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось выполнить локальный вопрос по выбранному файлу.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Локальный вопрос по файлу недоступен. Открой Astra и выбери папку в разделе «Файлы».")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "not_found":
+            ctx.respond("Документ с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.respond("В выбранной папке есть несколько документов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.respond("Этот тип файла не поддерживается для вопросов. Выбери поддерживаемый текстовый, конфигурационный, исходный или офисный файл.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Вопрос отменён, потому что выбранная папка была закрыта.")
+        elif result.get("status") == "local_model_required":
+            ctx.respond("Включи разрешение «Вопросы по выбранным файлам» и выбери локальный Ollama в настройках.")
+        elif result.get("status") != "ok":
+            ctx.respond("Локальная модель не ответила за 40 секунд. Облачный запрос не выполнялся.")
+        else:
+            from src.desktop_file_search import make_file_question_result
+            try:
+                checked = make_file_question_result(
+                    result.get("request_id"), result.get("status"),
+                    result.get("filename"), result.get("answer"),
+                )
+            except (TypeError, ValueError):
+                ctx.respond("Получен некорректный ответ на локальный вопрос.")
+                return True
+            try:
+                spoken = ctx.speak_private_local(checked["answer"])
+            except Exception as exc:
+                ctx.logger.error("Приватная локальная озвучка ответа по документу завершилась ошибкой (%s)", type(exc).__name__)
+                spoken = False
+            if spoken:
+                ctx.respond("Ответ по документу произнесён локально. Текст не добавлен в чат.")
+            else:
+                ctx.respond("Не удалось произнести ответ локально. Проверь настройки Windows SAPI и русский голос.")
+        return True
+
+    if action.type == ActionType.MEMORY_NOTE:
+        if not ctx.settings.personal_memory_enabled or ctx.settings.llm_provider != "ollama":
+            ctx.respond("Личная память выключена. Включи её в настройках и выбери локальный Ollama.")
+            return True
+
+        try:
+            memory = _personal_memory_store(ctx.settings)
+            if action.target == MEMORY_LIST_TARGET:
+                ctx.respond(_format_personal_memory_list(memory.search()))
+                return True
+
+            if action.target == MEMORY_SAVE_TARGET:
+                note_text = _safe_memory_voice_text(action.query, 3000)
+                if len(note_text) < 3:
+                    ctx.respond("Скажи: Астра, запомни, что нужно сохранить.")
+                    return True
+                title = note_text.split(". ", 1)[0].split("! ", 1)[0].split("? ", 1)[0]
+                title = _safe_memory_voice_text(title, 100) or "Голосовая заметка"
+                if title != note_text and len(title) == 100:
+                    title = title[:-1].rstrip() + "…"
+                memory.add(title, note_text)
+                ctx.respond(f"Запомнила: {title}. Заметка сохранена локально.")
+                return True
+
+            if action.target.startswith(MEMORY_SEARCH_PREFIX):
+                query = action.target[len(MEMORY_SEARCH_PREFIX):]
+                matches = memory.search(query)
+                if not matches:
+                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                elif len(matches) > 1:
+                    ctx.respond("Нашла несколько заметок. Скажи более точный фрагмент.")
+                else:
+                    note = matches[0]
+                    title = _safe_memory_voice_text(note.title, 100) or "без названия"
+                    content = _safe_memory_voice_text(note.text, 240)
+                    suffix = "…" if len(" ".join(note.text.split())) > len(content) else ""
+                    ctx.respond(f"В заметке «{title}»: {content}{suffix}")
+                return True
+
+            if action.target.startswith(MEMORY_FORGET_PREFIX):
+                query = action.target[len(MEMORY_FORGET_PREFIX):]
+                matches = memory.search(query)
+                if not matches:
+                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                elif len(matches) > 1:
+                    ctx.respond("Нашла несколько заметок. Скажи более точное название; ничего не удалено.")
+                elif memory.forget(matches[0].id):
+                    title = _safe_memory_voice_text(matches[0].title, 100) or "без названия"
+                    ctx.respond(f"Заметка «{title}» забыта.")
+                else:
+                    ctx.respond("Заметка уже удалена или изменилась.")
+                return True
+
+            ctx.respond("Скажи: запомни, что…, покажи сохранённые заметки, найди заметку про… или забудь заметку про…")
+        except Exception:
+            ctx.respond("Не удалось безопасно изменить локальную память. Проверь раздел «Память» приложения Astra.")
+        return True
+
+    if action.type == ActionType.CLEAR_DIALOGUE:
+        ctx.ai_client.clear_dialogue()
+        clear_pending(ctx.state)
+        clear_context(ctx.state)
+        ctx.state.last_recognized_text = ""
+        emit_event("conversation_reset", "")
+        ctx.respond(
+            "Начала новый диалог. Контекст текущего разговора и незавершённое "
+            "уточнение очищены; сохранённые заметки и напоминания не затронуты."
+        )
+        return True
+
     if action.type == ActionType.REMINDER:
-        if action.target == "__cancel_reminder_ui__":
+        if action.target == CANCEL_REMINDER_UI_TARGET:
             ctx.respond("Отменить напоминание можно в разделе «Задачи» приложения Astra.")
+            return True
+        if action.target.startswith(CANCEL_REMINDER_MATCH_PREFIX):
+            query = action.target[len(CANCEL_REMINDER_MATCH_PREFIX):]
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                result, title = ReminderStore(path).cancel_matching(query)
+                if result == "cancelled":
+                    safe_title = " ".join("".join(char if char.isprintable() else " " for char in title).split())
+                    if len(safe_title) > 100:
+                        safe_title = safe_title[:99].rstrip() + "…"
+                    ctx.respond(f"Напоминание «{safe_title}» отменено.")
+                elif result == "ambiguous":
+                    ctx.respond("Нашла несколько таких напоминаний. Скажи более точное название или попроси показать список.")
+                else:
+                    ctx.respond("Активное напоминание с таким названием не найдено.")
+            except Exception:
+                ctx.respond("Не удалось отменить это напоминание. Проверь раздел «Задачи» приложения Astra.")
+            return True
+        if action.target == LIST_UPCOMING_REMINDERS_TARGET:
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                reminders = ReminderStore(path).list_upcoming(limit=4)
+                ctx.respond(_format_upcoming_reminders(reminders))
+            except Exception:
+                ctx.respond("Не удалось прочитать напоминания. Проверь раздел «Задачи» приложения Astra.")
+            return True
+        if action.target == CANCEL_NEXT_REMINDER_TARGET:
+            try:
+                from src.reminders import ReminderStore
+                path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "reminders.sqlite"
+                cancelled = ReminderStore(path).cancel_next()
+                ctx.respond(
+                    "Ближайшее активное напоминание отменено."
+                    if cancelled else "Активных напоминаний для отмены нет."
+                )
+            except Exception:
+                ctx.respond("Не удалось отменить ближайшее напоминание. Проверь раздел «Задачи».")
             return True
         try:
             data = json.loads(action.target)
             if not isinstance(data, dict) or set(data) != {"delay", "text"} or type(data["delay"]) is not int or not 1 <= data["delay"] <= 30 * 86400 or not isinstance(data["text"], str) or not 1 <= len(data["text"]) <= 1000:
                 raise ValueError("Invalid reminder")
         except (ValueError, TypeError):
-            ctx.respond("Скажи: Астра, напомни через пять минут сделать перерыв.")
+            ctx.respond(
+                "Скажи: Астра, напомни через пять минут сделать перерыв, "
+                "или Астра, напомни завтра в 9 позвонить."
+            )
             return True
         try:
             from src.reminders import ReminderStore
@@ -1181,8 +1809,34 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.ASK_LLM:
         question = action.query or action.text
         emit_event("state", "Думаю · локальная модель" if ctx.settings.llm_provider == "ollama" else "Думаю · выбранный ИИ")
-        result = ctx.ai_client.ask(question)
-        ctx.respond(result.message)
+        spoken_parts = []
+        can_stream_speech = (
+            ctx.settings.llm_provider == "ollama"
+            and not ctx.settings.ollama_thinking_enabled
+            and callable(ctx.speak_partial)
+            and callable(ctx.respond_streamed)
+        )
+        if can_stream_speech:
+            cleaner = getattr(ctx.ai_client, "_clean_llm_answer", None)
+            first_sentence = FirstSentenceBuffer(cleaner if callable(cleaner) else None)
+
+            def speak_first_sentence(chunk: str) -> None:
+                sentence = first_sentence.feed(chunk)
+                if not sentence:
+                    return
+                try:
+                    if ctx.speak_partial(sentence):
+                        spoken_parts.append(sentence)
+                except Exception:
+                    ctx.logger.warning("Early local speech failed; final answer will use regular TTS")
+
+            result = ctx.ai_client.ask(question, on_text_chunk=speak_first_sentence)
+        else:
+            result = ctx.ai_client.ask(question)
+        if spoken_parts and callable(ctx.respond_streamed):
+            ctx.respond_streamed(result.message, " ".join(spoken_parts))
+        else:
+            ctx.respond(result.message)
         return True
 
     if action.type == ActionType.EMPTY:
@@ -1222,7 +1876,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             pending_action.confidence,
         )
         should_continue = handle_action(pending_action, ctx)
-        if pending_action.type != ActionType.VOICE_FEEDBACK and raw_text:
+        if pending_action.type not in {ActionType.VOICE_FEEDBACK, ActionType.CLEAR_DIALOGUE} and raw_text:
             ctx.state.last_recognized_text = raw_text
         return should_continue
 
@@ -1272,7 +1926,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
     clear_pending(ctx.state)
     should_continue = handle_action(action, ctx)
 
-    if action.type != ActionType.VOICE_FEEDBACK and raw_text:
+    if action.type not in {ActionType.VOICE_FEEDBACK, ActionType.CLEAR_DIALOGUE} and raw_text:
         ctx.state.last_recognized_text = raw_text
 
     return should_continue
@@ -1326,6 +1980,7 @@ def run_text_mode(
     logger: logging.Logger,
     routines: RoutineController | None = None,
     media: MediaController | None = None,
+    background_tasks: BackgroundTaskManager | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -1380,6 +2035,7 @@ def run_text_mode(
         state=state,
         routines=routines,
         media=media,
+        background_tasks=background_tasks,
     )
 
     while True:
@@ -1447,7 +2103,12 @@ def run_voice_mode(
     logger: logging.Logger,
     routines: RoutineController | None = None,
     media: MediaController | None = None,
+    background_tasks: BackgroundTaskManager | None = None,
 ) -> None:
+    from src.desktop_file_search import DesktopFileSearchChannel
+
+    file_search_channel = DesktopFileSearchChannel()
+    file_search_channel.start_control_reader()
     voice = VoiceIO(settings=settings, logger=logger)
     if voice.microphone is None:
         emit_event("error", "Микрофон недоступен. Выбери текстовый режим.")
@@ -1464,6 +2125,7 @@ def run_voice_mode(
     voice.speak(f"{settings.assistant_name} запущена.")
 
     state = TurnState()
+    partial_audio: dict[str, object] = {"event": None, "text": "", "ok": False}
 
     def respond(message: str) -> None:
         shortened = shorten_voice_response(message, settings)
@@ -1471,6 +2133,54 @@ def run_voice_mode(
             logger.info("Voice response shortened. full_characters=%s shortened_characters=%s", len(message), len(shortened))
         state.last_assistant_response = shortened
         voice.speak(shortened)
+
+    def speak_partial(sentence: str) -> bool:
+        if partial_audio["event"] is not None:
+            return False
+        completed = threading.Event()
+        partial_audio.update({"event": completed, "text": sentence, "ok": False})
+
+        def speak_in_background() -> None:
+            try:
+                partial_audio["ok"] = voice.speak_audio_only(sentence, manage_state=False)
+            except Exception:
+                logger.warning("Early Edge TTS playback failed")
+            finally:
+                completed.set()
+
+        emit_event("state", "Говорю · ответ ещё формируется")
+        try:
+            threading.Thread(
+                target=speak_in_background,
+                name="AstraEarlySpeech",
+                daemon=True,
+            ).start()
+        except Exception:
+            partial_audio.update({"event": None, "text": "", "ok": False})
+            emit_event("state", "Думаю · локальная модель")
+            return False
+        return True
+
+    def respond_streamed(message: str, spoken_prefix: str) -> None:
+        shortened = shorten_voice_response(message, settings)
+        state.last_assistant_response = shortened
+        voice.publish_response(shortened)
+        completed = partial_audio.get("event")
+        budget = min(60.0, max(1.0, settings.tts_playback_timeout_seconds))
+        finished = not isinstance(completed, threading.Event) or completed.wait(budget + 2.0)
+        partial_ok = finished and bool(partial_audio.get("ok"))
+        if partial_ok and shortened.startswith(spoken_prefix):
+            remainder = shortened[len(spoken_prefix):].strip()
+            if remainder:
+                voice.speak_audio_only(remainder, manage_state=False)
+        elif finished:
+            if completed is not None and partial_ok:
+                logger.warning("Streamed speech prefix did not match final response; replaying complete answer")
+            voice.speak_audio_only(shortened, manage_state=False)
+        else:
+            logger.error("Early TTS exceeded its playback budget; skipping overlapping final audio")
+        partial_audio.update({"event": None, "text": "", "ok": False})
+        emit_event("state", "Голосовой режим · микрофон включён")
 
     def get_follow_up() -> str:
         follow_up = voice.listen_once(
@@ -1502,6 +2212,18 @@ def run_voice_mode(
         state=state,
         routines=routines,
         media=media,
+        file_search=file_search_channel.search,
+        file_open=file_search_channel.open_exact,
+        file_read=file_search_channel.read_exact,
+        file_question=file_search_channel.ask_file,
+        speak_private_local=getattr(voice, "speak_private_local", None),
+        speak_partial=(
+            speak_partial
+            if settings.tts_enabled and settings.tts_engine == "edge"
+            else None
+        ),
+        respond_streamed=respond_streamed,
+        background_tasks=background_tasks,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -1533,6 +2255,11 @@ def run_voice_mode(
             if parsed.type == CommandType.NO_WAKE:
                 logger.info("Wake ignored: no wake phrase; characters=%s", len(wake_result.text))
                 continue
+
+            if settings.ollama_warmup_on_wake:
+                prewarm = getattr(ai_client, "prewarm_local_async", None)
+                if callable(prewarm):
+                    prewarm()
 
             if parsed.type == CommandType.WAKE_ONLY:
                 logger.info("wake_detected: wake_only")
@@ -1679,6 +2406,11 @@ def main() -> int:
     )
     ai_client = AIClient(settings=settings, logger=logger)
     media = MediaController(keyboard=keyboard, app_manager=app_manager, logger=logger)
+    background_tasks = BackgroundTaskManager(
+        settings=settings,
+        logger=logger,
+        on_complete=_notify_background_task,
+    )
 
     try:
         if args.stt_test:
@@ -1686,12 +2418,12 @@ def main() -> int:
         elif args.text:
             run_text_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines, media,
+                windows, ai_client, logger, routines, media, background_tasks,
             )
         else:
             run_voice_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines, media,
+                windows, ai_client, logger, routines, media, background_tasks,
             )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
@@ -1701,6 +2433,8 @@ def main() -> int:
         logger.exception("Критическая непредвиденная ошибка")
         print("Произошла критическая ошибка. Подробности смотри в logs/app.log")
         return 1
+    finally:
+        background_tasks.shutdown()
 
     logger.info("Ассистент завершил работу")
     return 0

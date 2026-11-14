@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools.build_paths import configure_temp_directory, resolve_build_paths
 from tools.validate_package import _secret_findings, _unsafe_path_reason, _forbidden_file_reason
 
 
@@ -54,7 +56,14 @@ def main():
             raise ValueError("CRC failure: " + bad)
         print(f"DESKTOP_PACKAGE_PASS: {len(entries)} entries, no forbidden files or known secret patterns")
         if args.test_relocated:
-            destination = Path(tempfile.mkdtemp(prefix="astra relocated preview "))
+            paths = resolve_build_paths(ROOT)
+            paths.temp_root.mkdir(parents=True, exist_ok=True)
+            configure_temp_directory(paths.temp_root)
+            destination_temp = tempfile.TemporaryDirectory(
+                prefix="astra-relocated-preview-", dir=paths.temp_root
+            )
+            atexit.register(destination_temp.cleanup)
+            destination = Path(destination_temp.name)
             archive.extractall(destination)
             from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
             ui_exe = destination / folder / "Astra.exe"
@@ -71,8 +80,21 @@ def main():
                     "src.portable_reminder_backup" not in modules or
                     "src.action_audit" not in modules or "src.action_audit_ui" not in modules or
                     "src.desktop_theme" not in modules or "src.scroll_section" not in modules or
+                    "src.command_catalog" not in modules or "src.command_catalog_ui" not in modules or
+                    "src.desktop_file_search" not in modules or
                     "PIL.Image" not in modules or "PIL.ImageOps" not in modules or "PIL.ImageTk" not in modules):
                 raise ValueError("A file reader, plan interpreter, plan UI, avatar preview or onboarding module is missing from Astra.exe")
+            runtime_exe = destination / folder / "runtime" / "AstraRuntime" / "AstraRuntime.exe"
+            runtime_embedded = CArchiveReader(str(runtime_exe))
+            runtime_probe = destination / ".astra-runtime-package-pyz-check.pyz"
+            runtime_probe.write_bytes(runtime_embedded.extract("PYZ.pyz"))
+            runtime_modules = ZlibArchiveReader(str(runtime_probe)).toc
+            runtime_probe.unlink()
+            if ("src.ai_client" not in runtime_modules or "src.llm_providers" not in runtime_modules or
+                    "src.desktop_file_search" not in runtime_modules):
+                raise ValueError("The runtime model client, provider adapter or voice file-access module is missing from AstraRuntime.exe")
+            print("PACKAGED_LLM_PROVIDER_PASS: AIClient and the shared provider adapters are embedded in AstraRuntime.exe")
+            print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open/read IPC and workspace checks are embedded in AstraRuntime.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")
             print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded preview/execution UI are embedded in Astra.exe")
             print("PACKAGED_AVATAR_LAUNCHER_PASS: the packaged UI includes the isolated 3D preview launcher")

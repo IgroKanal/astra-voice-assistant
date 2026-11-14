@@ -25,6 +25,16 @@ class ActionType(str, Enum):
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
     REMINDER = "reminder"
+    MEMORY_NOTE = "memory_note"
+    FILE_SEARCH = "file_search"
+    FILE_OPEN = "file_open"
+    FILE_READ = "file_read"
+    FILE_QUESTION = "file_question"
+    BACKGROUND_ASK = "background_ask"
+    BACKGROUND_LIST = "background_list"
+    BACKGROUND_CANCEL = "background_cancel"
+    BACKGROUND_RESULT = "background_result"
+    CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -299,6 +309,14 @@ def short_confirmation(action: AssistantAction) -> str:
         return "Сейчас скажу."
     if action.type == ActionType.ROUTINE:
         return "Запускаю режим."
+    if action.type == ActionType.BACKGROUND_ASK:
+        return "Запускаю фоновый запрос."
+    if action.type in {
+        ActionType.BACKGROUND_LIST,
+        ActionType.BACKGROUND_CANCEL,
+        ActionType.BACKGROUND_RESULT,
+    }:
+        return "Сейчас проверю."
     if action.type == ActionType.HELP:
         return "Показываю команды."
     if action.type == ActionType.GET_TIME:

@@ -22,6 +22,17 @@ try {
     & git diff --check
     if ($LASTEXITCODE -ne 0) { throw "git diff --check failed" }
 
+    $buildTempRoot = & $python -c "from pathlib import Path; from tools.build_paths import resolve_build_paths; print(resolve_build_paths(Path.cwd()).temp_root)"
+    if ($LASTEXITCODE -ne 0 -or -not $buildTempRoot) {
+        throw "Could not resolve the safe temporary directory for the Astra gate"
+    }
+    $buildTempRoot = $buildTempRoot.Trim()
+    New-Item -ItemType Directory -Path $buildTempRoot -Force | Out-Null
+    $env:TEMP = $buildTempRoot
+    $env:TMP = $buildTempRoot
+    $env:TMPDIR = $buildTempRoot
+    Write-Host "Python gate temporary directory: $buildTempRoot"
+
     & $python -m compileall main.py src tools
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 

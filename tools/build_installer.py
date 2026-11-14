@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.build_paths import resolve_build_paths, using_temp_directory
+
 
 def locate_iscc() -> Path:
     candidates = []
@@ -35,14 +37,20 @@ def locate_iscc() -> Path:
     )
 
 
+def installer_binary_version(version: str) -> str:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(?:dev|beta)\.(\d+))?", version)
+    if match is None:
+        raise ValueError("Preview manifest has an unsupported Astra version")
+    major, minor, patch, prerelease_number = match.groups()
+    return ".".join((major, minor, patch, prerelease_number or "0"))
+
+
 def compile_installer(source_dir: Path, output_dir: Path, iscc: Path | None = None) -> Path:
     source = source_dir.resolve(strict=True)
     manifest_path = source / "build_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     version = str(manifest.get("version", ""))
-    version_parts = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-(?:dev|beta)\.(\d+)", version)
-    if version_parts is None:
-        raise ValueError("Preview manifest has an unsupported Astra version")
+    binary_version = installer_binary_version(version)
     if manifest.get("contains_personal_env") is not False:
         raise ValueError("Preview manifest does not explicitly exclude a personal .env")
     from src.version import PRODUCT_VERSION
@@ -64,11 +72,14 @@ def compile_installer(source_dir: Path, output_dir: Path, iscc: Path | None = No
         str(compiler),
         f"/DPreviewDir={source.as_posix()}",
         f"/DAstraVersion={version}",
-        f"/DAstraBinaryVersion={'.'.join(version_parts.groups())}",
+        f"/DAstraBinaryVersion={binary_version}",
         f"/O{output}",
         str(script),
     ]
-    subprocess.run(args, check=True, cwd=ROOT)
+    paths = resolve_build_paths(ROOT)
+    paths.temp_root.mkdir(parents=True, exist_ok=True)
+    with using_temp_directory(paths.temp_root):
+        subprocess.run(args, check=True, cwd=ROOT)
     installer = output / f"Astra-Setup-{version}.exe"
     if not installer.is_file() or installer.stat().st_size < 1024 * 1024:
         raise RuntimeError("ISCC returned successfully but the installer is missing or incomplete")

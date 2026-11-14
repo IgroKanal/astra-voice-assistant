@@ -53,6 +53,20 @@ class AuditTests(unittest.TestCase):
                 audit.record("api_key=secret-value", "succeeded")
             self.assertNotIn(b"secret-value", path.read_bytes())
 
+    def test_clear_overwrites_event_data_and_is_repeatable(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+            path = Path(temp) / "audit.sqlite"
+            audit = ActionAudit(path)
+            audit.record("files.copy", "succeeded")
+            audit.record("window_control", "blocked")
+            self.assertEqual(audit.clear(), 2)
+            self.assertEqual(audit.recent(), [])
+            self.assertEqual(audit.clear(), 0)
+            raw = path.read_bytes()
+            self.assertNotIn(b"files.copy", raw)
+            self.assertNotIn(b"window_control", raw)
+            self.assertNotIn(b"succeeded", raw)
+
     def test_future_schema_is_preserved(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
             path = Path(temp) / "future.sqlite"

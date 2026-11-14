@@ -4,7 +4,8 @@ import math
 
 from src.task_router import ActionType, AssistantAction
 
-ALL_SCOPES = ("apps", "browser", "folders", "media", "windows", "typing", "system", "vpn", "routines", "reminders")
+ALL_SCOPES = ("apps", "browser", "folders", "media", "windows", "typing", "system", "vpn", "routines", "reminders", "memory", "files", "open_files", "read_files", "ask_files")
+DEFAULT_SCOPES = tuple(scope for scope in ALL_SCOPES if scope not in {"files", "open_files", "read_files", "ask_files"})
 SCOPES = {
     ActionType.OPEN_APP: "apps", ActionType.CLOSE_APP: "apps",
     ActionType.OPEN_URL: "browser", ActionType.WEB_SEARCH: "browser",
@@ -13,6 +14,11 @@ SCOPES = {
     ActionType.SCREENSHOT: "system", ActionType.SYSTEM_INFO: "system",
     ActionType.VPN_CONTROL: "vpn", ActionType.ROUTINE: "routines",
     ActionType.REMINDER: "reminders",
+    ActionType.MEMORY_NOTE: "memory",
+    ActionType.FILE_SEARCH: "files",
+    ActionType.FILE_OPEN: "open_files",
+    ActionType.FILE_READ: "read_files",
+    ActionType.FILE_QUESTION: "ask_files",
 }
 ROUTER_ALLOWED = {ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.WEB_SEARCH, ActionType.GET_TIME, ActionType.GET_DATE, ActionType.HELP, ActionType.ASK_LLM, ActionType.UNKNOWN, ActionType.EMPTY}
 TRUSTED_LOCAL = {"local", "local_parser", "pending_followup", "routine"}
@@ -27,7 +33,7 @@ class PolicyDecision:
 
 
 class ActionPolicy:
-    def __init__(self, allowed_scopes=ALL_SCOPES):
+    def __init__(self, allowed_scopes=DEFAULT_SCOPES):
         self.allowed = frozenset(allowed_scopes)
 
     def check(self, action: AssistantAction) -> PolicyDecision:

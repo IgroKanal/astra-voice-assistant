@@ -55,7 +55,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import main as astra_main
 from main import TurnContext, TurnState, process_turn
 from src.config_loader import Settings
-from src.command_parser import CommandType, extract_command_after_wake
+from src.command_parser import CommandType, extract_command_after_wake, parse_command_text
 from src.keyboard_controller import KeyboardActionResult
 from src.task_router import AssistantAction, ActionType
 
@@ -64,6 +64,12 @@ class FakeAIClient:
     def __init__(self) -> None:
         self.route_called = False
         self.ask_called = False
+        self.dialogue = [{"role": "user", "content": "старый вопрос"}]
+        self.dialogue_cleared = False
+
+    def clear_dialogue(self) -> None:
+        self.dialogue.clear()
+        self.dialogue_cleared = True
 
     def route_command(self, text: str, apps=None) -> AssistantAction:
         self.route_called = True
@@ -150,7 +156,7 @@ def make_context() -> tuple[TurnContext, list[str], FakeAIClient, FakeAppManager
 
 
 def test_no_wake_command_like_blocks_before_router() -> None:
-    for text in ("открой блокнот", "закрой блокнот", "открой youtube.com", "нажми enter"):
+    for text in ("открой блокнот", "закрой блокнот", "открой youtube.com", "нажми enter", "новый диалог"):
         ctx, responses, ai, app_manager = make_context()
         process_turn(text, ctx)
         assert responses == ["Назови меня перед этой командой."], (text, responses)
@@ -158,6 +164,39 @@ def test_no_wake_command_like_blocks_before_router() -> None:
         assert not ai.ask_called, text
         assert not app_manager.opened, text
         assert not app_manager.closed, text
+
+
+def test_new_dialogue_is_exact_local_wake_required_action() -> None:
+    for phrase in (
+        "начни новый диалог",
+        "начать новый диалог",
+        "новый диалог",
+        "очисти диалог",
+        "сбрось контекст разговора",
+    ):
+        assert parse_command_text(phrase).type == CommandType.CLEAR_DIALOGUE, phrase
+    assert parse_command_text("давай обсудим новый диалог").type != CommandType.CLEAR_DIALOGUE
+
+    ctx, responses, ai, _app_manager = make_context()
+    ctx.state.pending_kind = "open"
+    ctx.state.pending_created_at = 1.0
+    ctx.state.last_context_kind = "app"
+    ctx.state.last_context_target = "notepad"
+    emitted: list[tuple[str, str]] = []
+    original_emit = astra_main.emit_event
+    astra_main.emit_event = lambda kind, text: emitted.append((kind, text)) or True
+    try:
+        process_turn("Астра, начни новый диалог", ctx)
+    finally:
+        astra_main.emit_event = original_emit
+
+    assert ai.dialogue_cleared and ai.dialogue == []
+    assert ctx.state.pending_kind == ""
+    assert ctx.state.last_context_kind == ""
+    assert ctx.state.last_context_target == ""
+    assert emitted == [("conversation_reset", "")], emitted
+    assert responses and "сохранённые заметки и напоминания не затронуты" in responses[-1]
+    assert not ai.route_called and not ai.ask_called
 
 
 def test_wake_extraction_core_cases() -> None:
@@ -173,6 +212,9 @@ def test_wake_extraction_core_cases() -> None:
 
     parsed = extract_command_after_wake("Астра, статус VPN", wake_phrases)
     assert parsed.type == CommandType.VPN_CONTROL and parsed.target == "status", parsed
+
+    parsed = extract_command_after_wake("Астра, начни новый диалог", wake_phrases)
+    assert parsed.type == CommandType.CLEAR_DIALOGUE, parsed
 
 
 def test_pending_followup_accepts_bare_and_wake_prefixed_answer() -> None:
@@ -206,10 +248,12 @@ def test_wake_only_runtime_markers_present() -> None:
     assert "Слушаю уточнение" in main_py
     assert "wake_allow_direct_command" in main_py
     assert "Wake-only voice runtime enabled" in main_py
+    assert "начни новый диалог" in astra_main.build_help_text("voice")
 
 
 def main() -> None:
     test_no_wake_command_like_blocks_before_router()
+    test_new_dialogue_is_exact_local_wake_required_action()
     test_wake_extraction_core_cases()
     test_pending_followup_accepts_bare_and_wake_prefixed_answer()
     test_wake_only_runtime_markers_present()

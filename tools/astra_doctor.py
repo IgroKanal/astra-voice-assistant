@@ -127,6 +127,8 @@ def check_settings() -> int:
     print(f"vpn_tunnel_service_name={settings.vpn_tunnel_service_name}")
     print(f"tts_cache_prewarm_max_new_phrases={settings.tts_cache_prewarm_max_new_phrases}")
     print(f"tts_cache_generation_timeout_seconds={settings.tts_cache_generation_timeout_seconds}")
+    print(f"stt_recognition_timeout_seconds={settings.stt_recognition_timeout_seconds}")
+    print(f"tts_playback_timeout_seconds={settings.tts_playback_timeout_seconds}")
     print(f"voice_runtime_mode={settings.voice_runtime_mode}")
     print(f"wake_only_mode={settings.wake_only_mode}")
     print(f"wake_response_text={settings.wake_response_text}")
@@ -162,6 +164,14 @@ def check_settings() -> int:
 
     if settings.tts_cache_prewarm_max_new_phrases > 1:
         fail("TTS_CACHE_PREWARM_MAX_NEW_PHRASES must be at most 1")
+        problems += 1
+
+    if not 3 <= settings.stt_recognition_timeout_seconds <= 60:
+        fail("STT_RECOGNITION_TIMEOUT_SECONDS must be between 3 and 60")
+        problems += 1
+
+    if not 5 <= settings.tts_playback_timeout_seconds <= 60:
+        fail("TTS_PLAYBACK_TIMEOUT_SECONDS must be between 5 and 60")
         problems += 1
 
     if settings.voice_runtime_mode not in {"wake_only", "wake", "wake-only", "legacy"}:

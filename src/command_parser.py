@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import re
 import json
+import math
+import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timedelta, time as datetime_time
 from enum import Enum
 
 
@@ -26,6 +29,16 @@ class CommandType(str, Enum):
     VOICE_FEEDBACK = "voice_feedback"
     ROUTINE = "routine"
     REMINDER = "reminder"
+    MEMORY_NOTE = "memory_note"
+    FILE_SEARCH = "file_search"
+    FILE_OPEN = "file_open"
+    FILE_READ = "file_read"
+    FILE_QUESTION = "file_question"
+    BACKGROUND_ASK = "background_ask"
+    BACKGROUND_LIST = "background_list"
+    BACKGROUND_CANCEL = "background_cancel"
+    BACKGROUND_RESULT = "background_result"
+    CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
     EXIT = "exit"
@@ -37,6 +50,7 @@ class ParsedCommand:
     type: CommandType
     text: str = ""
     target: str = ""
+    query: str = ""
 
 
 # v0.9.3: sentinel-таргет для CLOSE_APP, когда команда явно про закрытие
@@ -49,6 +63,74 @@ AMBIGUOUS_CHAT_TARGET = "__ambiguous_chat__"
 MIXED_COMMAND_TARGET = "__mixed_command__"
 AMBIGUOUS_MUSIC_TARGET = "__ambiguous_music__"
 UNRESOLVED_CONTEXT_TARGET = "__context_unavailable__"
+CANCEL_REMINDER_UI_TARGET = "__cancel_reminder_ui__"
+CANCEL_NEXT_REMINDER_TARGET = "__cancel_next_reminder__"
+CANCEL_REMINDER_MATCH_PREFIX = "__cancel_reminder_match__:"
+LIST_UPCOMING_REMINDERS_TARGET = "__list_upcoming_reminders__"
+MEMORY_HELP_TARGET = "__memory_help__"
+MEMORY_LIST_TARGET = "__memory_list__"
+MEMORY_SAVE_TARGET = "__memory_save__"
+MEMORY_SEARCH_PREFIX = "__memory_search__:"
+MEMORY_FORGET_PREFIX = "__memory_forget__:"
+FILE_SEARCH_HELP_TARGET = "__file_search_help__"
+FILE_OPEN_HELP_TARGET = "__file_open_help__"
+FILE_READ_HELP_TARGET = "__file_read_help__"
+FILE_READ_NEXT_TARGET = "__file_read_next__"
+FILE_QUESTION_HELP_TARGET = "__file_question_help__"
+BACKGROUND_TASK_HELP_TARGET = "__background_task_help__"
+LIST_REMINDER_PHRASES = frozenset({
+    "покажи напоминания",
+    "покажи мои напоминания",
+    "какие у меня напоминания",
+    "какие у меня есть напоминания",
+    "какие у меня ближайшие напоминания",
+    "какие ближайшие напоминания",
+    "назови ближайшие напоминания",
+    "что у меня с напоминаниями",
+})
+REMINDER_WEEKDAYS = {
+    "понедельник": 0,
+    "вторник": 1,
+    "среду": 2,
+    "четверг": 3,
+    "пятницу": 4,
+    "субботу": 5,
+    "воскресенье": 6,
+}
+_CLOCK_WORD_VALUES = {"ноль": 0, "нуль": 0, "час": 1}
+_CLOCK_ONES = {
+    1: ("один", "одна"),
+    2: ("два", "две"),
+    3: ("три",),
+    4: ("четыре",),
+    5: ("пять",),
+    6: ("шесть",),
+    7: ("семь",),
+    8: ("восемь",),
+    9: ("девять",),
+}
+_CLOCK_TEENS = (
+    "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+    "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать",
+)
+_CLOCK_TENS = {20: "двадцать", 30: "тридцать", 40: "сорок", 50: "пятьдесят"}
+for _number, _forms in _CLOCK_ONES.items():
+    for _form in _forms:
+        _CLOCK_WORD_VALUES[_form] = _number
+for _number, _word in enumerate(_CLOCK_TEENS, start=10):
+    _CLOCK_WORD_VALUES[_word] = _number
+for _tens, _word in _CLOCK_TENS.items():
+    _CLOCK_WORD_VALUES[_word] = _tens
+    for _ones, _forms in _CLOCK_ONES.items():
+        for _form in _forms:
+            _CLOCK_WORD_VALUES[f"{_word} {_form}"] = _tens + _ones
+_CLOCK_NUMBER_PATTERN = "(?:\\d{1,2}|" + "|".join(
+    re.escape(value) for value in sorted(_CLOCK_WORD_VALUES, key=lambda value: (-len(value), value))
+) + ")"
+
+
+def _parse_clock_number(value: str) -> int | None:
+    return int(value) if value.isdigit() else _CLOCK_WORD_VALUES.get(value)
 
 
 OPEN_PREFIXES = (
@@ -140,6 +222,14 @@ HELP_COMMANDS = (
     "возможности",
     "твои возможности",
     "как пользоваться",
+)
+
+CLEAR_DIALOGUE_COMMANDS = (
+    "начни новый диалог",
+    "начать новый диалог",
+    "новый диалог",
+    "очисти диалог",
+    "сбрось контекст разговора",
 )
 
 
@@ -804,6 +894,32 @@ COMMAND_HINTS = (
     *TIME_COMMANDS,
     *DATE_COMMANDS,
     *HELP_COMMANDS,
+    *CLEAR_DIALOGUE_COMMANDS,
+    "запомни",
+    "запиши в память",
+    "сохрани в памяти",
+    "покажи сохраненные заметки",
+    "какие заметки ты помнишь",
+    "что ты помнишь",
+    "забудь заметку",
+    "найди заметку",
+    "найди файл",
+    "найди документ",
+    "поищи файл",
+    "поищи документ",
+    "поиск файла",
+    "поиск документа",
+    "открой файл",
+    "открой документ",
+    "прочитай файл",
+    "прочитай документ",
+    "прочитай дальше",
+    "продолжи чтение",
+    "продолжи читать",
+    "следующая часть",
+    "спроси по файлу",
+    "зачитай файл",
+    "зачитай документ",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
@@ -958,7 +1074,17 @@ def is_command_like_text(text: str) -> bool:
     if not normalized:
         return False
 
-    if re.search(r"(?<!\w)(напомни|отмени напоминание)(?!\w)", normalized):
+    if re.search(r"(?<!\w)(напомни|отмени (?:ближайшее |следующее )?напоминание)(?!\w)", normalized):
+        return True
+    if any(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) for phrase in LIST_REMINDER_PHRASES):
+        return True
+    if re.search(
+        r"(?<!\w)(?:спроси|ответь) в фоне(?!\w)|"
+        r"(?<!\w)(?:покажи|список|статус|какие) фоновые (?:запросы|задачи)(?!\w)|"
+        r"(?<!\w)(?:статус|результат) фонового запроса(?!\w)|"
+        r"(?<!\w)отмени фонов(?:ый запрос|ую задачу)(?!\w)",
+        normalized,
+    ):
         return True
 
     hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
@@ -1392,15 +1518,343 @@ def _parse_system_info(normalized: str) -> ParsedCommand | None:
     return None
 
 
+def _memory_match_tail(raw_text: str, prefix: str) -> str | None:
+    raw = _whitespace_re.sub(" ", raw_text.strip())
+    match = re.match(
+        rf"^{re.escape(prefix)}(?:[\s,.:;!?\-]+|$)",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return raw[match.end():].strip(" \t\r\n,.:;!?")
+
+
+def _parse_memory_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    list_phrases = {
+        "покажи сохраненные заметки",
+        "покажи мои заметки",
+        "какие заметки ты помнишь",
+        "что ты запомнила",
+        "что ты запомнил",
+        "список сохраненных заметок",
+        "список заметок",
+        "покажи личную память",
+    }
+    if normalized in list_phrases:
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_LIST_TARGET)
+
+    searches = (
+        "найди заметку про",
+        "найди в памяти",
+        "покажи заметку про",
+        "что я просил запомнить про",
+        "что я просила запомнить про",
+        "что ты помнишь про",
+        "что ты помнишь о",
+    )
+    for prefix in searches:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 3 <= len(query) <= 160 and all(char.isprintable() for char in query):
+                return ParsedCommand(
+                    CommandType.MEMORY_NOTE,
+                    text=normalized,
+                    target=MEMORY_SEARCH_PREFIX + query,
+                )
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    forgets = (
+        "забудь заметку про",
+        "удали из памяти заметку про",
+        "забудь про",
+    )
+    for prefix in forgets:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 3 <= len(query) <= 160 and all(char.isprintable() for char in query):
+                return ParsedCommand(
+                    CommandType.MEMORY_NOTE,
+                    text=normalized,
+                    target=MEMORY_FORGET_PREFIX + query,
+                )
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    save_match = re.match(
+        r"^\s*(?:пожалуйста\s+)?(?:запомни(?:\s*,?\s*что)?|запиши\s+в\s+память|сохрани\s+в\s+памяти)\s*[:\-]?\s*(.*)$",
+        raw_text.strip(),
+        flags=re.IGNORECASE,
+    )
+    if save_match is not None:
+        note = _whitespace_re.sub(" ", save_match.group(1).strip())
+        if 3 <= len(note) <= 3000 and all(char.isprintable() for char in note):
+            return ParsedCommand(CommandType.MEMORY_NOTE, text=note, target=MEMORY_SAVE_TARGET)
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    if normalized in {"запомни", "запиши в память", "сохрани в памяти", "забудь заметку", "найди заметку"}:
+        return ParsedCommand(CommandType.MEMORY_NOTE, text=normalized, target=MEMORY_HELP_TARGET)
+
+    return None
+
+
+def _parse_file_search_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = (
+        "найди файл в папке",
+        "найди документ в папке",
+        "найди файл",
+        "найди документ",
+        "поищи файл",
+        "поищи документ",
+        "поиск файла",
+        "поиск документа",
+    )
+    for prefix in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 2 <= len(query) <= 120 and all(char.isprintable() for char in query) and not any(char in query for char in "/\\:"):
+                return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=query)
+            return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=FILE_SEARCH_HELP_TARGET)
+    if normalized in {"найди файл", "найди документ", "поищи файл", "поищи документ", "поиск файла", "поиск документа"}:
+        return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=FILE_SEARCH_HELP_TARGET)
+    return None
+
+
+def _parse_file_open_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = ("открой файл", "открой документ")
+    for prefix in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            filename = tail or ""
+            if 2 <= len(filename) <= 120 and all(char.isprintable() for char in filename) and not any(char in filename for char in "/\\:"):
+                return ParsedCommand(CommandType.FILE_OPEN, text=normalized, target=filename)
+            return ParsedCommand(CommandType.FILE_OPEN, text=normalized, target=FILE_OPEN_HELP_TARGET)
+    return None
+
+
+def _parse_file_read_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    if normalized in {"прочитай дальше", "продолжи чтение", "продолжи читать", "следующая часть"}:
+        return ParsedCommand(CommandType.FILE_READ, text=normalized, target=FILE_READ_NEXT_TARGET)
+    prefixes = ("прочитай файл", "прочитай документ", "зачитай файл", "зачитай документ")
+    for prefix in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            filename = tail or ""
+            if 2 <= len(filename) <= 120 and all(char.isprintable() for char in filename) and not any(char in filename for char in "/\\:"):
+                return ParsedCommand(CommandType.FILE_READ, text=normalized, target=filename)
+            return ParsedCommand(CommandType.FILE_READ, text=normalized, target=FILE_READ_HELP_TARGET)
+    return None
+
+
+def _parse_file_question_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefix = "спроси по файлу"
+    tail = _memory_match_tail(raw_text, prefix)
+    if normalized != prefix and tail is None:
+        return None
+    if not tail:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    parts = re.split(r"\s+вопрос\s+", tail, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    filename, question = (part.strip() for part in parts)
+    valid_filename = (
+        2 <= len(filename) <= 120
+        and all(char.isprintable() and unicodedata.category(char) not in {"Cf", "Cs"} for char in filename)
+        and not any(char in filename for char in "/\\:")
+    )
+    valid_question = (
+        2 <= len(question) <= 1000
+        and all(char.isprintable() and unicodedata.category(char) not in {"Cf", "Cs"} for char in question)
+    )
+    if not valid_filename or not valid_question:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=filename, query=question)
+
+
+def _parse_background_task_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    if normalized in {
+        "покажи фоновые запросы",
+        "покажи фоновые задачи",
+        "список фоновых запросов",
+        "список фоновых задач",
+        "статус фоновых запросов",
+        "статус фоновых задач",
+        "какие фоновые запросы",
+    }:
+        return ParsedCommand(CommandType.BACKGROUND_LIST, text=normalized)
+
+    ask_prefixes = ("спроси в фоне", "ответь в фоне")
+    for prefix in ask_prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            if not tail or not (
+                2 <= len(tail) <= 1000
+                and all(
+                    char.isprintable()
+                    and unicodedata.category(char) not in {"Cf", "Cs"}
+                    for char in tail
+                )
+            ):
+                return ParsedCommand(
+                    CommandType.BACKGROUND_ASK,
+                    text=normalized,
+                    target=BACKGROUND_TASK_HELP_TARGET,
+                )
+            return ParsedCommand(
+                CommandType.BACKGROUND_ASK,
+                text=normalized,
+                query=tail,
+            )
+
+    if normalized in {"отмени фоновый запрос", "отмени фоновую задачу"}:
+        return ParsedCommand(
+            CommandType.BACKGROUND_CANCEL,
+            text=normalized,
+            target=BACKGROUND_TASK_HELP_TARGET,
+        )
+
+    cancel_match = re.fullmatch(r"отмени фонов(?:ый запрос|ую задачу) ([1-9]\d{0,8})", normalized)
+    if cancel_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_CANCEL,
+            text=normalized,
+            target=cancel_match[1],
+        )
+
+    if normalized == "статус фонового запроса":
+        return ParsedCommand(
+            CommandType.BACKGROUND_LIST,
+            text=normalized,
+        )
+
+    if normalized == "результат фонового запроса":
+        return ParsedCommand(
+            CommandType.BACKGROUND_RESULT,
+            text=normalized,
+            target=BACKGROUND_TASK_HELP_TARGET,
+        )
+
+    status_match = re.fullmatch(r"статус фонового запроса ([1-9]\d{0,8})", normalized)
+    if status_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_LIST,
+            text=normalized,
+            target=status_match[1],
+        )
+
+    result_match = re.fullmatch(r"результат фонового запроса ([1-9]\d{0,8})", normalized)
+    if result_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_RESULT,
+            text=normalized,
+            target=result_match[1],
+        )
+
+    return None
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
     if not normalized:
         return ParsedCommand(CommandType.EMPTY)
 
+    if normalized in CLEAR_DIALOGUE_COMMANDS:
+        return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
+
+    background_task_command = _parse_background_task_command(text, normalized)
+    if background_task_command is not None:
+        return background_task_command
+
+    file_question = _parse_file_question_command(text, normalized)
+    if file_question is not None:
+        return file_question
+
+    file_search = _parse_file_search_command(text, normalized)
+    if file_search is not None:
+        return file_search
+
+    file_open = _parse_file_open_command(text, normalized)
+    if file_open is not None:
+        return file_open
+
+    file_read = _parse_file_read_command(text, normalized)
+    if file_read is not None:
+        return file_read
+
+    memory_command = _parse_memory_command(text, normalized)
+    if memory_command is not None:
+        return memory_command
+
+    if normalized in LIST_REMINDER_PHRASES:
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=LIST_UPCOMING_REMINDERS_TARGET)
+    if normalized in {"отмени ближайшее напоминание", "отмени следующее напоминание"}:
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_NEXT_REMINDER_TARGET)
+    if normalized.startswith("отмени напоминание "):
+        query = normalized[len("отмени напоминание "):].strip()
+        if 2 <= len(query) <= 160:
+            return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_MATCH_PREFIX + query)
     if normalized.startswith("отмени напоминание"):
-        return ParsedCommand(CommandType.REMINDER, text=normalized, target="__cancel_reminder_ui__")
+        return ParsedCommand(CommandType.REMINDER, text=normalized, target=CANCEL_REMINDER_UI_TARGET)
     if normalized.startswith("напомни"):
+        dated_match = re.fullmatch(
+            r"напомни(?: мне)? (сегодня|завтра|послезавтра) в ("
+            + _CLOCK_NUMBER_PATTERN
+            + r")(?: ("
+            + _CLOCK_NUMBER_PATTERN
+            + r"))? (.+)",
+            normalized,
+        )
+        if dated_match:
+            day_offsets = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
+            hour = _parse_clock_number(dated_match[2])
+            minute = _parse_clock_number(dated_match[3] or "0")
+            text_to_remember = dated_match[4]
+            if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+                local_now = datetime.now().astimezone()
+                target_date = local_now.date() + timedelta(days=day_offsets[dated_match[1]])
+                target_local = datetime.combine(target_date, datetime_time(hour, minute)).astimezone()
+                delay = math.ceil(target_local.timestamp() - local_now.timestamp())
+                if 1 <= delay <= 30 * 86400:
+                    return ParsedCommand(
+                        CommandType.REMINDER,
+                        text=normalized,
+                        target=json.dumps({"delay": delay, "text": text_to_remember}, ensure_ascii=False),
+                    )
+            return ParsedCommand(CommandType.REMINDER, text=normalized)
+
+        weekday_match = re.fullmatch(
+            r"напомни(?: мне)? (?:в|во) (понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье) в ("
+            + _CLOCK_NUMBER_PATTERN
+            + r")(?: ("
+            + _CLOCK_NUMBER_PATTERN
+            + r"))? (.+)",
+            normalized,
+        )
+        if weekday_match:
+            hour = _parse_clock_number(weekday_match[2])
+            minute = _parse_clock_number(weekday_match[3] or "0")
+            text_to_remember = weekday_match[4]
+            if hour is not None and minute is not None and 0 <= hour <= 23 and 0 <= minute <= 59 and len(text_to_remember) <= 1000:
+                local_now = datetime.now().astimezone()
+                days_ahead = (REMINDER_WEEKDAYS[weekday_match[1]] - local_now.weekday()) % 7
+                target_date = local_now.date() + timedelta(days=days_ahead)
+                target_time = datetime_time(hour, minute)
+                target_local = datetime.combine(target_date, target_time).astimezone()
+                if target_local.timestamp() <= local_now.timestamp():
+                    target_date += timedelta(days=7)
+                    target_local = datetime.combine(target_date, target_time).astimezone()
+                delay = math.ceil(target_local.timestamp() - local_now.timestamp())
+                if 1 <= delay <= 30 * 86400:
+                    return ParsedCommand(
+                        CommandType.REMINDER,
+                        text=normalized,
+                        target=json.dumps({"delay": delay, "text": text_to_remember}, ensure_ascii=False),
+                    )
+            return ParsedCommand(CommandType.REMINDER, text=normalized)
+
         match = re.fullmatch(r"напомни(?: мне)? через (\d{1,5}|одну|один|два|две|три|четыре|пять|десять|пятнадцать|двадцать|тридцать|шестьдесят) (секунд[уы]?|минут[уы]?|час(?:а|ов)?) (.+)", normalized)
         if match:
             words = {"одну": 1, "один": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5, "десять": 10, "пятнадцать": 15, "двадцать": 20, "тридцать": 30, "шестьдесят": 60}

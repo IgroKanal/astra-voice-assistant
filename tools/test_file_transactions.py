@@ -130,6 +130,32 @@ class FileTransactionTests(unittest.TestCase):
         with self.assertRaises(WorkspaceDenied):
             self.files.execute(preview.token)
 
+    def test_another_process_cannot_overwrite_a_concurrently_created_destination(self):
+        import os
+        import subprocess
+
+        self.files.grant_write(True)
+        target = self.root / "contended.txt"
+        preview = self.files.preview("create", destination=target.name, text="Astra must not replace this")
+        native_link = os.link
+        peer_program = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('created by another process', encoding='utf-8')"
+
+        def create_target_before_atomic_link(_temporary, destination):
+            peer = subprocess.run(
+                [sys.executable, "-c", peer_program, str(destination)],
+                check=False, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(peer.returncode, 0, peer.stderr)
+            return native_link(_temporary, destination)
+
+        with patch("src.file_transactions.os.link", side_effect=create_target_before_atomic_link):
+            with self.assertRaisesRegex(WorkspaceDenied, "появился во время операции"):
+                self.files.execute(preview.token)
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "created by another process")
+        self.assertEqual(self.files.history()[0]["status"], "cancelled")
+        self.assertEqual(list(self.root.glob(".astra-*.tmp")), [])
+
     def test_undo_never_overwrites_user_edits(self):
         self.files.grant_write(True)
         identity = self.files.execute(self.files.preview("create", destination="x.txt", text="initial").token)

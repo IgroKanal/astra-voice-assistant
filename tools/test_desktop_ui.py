@@ -47,6 +47,70 @@ class DesktopUITests(unittest.TestCase):
             app.bridge.stop()
             window.destroy()
 
+    def test_new_dialogue_button_waits_for_runtime_reset_event(self):
+        window = tk.Tk()
+        window.withdraw()
+        app = AstraDesktop(window)
+        sent = []
+        try:
+            self.pump(window, lambda: not app.busy and app.bridge.running)
+            app.append("Ты", "старый пользовательский вопрос")
+            app.bridge.send = lambda text: sent.append(text)
+            with patch("astra_desktop.messagebox.askyesno", return_value=True) as confirm:
+                app.new_dialogue()
+            self.assertEqual(confirm.call_count, 1)
+            self.assertEqual(sent, [f"{app.assistant_name}, начни новый диалог"])
+            self.assertIn("старый пользовательский вопрос", app.chat.get("1.0", "end"))
+            app.bridge.emit("conversation_reset", "")
+            self.pump(window, lambda: "старый пользовательский вопрос" not in app.chat.get("1.0", "end"))
+            self.assertEqual(app.chat.get("1.0", "end").strip(), "")
+            app.bridge.emit("assistant", "Начала новый диалог.")
+            self.pump(window, lambda: "Начала новый диалог." in app.chat.get("1.0", "end"))
+        finally:
+            app.bridge.prevent_restart()
+            app.bridge.stop()
+            window.after_cancel(app.poll_timer)
+            window.after_cancel(app.animation_timer)
+            window.destroy()
+
+    def test_command_catalog_search_inserts_without_sending(self):
+        window = tk.Tk()
+        window.withdraw()
+        app = AstraDesktop(window)
+        sent = []
+        app.bridge.send = lambda text: sent.append(text)
+        panel = None
+        try:
+            self.pump(window, lambda: not app.busy and app.bridge.running)
+            panel = app.open_command_catalog()
+            window.update()
+            search = panel.astra_command_search
+            tree = panel.astra_command_tree
+            search.delete(0, "end")
+            search.insert(0, "новый диалог")
+            window.update()
+            rows = tree.get_children()
+            self.assertEqual(rows, ("new_dialogue",))
+            tree.selection_set(rows[0])
+            window.update()
+            self.assertEqual(panel.astra_command_phrase.get(), "начни новый диалог")
+            self.assertIn("контекст текущего разговора", panel.astra_command_description.get())
+            panel.astra_command_insert.invoke()
+            self.assertEqual(app.entry.get(), f"{app.assistant_name}, начни новый диалог")
+            self.assertEqual(sent, [])
+            self.assertFalse(panel.winfo_exists())
+        finally:
+            if panel is not None:
+                try:
+                    panel.destroy()
+                except tk.TclError:
+                    pass
+            app.bridge.prevent_restart()
+            app.bridge.stop()
+            window.after_cancel(app.poll_timer)
+            window.after_cancel(app.animation_timer)
+            window.destroy()
+
     def test_close_during_startup_leaves_no_runtime(self):
         window = tk.Tk()
         window.withdraw()
@@ -114,6 +178,32 @@ class DesktopUITests(unittest.TestCase):
                               if isinstance(item, tk.Toplevel) and item.title().startswith("Astra · просмотр изображения"))
                 self.assertIn("portrait.png", viewer.title())
                 self.assertTrue(image_path.is_file())
+            finally:
+                app.bridge.prevent_restart()
+                app.bridge.stop()
+                window.after_cancel(app.poll_timer)
+                window.after_cancel(app.animation_timer)
+                window.destroy()
+
+    def test_voice_file_search_grant_exists_only_while_selected_folder_window_is_open(self):
+        with tempfile.TemporaryDirectory(prefix="astra-file-session-grant-", dir=ROOT) as temp:
+            window = tk.Tk()
+            window.withdraw()
+            app = AstraDesktop(window)
+            try:
+                self.pump(window, lambda: not app.busy)
+                with patch("astra_desktop.filedialog.askdirectory", return_value=temp):
+                    app.open_files()
+                panel = next(
+                    item for item in window.winfo_children()
+                    if isinstance(item, tk.Toplevel) and item.title().startswith("Astra · файлы")
+                )
+                self.assertIs(app.active_file_panel, panel)
+                self.assertEqual(app.active_file_workspace.root, Path(temp).resolve())
+                panel.destroy()
+                window.update()
+                self.assertIsNone(app.active_file_workspace)
+                self.assertIsNone(app.active_file_panel)
             finally:
                 app.bridge.prevent_restart()
                 app.bridge.stop()
@@ -296,10 +386,20 @@ class DesktopUITests(unittest.TestCase):
         window.withdraw()
         app = AstraDesktop(window)
         try:
-            with patch.object(DesktopSettings, "save", side_effect=AssertionError("No automatic save")):
+            with patch.object(DesktopSettings, "load", return_value=AIProfile()), \
+                 patch.object(DesktopSettings, "save", side_effect=AssertionError("No automatic save")):
                 panel = open_ai_settings(window, app.button, lambda: None)
                 window.update()
                 self.assertTrue(panel.winfo_exists())
+                self.assertEqual(panel.astra_local_router_control.cget("state"), "disabled")
+                self.assertFalse(panel.astra_local_router_variable.get())
+                panel.astra_provider_selector.set("Локальный Ollama · без облака")
+                panel.astra_provider_selector.event_generate("<<ComboboxSelected>>")
+                window.update()
+                self.assertEqual(panel.astra_local_router_control.cget("state"), "normal")
+                self.assertFalse(panel.astra_current_profile().local_command_router_enabled)
+                panel.astra_local_router_variable.set(True)
+                self.assertTrue(panel.astra_current_profile().local_command_router_enabled)
                 labels = set()
                 stack = list(panel.winfo_children())
                 while stack:
@@ -470,6 +570,57 @@ class DesktopUITests(unittest.TestCase):
                 app.bridge.stop()
                 window.after_cancel(app.poll_timer)
                 window.after_cancel(app.animation_timer)
+                window.destroy()
+
+    def test_permission_center_scrolls_cards_and_keeps_actions_visible(self):
+        import os
+        from src.ai_settings_ui import open_ai_settings
+        with tempfile.TemporaryDirectory(prefix="astra-permission-layout-") as temp, patch.dict(os.environ, {"LOCALAPPDATA": temp}):
+            window = tk.Tk()
+            window.withdraw()
+            app = AstraDesktop(window)
+            try:
+                panel = open_ai_settings(window, app.button, lambda: None)
+                panel.geometry("780x668")
+                tabs = next(item for item in panel.winfo_children() if isinstance(item, ttk.Notebook))
+                tabs.select(2)
+                window.update()
+                permissions = tabs.nametowidget(tabs.tabs()[2])
+                self.assertTrue(panel.astra_permission_save.winfo_ismapped())
+                self.assertTrue(panel.astra_permission_backup.winfo_ismapped())
+                self.assertLessEqual(
+                    panel.astra_permission_save.winfo_rooty() + panel.astra_permission_save.winfo_height(),
+                    panel.winfo_rooty() + panel.winfo_height(),
+                )
+                self.assertLessEqual(
+                    panel.astra_permission_backup.winfo_rooty() + panel.astra_permission_backup.winfo_height(),
+                    panel.winfo_rooty() + panel.winfo_height(),
+                )
+                canvas = permissions.astra_canvas
+                self.assertGreater(canvas.winfo_height(), 0)
+                files_card = panel.astra_permission_cards["files"]
+                self.assertEqual(files_card.cget("text"), "Поиск файлов в выбранной папке")
+                open_files_card = panel.astra_permission_cards["open_files"]
+                self.assertEqual(open_files_card.cget("text"), "Открытие файлов голосом")
+                read_files_card = panel.astra_permission_cards["read_files"]
+                self.assertEqual(read_files_card.cget("text"), "Чтение выбранных документов вслух")
+                ask_files_card = panel.astra_permission_cards["ask_files"]
+                self.assertEqual(ask_files_card.cget("text"), "Вопросы по выбранным файлам")
+                last_card = ask_files_card
+                last_card.event_generate("<FocusIn>")
+                window.update()
+                self.assertGreater(canvas.yview()[0], 0)
+                self.assertLessEqual(
+                    last_card.winfo_rooty() + last_card.winfo_height(),
+                    canvas.winfo_rooty() + canvas.winfo_height(),
+                )
+                self.assertTrue(last_card.winfo_ismapped())
+            finally:
+                app.bridge.prevent_restart()
+                app.bridge.stop()
+                window.after_cancel(app.poll_timer)
+                window.after_cancel(app.animation_timer)
+                panel.destroy()
                 window.destroy()
 
     def test_character_selector_changes_default_name_and_persists_choice(self):

@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from io import BytesIO
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +32,237 @@ class WorkspaceTests(unittest.TestCase):
     def test_read_and_search(self):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
+
+    def test_readable_text_formats_support_utf8_utf16_bom_and_cp1251(self):
+        (self.root / "report.csv").write_text("month,amount\nМай,1200", encoding="utf-8")
+        (self.root / "settings.json").write_bytes('{"имя":"Астра"}'.encode("utf-16"))
+        (self.root / "script.ps1").write_bytes("Write-Output 'Привет'".encode("cp1251"))
+        (self.root / "payload.exe").write_text("not a readable document", encoding="utf-8")
+
+        self.assertEqual(self.workspace.read_text("report.csv"), "month,amount\r\nМай,1200")
+        self.assertEqual(self.workspace.read_text("settings.json"), '{"имя":"Астра"}')
+        self.assertEqual(self.workspace.read_text("script.ps1"), "Write-Output 'Привет'")
+        self.assertEqual(self.workspace.checked_readable_file("script.ps1"), self.root / "script.ps1")
+        with self.assertRaisesRegex(WorkspaceDenied, "нельзя открывать"):
+            self.workspace.checked_openable_file("script.ps1")
+        with self.assertRaisesRegex(WorkspaceDenied, "не поддерживается"):
+            self.workspace.read_text("payload.exe")
+
+    def test_html_read_extracts_visible_text_without_granting_open_permission(self):
+        (self.root / "guide.html").write_text(
+            """<!doctype html><html><head><title>Заголовок окна</title></head><body>
+            <main><h1>Привет &amp; мир</h1><p>Текст <strong>для чтения</strong>.</p>
+            <div hidden>скрытый блок</div><span aria-hidden="true">скрытая метка</span>
+            <div style="display: none">скрытый стиль</div>
+            <script>скрытый скрипт</script><script/>скрытая запись</script>
+            <style>.secret { color: red }</style>
+            <template>шаблон</template><noscript>fallback</noscript><svg>vector label</svg>
+            <canvas>canvas fallback</canvas><iframe>встроенное содержимое</iframe>
+            <pre>    code one
+      code two</pre>
+            <p>Конец</p></main></body></html>""",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            self.workspace.read_text("guide.html"),
+            "Привет & мир\nТекст для чтения.\n    code one\n      code two\nКонец",
+        )
+        self.assertEqual(self.workspace.checked_readable_file("guide.html"), self.root / "guide.html")
+        with self.assertRaisesRegex(WorkspaceDenied, "тип файла"):
+            self.workspace.checked_openable_file("guide.html")
+
+        (self.root / "guide.htm").write_text("<p>Короткая версия</p>", encoding="utf-8")
+        self.assertEqual(self.workspace.read_text("guide.htm"), "Короткая версия")
+
+    def test_html_read_honors_cancellation_while_parsing(self):
+        (self.root / "long.html").write_text("<p>строка</p>" * 100, encoding="utf-8")
+        checks = 0
+
+        def cancel_after_some_parser_events():
+            nonlocal checks
+            checks += 1
+            return checks >= 12
+
+        with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+            self.workspace.read_text("long.html", is_cancelled=cancel_after_some_parser_events)
+        self.assertLess(checks, 20)
+
+    def test_file_question_retrieval_can_read_a_selected_csv_without_model_or_network(self):
+        from src.file_rag import FileQuestionSession
+
+        (self.root / "budget.csv").write_text(
+            "month,amount\nMay,1200\nJune,1800", encoding="utf-8"
+        )
+        passages, _digest = FileQuestionSession(
+            self.workspace, "budget.csv"
+        ).retrieve("amount")
+
+        self.assertTrue(passages)
+        self.assertTrue(any("June,1800" in passage.text for passage in passages))
+
+    def test_exact_name_scan_is_bounded_and_reports_duplicate_basenames(self):
+        (self.root / "report.pdf").write_bytes(b"one")
+        self.assertEqual([item.path for item in self.workspace.find_exact_name("report.pdf")], ["report.pdf"])
+        nested = self.root / "nested"
+        nested.mkdir()
+        (nested / "report.pdf").write_bytes(b"two")
+        self.assertEqual(len(self.workspace.find_exact_name("REPORT.PDF")), 2)
+        with patch.object(FileWorkspace, "MAX_VISITED", 1):
+            with self.assertRaisesRegex(WorkspaceDenied, "предел"):
+                self.workspace.find_exact_name("missing.pdf")
+        with self.assertRaises(WorkspaceDenied):
+            self.workspace.find_exact_name("../report.pdf")
+
+    def test_voice_open_rechecks_path_and_allows_only_document_or_media_suffixes(self):
+        (self.root / "report.pdf").write_bytes(b"pdf")
+        (self.root / "script.ps1").write_text("Write-Host unsafe", encoding="utf-8")
+        self.assertEqual(self.workspace.checked_openable_file("report.pdf"), self.root / "report.pdf")
+        with self.assertRaisesRegex(WorkspaceDenied, "тип файла"):
+            self.workspace.checked_openable_file("script.ps1")
+        with self.assertRaises(WorkspaceDenied):
+            self.workspace.checked_openable_file(".env")
+
+    def test_search_stops_when_cancelled_during_directory_scan(self):
+        for index in range(30):
+            (self.root / f"report-{index:02}.txt").write_text("x", encoding="utf-8")
+
+        checks = 0
+
+        def cancel_after_some_entries():
+            nonlocal checks
+            checks += 1
+            return checks >= 8
+
+        with self.assertRaisesRegex(WorkspaceDenied, "отменён"):
+            self.workspace.search("report", is_cancelled=cancel_after_some_entries)
+        self.assertLess(checks, 12)
+
+    def test_search_stops_when_plan_deadline_expires(self):
+        with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+            self.workspace.search("", deadline=time.monotonic() - 1)
+
+    def test_search_checks_deadline_before_returning_empty_results(self):
+        empty_root = self.root / "empty"
+        empty_root.mkdir()
+        empty_workspace = FileWorkspace(empty_root)
+        with patch("src.file_workspace.time.monotonic", side_effect=[1, 1, 51]):
+            with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+                empty_workspace.search("", deadline=50)
+
+    def test_read_text_passes_cancellation_into_document_parser(self):
+        import threading
+
+        (self.root / "report.pdf").write_bytes(b"mock pdf")
+        cancelled = threading.Event()
+
+        def cancel_during_parse(_data, *, check_limits):
+            cancelled.set()
+            check_limits()
+
+        with patch.object(self.workspace, "_extract_pdf", side_effect=cancel_during_parse):
+            with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+                self.workspace.read_text("report.pdf", is_cancelled=cancelled.is_set)
+
+    def test_read_text_rejects_an_expired_plan_deadline(self):
+        with self.assertRaisesRegex(WorkspaceDenied, "лимит времени"):
+            self.workspace.read_text("notes.txt", deadline=time.monotonic() - 1)
+
+    def test_pdf_extraction_checks_limits_between_pages(self):
+        from types import SimpleNamespace
+
+        class Page:
+            def get_contents(self):
+                return None
+
+            def extract_text(self):
+                return "страница"
+
+        pages = [Page(), Page(), Page()]
+        reader = SimpleNamespace(is_encrypted=False, pages=pages)
+        checks = 0
+
+        def stop_before_second_page():
+            nonlocal checks
+            checks += 1
+            if checks >= 5:
+                raise WorkspaceDenied("Чтение отменено пользователем")
+
+        with patch("pypdf.PdfReader", return_value=reader):
+            with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+                FileWorkspace._extract_pdf(b"mock pdf", check_limits=stop_before_second_page)
+        self.assertEqual(checks, 5)
+
+    def test_conversation_reset_event_roundtrips_through_desktop_bridge_parser(self):
+        import json
+        from src.runtime_events import PREFIX
+        line = PREFIX + json.dumps(
+            {"version": 1, "type": "conversation_reset", "text": ""},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(line), ("conversation_reset", ""))
+        unsupported = PREFIX + json.dumps(
+            {"version": 1, "type": "clear_all_user_data", "text": ""},
+        )
+        self.assertIsNone(parse_event(unsupported))
+
+    def test_file_search_event_and_voice_reply_use_strict_protocols(self):
+        import json
+        from src.desktop_file_search import (
+            encode_file_result,
+            make_file_open_request,
+            make_file_open_result,
+            make_file_read_request,
+            make_file_read_result,
+            make_search_request,
+            make_search_result,
+            parse_control_line,
+        )
+        from src.runtime_events import PREFIX
+
+        request = make_search_request("a" * 32, "contract")
+        line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_search_request", "text": json.dumps(request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(line), ("file_search_request", json.dumps(request, ensure_ascii=False)))
+        open_request = make_file_open_request("b" * 32, "report.pdf")
+        open_line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_open_request", "text": json.dumps(open_request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(open_line), ("file_open_request", json.dumps(open_request, ensure_ascii=False)))
+        read_request = make_file_read_request("c" * 32, "memo.txt")
+        read_line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_read_request", "text": json.dumps(read_request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(read_line), ("file_read_request", json.dumps(read_request, ensure_ascii=False)))
+
+        process = Mock()
+        process.poll.return_value = None
+        bridge = DesktopBridge(ROOT)
+        bridge.process = process
+        bridge.mode = "voice"
+        result = make_search_result("a" * 32, "ok", 1, ["Reports\\contract.pdf"])
+        self.assertTrue(bridge.reply_file_search(result))
+        control_line = process.stdin.write.call_args.args[0]
+        self.assertEqual(parse_control_line(control_line.rstrip()), result)
+        read_result = make_file_read_result("c" * 32, "ok", "memo.txt", "private content")
+        self.assertTrue(bridge.reply_file_request(read_result))
+        read_control_line = process.stdin.write.call_args.args[0]
+        self.assertEqual(parse_control_line(read_control_line.rstrip()), read_result)
+        bridge.mode = "text"
+        self.assertFalse(bridge.reply_file_search(result))
+        replacement_process = Mock()
+        replacement_process.poll.return_value = None
+        bridge.process = replacement_process
+        bridge.mode = "voice"
+        self.assertFalse(bridge.reply_file_search(result, expected_process=process))
+        replacement_process.stdin.write.assert_not_called()
+        opened = make_file_open_result("c" * 32, "ok", "report.pdf")
+        self.assertTrue(bridge.reply_file_request(opened, expected_process=replacement_process))
+        self.assertEqual(parse_control_line(replacement_process.stdin.write.call_args.args[0].rstrip()), opened)
 
     def test_traversal_secrets_and_absolute_paths(self):
         for value in ("../notes.txt", str(self.root / "notes.txt"), ".env", "notes.txt:stream"):
@@ -93,6 +324,138 @@ class WorkspaceTests(unittest.TestCase):
             package.writestr("word/document.xml", xml)
         with patch.object(FileWorkspace, "MAX_DOCX_XML_BYTES", 8), self.assertRaisesRegex(WorkspaceDenied, "допустимый основной документ"):
             self.workspace.read_text("large.docx")
+
+    def test_odt_paragraphs_lists_and_tables_are_read_without_execution(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:text><text:h>Руководство</text:h>
+          <text:p>Привет <text:span>мир</text:span><text:s text:c="2"/>!</text:p>
+          <text:list><text:list-item><text:p>Пункт списка</text:p></text:list-item></text:list>
+          <text:deletion><text:p>Удалённый текст</text:p></text:deletion>
+          <office:annotation><text:p>Комментарий</text:p></office:annotation>
+          <table:table><table:table-row><table:table-cell><text:p>Ячейка A</text:p></table:table-cell>
+          <table:table-cell><text:p>Ячейка B</text:p></table:table-cell></table:table-row></table:table>
+          </office:text></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "guide.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("guide.odt"),
+            "Руководство\nПривет мир  !\nПункт списка\nЯчейка A\nЯчейка B",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("guide.odt"), self.root / "guide.odt")
+
+    def test_ods_reads_sheet_values_and_expanded_repeated_cells(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:spreadsheet><table:table table:name="Бюджет">
+          <table:table-row><table:table-cell office:value-type="string"><text:p>Месяц</text:p></table:table-cell>
+          <table:table-cell office:value="1200" table:number-columns-repeated="2"/></table:table-row>
+          <table:table-row><table:table-cell office:value-type="string"><text:p>Май</text:p></table:table-cell>
+          <table:table-cell office:value="1800" office:value-type="float"/></table:table-row>
+          </table:table></office:spreadsheet></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "budget.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("budget.ods"),
+            "[Лист: Бюджет]\nA1: Месяц\nB1: 1200\nC1: 1200\nA2: Май\nB2: 1800",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("budget.ods"), self.root / "budget.ods")
+
+    def test_ods_rejects_a_document_without_extractable_values(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:spreadsheet><table:table table:name="Пустой">
+          <table:table-row><table:table-cell/></table:table-row>
+          </table:table></office:spreadsheet></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "empty.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        with self.assertRaisesRegex(WorkspaceDenied, "нет извлекаемого текста"):
+            self.workspace.read_text("empty.ods")
+
+    def test_odp_preserves_slide_order_and_ignores_speaker_notes(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+          xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0">
+          <office:body><office:presentation>
+          <draw:page draw:name="intro"><draw:frame><draw:text-box><text:p>Первый слайд</text:p>
+          <text:p>Подзаголовок</text:p></draw:text-box></draw:frame>
+          <presentation:notes><text:p>Заметка докладчика</text:p></presentation:notes></draw:page>
+          <draw:page draw:name="second"><text:p>Второй слайд</text:p></draw:page>
+          </office:presentation></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "briefing.odp", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("briefing.odp"),
+            "[Слайд 1]\nПервый слайд\nПодзаголовок\n\n[Слайд 2]\nВторой слайд",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("briefing.odp"), self.root / "briefing.odp")
+
+    def test_odf_entities_and_xml_expansion_limits_are_rejected(self):
+        unsafe = (
+            b'<!DOCTYPE x [<!ENTITY secret "unsafe">]>'
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body/></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "unsafe.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", unsafe)
+        with self.assertRaisesRegex(WorkspaceDenied, "XML-сущности"):
+            self.workspace.read_text("unsafe.odt")
+
+        valid = (
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body><office:text/></office:body></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "large.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", valid)
+        with (
+            patch.object(FileWorkspace, "MAX_OFFICE_XML_BYTES", 8),
+            self.assertRaisesRegex(WorkspaceDenied, "превышает 5 МБ"),
+        ):
+            self.workspace.read_text("large.odt")
+
+        repeated = (
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            b'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">'
+            b'<office:body><office:spreadsheet><table:table><table:table-row>'
+            b'<table:table-cell table:number-columns-repeated="999999999"/>'
+            b'</table:table-row></table:table></office:spreadsheet></office:body></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "repeat.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", repeated)
+        with self.assertRaisesRegex(WorkspaceDenied, "повторение элемента"):
+            self.workspace.read_text("repeat.ods")
+
+    def test_odf_extraction_honors_cancellation_between_paragraphs(self):
+        paragraphs = "".join(f"<text:p>строка {index}</text:p>" for index in range(100))
+        content = (
+            '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text>'
+            + paragraphs
+            + "</office:text></office:body></office:document-content>"
+        ).encode("utf-8")
+        with zipfile.ZipFile(self.root / "long.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+        checks = 0
+
+        def cancel_after_some_paragraphs():
+            nonlocal checks
+            checks += 1
+            return checks >= 18
+
+        with self.assertRaisesRegex(WorkspaceDenied, "Чтение отменено"):
+            self.workspace.read_text("long.odt", is_cancelled=cancel_after_some_paragraphs)
+        self.assertLess(checks, 30)
 
     def test_xlsx_reads_shared_inline_and_cached_formula_values(self):
         parts = {

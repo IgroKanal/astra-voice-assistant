@@ -6,7 +6,12 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.command_parser import CommandType, is_command_like_text, parse_command_text
+from src.command_parser import (
+    CommandType,
+    UNSUPPORTED_CLOSE_TARGET,
+    is_command_like_text,
+    parse_command_text,
+)
 from src.config_loader import AppConfig
 from src.task_router import normalize_url_or_site
 from src.windows_app_manager import WindowsAppManager
@@ -86,7 +91,7 @@ def main() -> int:
     check(manager.find_app("блакнот") is not None, "fuzzy app блакнот -> блокнот failed")
 
     safety_cases = {
-        "закрой окно": CommandType.ASK_LLM,
+        "закрой окно": CommandType.CLOSE_APP,
         "очисти поле": CommandType.ASK_LLM,
         "вырежи": CommandType.ASK_LLM,
         "печать": CommandType.ASK_LLM,
@@ -96,6 +101,8 @@ def main() -> int:
     for text, expected in safety_cases.items():
         parsed = parse_command_text(text)
         check(parsed.type == expected, f"unsafe {text!r}: expected {expected}, got {parsed}")
+        if text == "закрой окно":
+            check(parsed.target == UNSUPPORTED_CLOSE_TARGET, "generic close must stay an unsupported target")
 
     print("v0.8 smoke tests passed")
     return 0

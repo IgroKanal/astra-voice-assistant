@@ -11,7 +11,7 @@ from src.task_router import ActionType, AssistantAction
 class ActionPolicyTests(unittest.TestCase):
     def test_revoked_capabilities_block_every_mapped_action(self):
         policy = ActionPolicy(())
-        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE, ActionType.FILE_SEARCH):
+        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE, ActionType.FILE_SEARCH, ActionType.FILE_OPEN):
             with self.subTest(action=action_type):
                 self.assertFalse(policy.check(AssistantAction(action_type)).allowed)
         self.assertTrue(policy.check(AssistantAction(ActionType.GET_TIME)).allowed)
@@ -24,6 +24,13 @@ class ActionPolicyTests(unittest.TestCase):
         self.assertFalse(ActionPolicy().check(action).allowed)
         reset = AssistantAction(ActionType.CLEAR_DIALOGUE, source="llm_router", confidence=1.0)
         self.assertFalse(ActionPolicy().check(reset).allowed)
+
+    def test_open_file_requires_its_separate_user_grant_and_cannot_come_from_router(self):
+        action = AssistantAction(ActionType.FILE_OPEN, query="report.pdf", source="local_parser")
+        self.assertFalse(ActionPolicy(("files",)).check(action).allowed)
+        self.assertTrue(ActionPolicy(("open_files",)).check(action).allowed)
+        routed = AssistantAction(ActionType.FILE_OPEN, query="report.pdf", source="llm_router", confidence=1.0)
+        self.assertFalse(ActionPolicy(("open_files",)).check(routed).allowed)
 
     def test_shortcuts_respect_appropriate_scope(self):
         self.assertTrue(ActionPolicy(("media",)).check(AssistantAction(ActionType.KEYBOARD_SHORTCUT, target="media_next")).allowed)

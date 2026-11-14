@@ -53,6 +53,11 @@ class FileWorkspace:
     MAX_OFFICE_CELLS = 200_000
     MAX_RESULTS = 500
     MAX_VISITED = 10000
+    OPENABLE_SUFFIXES = {
+        ".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx",
+        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
+        ".mp3", ".wav", ".m4a", ".mp4", ".avi", ".mkv",
+    }
     BLOCKED = {".astra-history", ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube", "appdata", ".venv", "__pycache__", "node_modules"}
     SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx"}
 
@@ -158,6 +163,88 @@ class FileWorkspace:
             pending_directories.extend(children)
         check_limits()
         return result
+
+    def find_exact_name(
+        self,
+        filename: str,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> list[FileEntry]:
+        """Find up to two exact basenames; fail closed if the bounded scan is incomplete."""
+        if (
+            not isinstance(filename, str)
+            or not 2 <= len(filename) <= 120
+            or filename in {".", ".."}
+            or any(not char.isprintable() or char in "/\\:" for char in filename)
+        ):
+            raise WorkspaceDenied("Нужно указать только точное имя файла, без пути")
+
+        def check_limits() -> None:
+            if is_cancelled is not None and is_cancelled():
+                raise WorkspaceDenied("Поиск отменён пользователем")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise WorkspaceDenied("Истёк лимит времени поиска")
+
+        self.checked(".")
+        check_limits()
+        target = filename.casefold()
+        matches: list[FileEntry] = []
+        visited = 0
+        pending_directories = [self.root]
+        while pending_directories:
+            check_limits()
+            directory = pending_directories.pop()
+            children: list[Path] = []
+            try:
+                entries = os.scandir(directory)
+            except OSError as exc:
+                raise WorkspaceDenied("Не удалось полностью проверить выбранную папку") from exc
+            try:
+                with entries:
+                    for entry in entries:
+                        check_limits()
+                        visited += 1
+                        if visited > self.MAX_VISITED:
+                            raise WorkspaceDenied("Превышен предел просмотра папки; файл не открывался")
+                        try:
+                            if entry.name.casefold() == target and entry.is_symlink():
+                                raise WorkspaceDenied("Ссылочный файл с таким именем нельзя открывать")
+                            if entry.is_dir(follow_symlinks=False):
+                                relative = str(Path(entry.path).relative_to(self.root))
+                                try:
+                                    self.checked(relative)
+                                except WorkspaceDenied:
+                                    continue
+                                children.append(Path(entry.path))
+                                continue
+                            if entry.name.casefold() != target:
+                                continue
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                            relative = str(Path(entry.path).relative_to(self.root))
+                            path = self.checked(relative)
+                            if path.is_file():
+                                matches.append(FileEntry(relative, path.stat().st_size))
+                                if len(matches) == 2:
+                                    return matches
+                        except WorkspaceDenied:
+                            raise
+                        except (OSError, ValueError) as exc:
+                            raise WorkspaceDenied("Не удалось полностью проверить выбранную папку") from exc
+            except OSError as exc:
+                raise WorkspaceDenied("Не удалось полностью проверить выбранную папку") from exc
+            children.sort(key=lambda path: path.name.casefold(), reverse=True)
+            pending_directories.extend(children)
+        check_limits()
+        return matches
+
+    def checked_openable_file(self, relative: str) -> Path:
+        """Revalidate one selected file immediately before opening its safe document/media type."""
+        path = self.checked(relative)
+        if not path.is_file() or path.suffix.casefold() not in self.OPENABLE_SUFFIXES:
+            raise WorkspaceDenied("Этот тип файла нельзя открывать голосовой командой")
+        return path
 
     def read_text(
         self,

@@ -7,7 +7,7 @@ import queue
 import subprocess
 import threading
 from src.runtime_events import parse_event
-from src.desktop_file_search import encode_search_result
+from src.desktop_file_search import encode_file_result
 
 _UNSET_PROCESS = object()
 
@@ -92,10 +92,10 @@ class DesktopBridge:
         self.process.stdin.write(text + "\n")
         self.process.stdin.flush()
 
-    def reply_file_search(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
-        line = encode_search_result(result)
+    def reply_file_request(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
+        line = encode_file_result(result)
         if len(line) > 8192:
-            raise ValueError("Результат поиска слишком велик")
+            raise ValueError("Ответ файлового действия слишком велик")
         with self._lock:
             process = self.process
             if (
@@ -109,6 +109,10 @@ class DesktopBridge:
             process.stdin.write(line)
             process.stdin.flush()
         return True
+
+    def reply_file_search(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
+        """Compatibility wrapper for callers that only reply to a search request."""
+        return self.reply_file_request(result, expected_process=expected_process)
 
     def stop(self) -> None:
         with self._lock:

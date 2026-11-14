@@ -12,7 +12,11 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
 from src.desktop_bridge import DesktopBridge
-from src.desktop_file_search import make_search_result, parse_search_request
+from src.desktop_file_search import (
+    make_file_open_result,
+    make_search_result,
+    parse_file_request,
+)
 from src.file_workspace import FileWorkspace
 from src.personal_memory import PersonalMemory
 from src.skill_executor import ActionPlan, SkillCall, SkillExecutor
@@ -522,9 +526,17 @@ class AstraDesktop:
                 cancellation.set()
 
     def _handle_file_search_request(self, text):
+        self._handle_file_request(text, "search")
+
+    def _handle_file_open_request(self, text):
+        self._handle_file_request(text, "open")
+
+    def _handle_file_request(self, text, expected_operation):
         try:
-            request = parse_search_request(text)
+            operation, request = parse_file_request(text)
         except ValueError:
+            return
+        if operation != expected_operation:
             return
         request_id = request["request_id"]
         query = request["query"]
@@ -534,8 +546,13 @@ class AstraDesktop:
             panel = self.active_file_panel
             generation = self._file_search_generation
             if workspace is None or panel is None or not panel.winfo_exists():
-                self.bridge.reply_file_search(
-                    make_search_result(request_id, "no_workspace"),
+                result = (
+                    make_file_open_result(request_id, "no_workspace")
+                    if operation == "open"
+                    else make_search_result(request_id, "no_workspace")
+                )
+                self.bridge.reply_file_request(
+                    result,
                     expected_process=runtime_process,
                 )
                 return
@@ -548,16 +565,31 @@ class AstraDesktop:
 
             status = "ok"
             entries = []
+            relative_path = ""
+            deadline = time.monotonic() + 8.0
             try:
-                entries = workspace.search(
-                    query,
-                    is_cancelled=cancellation.is_set,
-                    deadline=time.monotonic() + 8.0,
-                )
+                if operation == "search":
+                    entries = workspace.search(
+                        query,
+                        is_cancelled=cancellation.is_set,
+                        deadline=deadline,
+                    )
+                else:
+                    entries = workspace.find_exact_name(
+                        query,
+                        is_cancelled=cancellation.is_set,
+                        deadline=deadline,
+                    )
+                    if not entries:
+                        status = "not_found"
+                    elif len(entries) > 1:
+                        status = "ambiguous"
+                    else:
+                        relative_path = entries[0].path
             except WorkspaceDenied:
-                status = "cancelled" if cancellation.is_set() else "search_failed"
+                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "open_failed"
             except Exception:
-                status = "search_failed"
+                status = "search_failed" if operation == "search" else "open_failed"
 
             with self._file_search_lock:
                 current = (
@@ -567,31 +599,53 @@ class AstraDesktop:
                     and not cancellation.is_set()
                 )
                 self._file_search_jobs.pop(request_id, None)
-            if not current:
-                status = "cancelled"
-                entries = []
-            try:
-                result = make_search_result(
-                    request_id,
-                    status,
-                    min(len(entries), 500),
-                    [entry.path for entry in entries[:3]],
-                )
-            except (TypeError, ValueError):
-                result = make_search_result(request_id, "search_failed")
-            with self._file_search_lock:
-                still_current = (
-                    current
-                    and generation == self._file_search_generation
-                    and workspace is self.active_file_workspace
-                    and panel is self.active_file_panel
-                    and not cancellation.is_set()
-                )
-                if not still_current:
-                    result = make_search_result(request_id, "cancelled")
-                self.bridge.reply_file_search(result, expected_process=runtime_process)
+                if not current:
+                    status = "cancelled"
+                    entries = []
+                    relative_path = ""
+                elif operation == "open" and status == "ok":
+                    try:
+                        # Validate the complete reply before invoking the Windows file association.
+                        make_file_open_result(request_id, "ok", relative_path)
+                        path = workspace.checked_openable_file(relative_path)
+                        if cancellation.is_set():
+                            status = "cancelled"
+                            relative_path = ""
+                        else:
+                            import os
+                            start_file = getattr(os, "startfile", None)
+                            if not callable(start_file):
+                                status = "open_failed"
+                                relative_path = ""
+                            else:
+                                start_file(str(path))
+                    except (OSError, ValueError, WorkspaceDenied):
+                        candidate = Path(relative_path)
+                        status = "unsafe_file" if candidate.suffix.casefold() not in workspace.OPENABLE_SUFFIXES else "open_failed"
+                        relative_path = ""
+                    except Exception:
+                        status = "open_failed"
+                        relative_path = ""
 
-        threading.Thread(target=work, name="astra-file-search", daemon=True).start()
+                try:
+                    if operation == "open":
+                        result = make_file_open_result(request_id, status, relative_path)
+                    else:
+                        result = make_search_result(
+                            request_id,
+                            status,
+                            min(len(entries), 500),
+                            [entry.path for entry in entries[:3]],
+                        )
+                except (TypeError, ValueError):
+                    result = (
+                        make_file_open_result(request_id, "open_failed")
+                        if operation == "open"
+                        else make_search_result(request_id, "search_failed")
+                    )
+                self.bridge.reply_file_request(result, expected_process=runtime_process)
+
+        threading.Thread(target=work, name=f"astra-file-{operation}", daemon=True).start()
 
     def open_tasks(self):
         try:
@@ -823,6 +877,8 @@ class AstraDesktop:
                 self.chat.configure(state="disabled")
             elif kind == "file_search_request":
                 self._handle_file_search_request(text)
+            elif kind == "file_open_request":
+                self._handle_file_open_request(text)
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:

@@ -14,12 +14,15 @@ from src.runtime_events import emit_event
 CONTROL_PREFIX = "@ASTRA_CONTROL "
 REQUEST_TYPE = "file_search_request"
 RESULT_TYPE = "file_search_result"
+OPEN_REQUEST_TYPE = "file_open_request"
+OPEN_RESULT_TYPE = "file_open_result"
 MAX_QUERY_CHARS = 120
 MAX_RESULT_PATH_CHARS = 400
 MAX_SPOKEN_RESULTS = 3
 MAX_RESULT_COUNT = 500
 MAX_CONTROL_LINE = 8192
-_RESULT_STATUSES = frozenset({"ok", "no_workspace", "cancelled", "search_failed"})
+_SEARCH_STATUSES = frozenset({"ok", "no_workspace", "cancelled", "search_failed"})
+_OPEN_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "open_failed"})
 
 
 def validate_query(query: object) -> str:
@@ -59,6 +62,41 @@ def parse_search_request(text: str) -> dict[str, object]:
     return request
 
 
+def make_file_open_request(request_id: str, filename: str) -> dict[str, object]:
+    request = make_search_request(request_id, filename)
+    return {**request, "type": OPEN_REQUEST_TYPE}
+
+
+def parse_file_open_request(text: str) -> dict[str, object]:
+    if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
+        raise ValueError("Некорректный запрос открытия файла")
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        raise ValueError("Некорректный запрос открытия файла") from None
+    if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "query"}:
+        raise ValueError("Некорректный запрос открытия файла")
+    if payload["version"] != 1 or payload["type"] != OPEN_REQUEST_TYPE:
+        raise ValueError("Неподдерживаемая версия запроса открытия файла")
+    return make_file_open_request(payload["request_id"], payload["query"])
+
+
+def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
+    if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
+        raise ValueError("Некорректный запрос файлового действия")
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        raise ValueError("Некорректный запрос файлового действия") from None
+    if not isinstance(payload, dict):
+        raise ValueError("Некорректный запрос файлового действия")
+    if payload.get("type") == REQUEST_TYPE:
+        return "search", parse_search_request(text)
+    if payload.get("type") == OPEN_REQUEST_TYPE:
+        return "open", parse_file_open_request(text)
+    raise ValueError("Неизвестный тип файлового действия")
+
+
 def make_search_result(
     request_id: str,
     status: str,
@@ -67,7 +105,7 @@ def make_search_result(
 ) -> dict[str, object]:
     if not isinstance(request_id, str) or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
         raise ValueError("Некорректный идентификатор поиска")
-    if status not in _RESULT_STATUSES or type(count) is not int or not 0 <= count <= MAX_RESULT_COUNT:
+    if status not in _SEARCH_STATUSES or type(count) is not int or not 0 <= count <= MAX_RESULT_COUNT:
         raise ValueError("Некорректный результат поиска")
     if not isinstance(files, (tuple, list)) or len(files) > MAX_SPOKEN_RESULTS:
         raise ValueError("Некорректный результат поиска")
@@ -98,6 +136,16 @@ def make_search_result(
     }
 
 
+def make_file_open_result(request_id: str, status: str, relative_path: str = "") -> dict[str, object]:
+    if status not in _OPEN_STATUSES:
+        raise ValueError("Некорректный результат открытия файла")
+    files = [relative_path] if status == "ok" else []
+    if status == "ok" and not relative_path:
+        raise ValueError("Для успешного открытия нужен относительный путь")
+    checked = make_search_result(request_id, "ok", len(files), files)
+    return {**checked, "type": OPEN_RESULT_TYPE, "status": status}
+
+
 def encode_search_result(result: dict[str, object]) -> str:
     normalized = make_search_result(
         result.get("request_id"),
@@ -108,6 +156,35 @@ def encode_search_result(result: dict[str, object]) -> str:
     return CONTROL_PREFIX + json.dumps(normalized, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
+def encode_file_result(result: dict[str, object]) -> str:
+    if not isinstance(result, dict):
+        raise ValueError("Некорректный результат файлового действия")
+    if result.get("type") == OPEN_RESULT_TYPE:
+        files = result.get("files")
+        count = result.get("count")
+        status = result.get("status")
+        if not isinstance(files, list) or type(count) is not int:
+            raise ValueError("Некорректный результат открытия файла")
+        if status == "ok":
+            if count != 1 or len(files) != 1:
+                raise ValueError("Для успешного открытия нужен ровно один файл")
+        elif count != 0 or files:
+            raise ValueError("Результат отказа не может содержать файлы")
+        normalized = make_file_open_result(
+            result.get("request_id"),
+            status,
+            files[0] if files else "",
+        )
+    else:
+        normalized = make_search_result(
+            result.get("request_id"),
+            result.get("status"),
+            result.get("count", 0),
+            result.get("files", ()),
+        )
+    return CONTROL_PREFIX + json.dumps(normalized, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def parse_control_line(line: str) -> dict[str, object] | None:
     if not isinstance(line, str) or len(line) > MAX_CONTROL_LINE or not line.startswith(CONTROL_PREFIX):
         return None
@@ -115,8 +192,18 @@ def parse_control_line(line: str) -> dict[str, object] | None:
         payload = json.loads(line[len(CONTROL_PREFIX):])
         if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "status", "count", "files"}:
             return None
-        if payload["version"] != 1 or payload["type"] != RESULT_TYPE:
+        if payload["version"] != 1 or payload["type"] not in {RESULT_TYPE, OPEN_RESULT_TYPE}:
             return None
+        if payload["type"] == OPEN_RESULT_TYPE:
+            if type(payload["count"]) is not int or not isinstance(payload["files"], list):
+                return None
+            if payload["status"] == "ok":
+                if payload["count"] != 1 or len(payload["files"]) != 1:
+                    return None
+                return make_file_open_result(payload["request_id"], "ok", payload["files"][0])
+            if payload["count"] != 0 or payload["files"]:
+                return None
+            return make_file_open_result(payload["request_id"], payload["status"])
         return make_search_result(
             payload["request_id"],
             payload["status"],
@@ -133,7 +220,7 @@ class DesktopFileSearchChannel:
     def __init__(self, emit=emit_event):
         self._emit = emit
         self._lock = threading.Lock()
-        self._pending: dict[str, tuple[threading.Event, dict[str, object] | None]] = {}
+        self._pending: dict[str, tuple[threading.Event, dict[str, object] | None, str]] = {}
         self._reader_started = False
         self._closed = False
 
@@ -162,23 +249,40 @@ class DesktopFileSearchChannel:
                     pending = self._pending.get(request_id)
                     if pending is None:
                         continue
-                    event, _ = pending
-                    self._pending[request_id] = (event, result)
+                    event, _result, expected_type = pending
+                    if result["type"] != expected_type:
+                        continue
+                    self._pending[request_id] = (event, result, expected_type)
                     event.set()
         finally:
             self.close()
 
     def search(self, query: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
+        return self._request(query, "search", timeout_seconds)
+
+    def open_exact(self, filename: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
+        return self._request(filename, "open", timeout_seconds)
+
+    def _request(self, query: str, operation: str, timeout_seconds: float) -> dict[str, object] | None:
         clean_query = validate_query(query)
+        if operation == "open":
+            request = make_file_open_request(uuid4().hex, clean_query)
+            event_type = OPEN_REQUEST_TYPE
+            result_type = OPEN_RESULT_TYPE
+        elif operation == "search":
+            request = make_search_request(uuid4().hex, clean_query)
+            event_type = REQUEST_TYPE
+            result_type = RESULT_TYPE
+        else:
+            raise ValueError("Неизвестное файловое действие")
         with self._lock:
             if not self._reader_started or self._closed:
                 return None
-            request_id = uuid4().hex
+            request_id = request["request_id"]
             completed = threading.Event()
-            self._pending[request_id] = (completed, None)
-        request = make_search_request(request_id, clean_query)
+            self._pending[request_id] = (completed, None, result_type)
         try:
-            emitted = self._emit(REQUEST_TYPE, json.dumps(request, ensure_ascii=False, separators=(",", ":")))
+            emitted = self._emit(event_type, json.dumps(request, ensure_ascii=False, separators=(",", ":")))
         except Exception:
             emitted = False
         if not emitted:
@@ -189,13 +293,23 @@ class DesktopFileSearchChannel:
         if not completed.wait(timeout):
             with self._lock:
                 self._pending.pop(request_id, None)
-            return {"status": "search_failed", "count": 0, "files": []}
+            return (
+                make_file_open_result(request_id, "open_failed")
+                if operation == "open"
+                else make_search_result(request_id, "search_failed")
+            )
         with self._lock:
             pending = self._pending.pop(request_id, None)
-        return pending[1] if pending is not None else {"status": "search_failed", "count": 0, "files": []}
+        if pending is not None and pending[1] is not None:
+            return pending[1]
+        return (
+            make_file_open_result(request_id, "open_failed")
+            if operation == "open"
+            else make_search_result(request_id, "search_failed")
+        )
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            for event, _result in self._pending.values():
+            for event, _result, _expected_type in self._pending.values():
                 event.set()

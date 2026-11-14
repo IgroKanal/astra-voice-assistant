@@ -32,6 +32,7 @@ from src.command_parser import (
     MEMORY_LIST_TARGET,
     MEMORY_SAVE_TARGET,
     MEMORY_SEARCH_PREFIX,
+    FILE_OPEN_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
@@ -89,6 +90,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.SYSTEM_INFO,
     CommandType.MEMORY_NOTE,
     CommandType.FILE_SEARCH,
+    CommandType.FILE_OPEN,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -105,6 +107,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.REMINDER,
     ActionType.MEMORY_NOTE,
     ActionType.FILE_SEARCH,
+    ActionType.FILE_OPEN,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -145,6 +148,7 @@ class TurnContext:
     media: MediaController | None = None
     audit: Callable | None = None
     file_search: Callable | None = None
+    file_open: Callable | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -634,6 +638,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.REMINDER: ActionType.REMINDER,
         CommandType.MEMORY_NOTE: ActionType.MEMORY_NOTE,
         CommandType.FILE_SEARCH: ActionType.FILE_SEARCH,
+        CommandType.FILE_OPEN: ActionType.FILE_OPEN,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -649,6 +654,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     elif parsed.type == CommandType.MEMORY_NOTE and parsed.target == MEMORY_SAVE_TARGET:
         query = parsed.text
     elif parsed.type == CommandType.FILE_SEARCH:
+        query = parsed.target
+    elif parsed.type == CommandType.FILE_OPEN:
         query = parsed.target
 
     return AssistantAction(
@@ -1033,6 +1040,48 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 ctx.respond(f"Нашла {count_text} {count_word}: " + "; ".join(files) + ".")
             else:
                 ctx.respond(f"Нашла {count_text} {count_word} по имени. Подробный список открой в окне «Файлы».")
+        return True
+
+    if action.type == ActionType.FILE_OPEN:
+        if action.target == FILE_OPEN_HELP_TARGET:
+            ctx.respond("Скажи: открой файл и его точное имя с расширением. Сначала выбери папку в разделе «Файлы».")
+            return True
+        if not callable(ctx.file_open):
+            ctx.respond("Голосовое открытие доступно в настольном приложении. Сначала выбери папку в разделе «Файлы».")
+            return True
+        try:
+            result = ctx.file_open(action.query)
+        except (ValueError, TypeError):
+            ctx.respond("Назови точное имя файла с расширением, без пути.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось проверить файл в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Голосовое открытие недоступно. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» приложения Astra и выбери папку.")
+        elif result.get("status") == "not_found":
+            ctx.respond("Файл с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.respond("В выбранной папке несколько файлов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.respond("Этот тип файла или ссылка не разрешены для голосового открытия.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Открытие отменено: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.respond("Не удалось открыть файл. Проверь, что для него установлено приложение.")
+        elif (
+            type(result.get("count")) is not int
+            or result.get("count") != 1
+            or not isinstance(result.get("files"), list)
+            or len(result.get("files")) != 1
+            or not isinstance(result.get("files")[0], str)
+        ):
+            ctx.respond("Получен некорректный ответ от открытия файла.")
+        else:
+            filename = _safe_memory_voice_text(result["files"][0].replace("\\", "/").rsplit("/", 1)[-1], 160)
+            ctx.respond(f"Открываю файл {filename}.")
         return True
 
     if action.type == ActionType.MEMORY_NOTE:
@@ -1763,6 +1812,7 @@ def run_voice_mode(
         routines=routines,
         media=media,
         file_search=file_search_channel.search,
+        file_open=file_search_channel.open_exact,
     )
 
     if _wake_only_voice_enabled(settings):

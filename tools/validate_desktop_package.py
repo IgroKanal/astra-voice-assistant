@@ -72,6 +72,7 @@ def main():
                     "src.action_audit" not in modules or "src.action_audit_ui" not in modules or
                     "src.desktop_theme" not in modules or "src.scroll_section" not in modules or
                     "src.command_catalog" not in modules or "src.command_catalog_ui" not in modules or
+                    "src.desktop_file_search" not in modules or
                     "PIL.Image" not in modules or "PIL.ImageOps" not in modules or "PIL.ImageTk" not in modules):
                 raise ValueError("A file reader, plan interpreter, plan UI, avatar preview or onboarding module is missing from Astra.exe")
             runtime_exe = destination / folder / "runtime" / "AstraRuntime" / "AstraRuntime.exe"
@@ -80,9 +81,11 @@ def main():
             runtime_probe.write_bytes(runtime_embedded.extract("PYZ.pyz"))
             runtime_modules = ZlibArchiveReader(str(runtime_probe)).toc
             runtime_probe.unlink()
-            if "src.ai_client" not in runtime_modules or "src.llm_providers" not in runtime_modules:
-                raise ValueError("The runtime model client or provider adapter is missing from AstraRuntime.exe")
+            if ("src.ai_client" not in runtime_modules or "src.llm_providers" not in runtime_modules or
+                    "src.desktop_file_search" not in runtime_modules):
+                raise ValueError("The runtime model client, provider adapter or voice file-access module is missing from AstraRuntime.exe")
             print("PACKAGED_LLM_PROVIDER_PASS: AIClient and the shared provider adapters are embedded in AstraRuntime.exe")
+            print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open IPC and workspace checks are embedded in AstraRuntime.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")
             print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded preview/execution UI are embedded in Astra.exe")
             print("PACKAGED_AVATAR_LAUNCHER_PASS: the packaged UI includes the isolated 3D preview launcher")

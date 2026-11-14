@@ -33,6 +33,28 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
 
+    def test_exact_name_scan_is_bounded_and_reports_duplicate_basenames(self):
+        (self.root / "report.pdf").write_bytes(b"one")
+        self.assertEqual([item.path for item in self.workspace.find_exact_name("report.pdf")], ["report.pdf"])
+        nested = self.root / "nested"
+        nested.mkdir()
+        (nested / "report.pdf").write_bytes(b"two")
+        self.assertEqual(len(self.workspace.find_exact_name("REPORT.PDF")), 2)
+        with patch.object(FileWorkspace, "MAX_VISITED", 1):
+            with self.assertRaisesRegex(WorkspaceDenied, "предел"):
+                self.workspace.find_exact_name("missing.pdf")
+        with self.assertRaises(WorkspaceDenied):
+            self.workspace.find_exact_name("../report.pdf")
+
+    def test_voice_open_rechecks_path_and_allows_only_document_or_media_suffixes(self):
+        (self.root / "report.pdf").write_bytes(b"pdf")
+        (self.root / "script.ps1").write_text("Write-Host unsafe", encoding="utf-8")
+        self.assertEqual(self.workspace.checked_openable_file("report.pdf"), self.root / "report.pdf")
+        with self.assertRaisesRegex(WorkspaceDenied, "тип файла"):
+            self.workspace.checked_openable_file("script.ps1")
+        with self.assertRaises(WorkspaceDenied):
+            self.workspace.checked_openable_file(".env")
+
     def test_search_stops_when_cancelled_during_directory_scan(self):
         for index in range(30):
             (self.root / f"report-{index:02}.txt").write_text("x", encoding="utf-8")
@@ -118,7 +140,14 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_file_search_event_and_voice_reply_use_strict_protocols(self):
         import json
-        from src.desktop_file_search import make_search_request, make_search_result, parse_control_line
+        from src.desktop_file_search import (
+            encode_file_result,
+            make_file_open_request,
+            make_file_open_result,
+            make_search_request,
+            make_search_result,
+            parse_control_line,
+        )
         from src.runtime_events import PREFIX
 
         request = make_search_request("a" * 32, "contract")
@@ -127,6 +156,12 @@ class WorkspaceTests(unittest.TestCase):
             ensure_ascii=False,
         )
         self.assertEqual(parse_event(line), ("file_search_request", json.dumps(request, ensure_ascii=False)))
+        open_request = make_file_open_request("b" * 32, "report.pdf")
+        open_line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_open_request", "text": json.dumps(open_request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(open_line), ("file_open_request", json.dumps(open_request, ensure_ascii=False)))
 
         process = Mock()
         process.poll.return_value = None
@@ -145,6 +180,9 @@ class WorkspaceTests(unittest.TestCase):
         bridge.mode = "voice"
         self.assertFalse(bridge.reply_file_search(result, expected_process=process))
         replacement_process.stdin.write.assert_not_called()
+        opened = make_file_open_result("c" * 32, "ok", "report.pdf")
+        self.assertTrue(bridge.reply_file_request(opened, expected_process=replacement_process))
+        self.assertEqual(parse_control_line(replacement_process.stdin.write.call_args.args[0].rstrip()), opened)
 
     def test_traversal_secrets_and_absolute_paths(self):
         for value in ("../notes.txt", str(self.root / "notes.txt"), ".env", "notes.txt:stream"):

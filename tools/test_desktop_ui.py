@@ -602,7 +602,9 @@ class DesktopUITests(unittest.TestCase):
                 self.assertEqual(files_card.cget("text"), "Поиск файлов в выбранной папке")
                 open_files_card = panel.astra_permission_cards["open_files"]
                 self.assertEqual(open_files_card.cget("text"), "Открытие файлов голосом")
-                last_card = open_files_card
+                read_files_card = panel.astra_permission_cards["read_files"]
+                self.assertEqual(read_files_card.cget("text"), "Чтение выбранных документов вслух")
+                last_card = read_files_card
                 last_card.event_generate("<FocusIn>")
                 window.update()
                 self.assertGreater(canvas.yview()[0], 0)

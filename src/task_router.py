@@ -28,6 +28,7 @@ class ActionType(str, Enum):
     MEMORY_NOTE = "memory_note"
     FILE_SEARCH = "file_search"
     FILE_OPEN = "file_open"
+    FILE_READ = "file_read"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"

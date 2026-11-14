@@ -576,6 +576,31 @@ class VoiceIO:
         finally:
             emit_event("state", "Голосовой режим · микрофон включён")
 
+    def speak_private_local(self, text: str) -> bool:
+        """Speak a bounded document excerpt with SAPI without emitting its text."""
+        if not self.settings.tts_enabled or self.settings.tts_engine != "sapi" or self.tts_engine is None:
+            return False
+        from src.desktop_file_search import normalize_spoken_excerpt
+
+        try:
+            excerpt = normalize_spoken_excerpt(text)
+        except (TypeError, ValueError):
+            return False
+        if self._has_cyrillic(excerpt) and not self.tts_has_russian_voice:
+            return False
+        emit_event("state", "Читаю выбранный документ локально…")
+        try:
+            self.tts_engine.say(excerpt)
+            self.tts_engine.runAndWait()
+            return True
+        except Exception as exc:
+            # Never log the spoken document text or a third-party engine's
+            # exception message; either may include the input payload.
+            self.logger.error("Приватная локальная SAPI-озвучка завершилась ошибкой (%s)", type(exc).__name__)
+            return False
+        finally:
+            emit_event("state", "Голосовой режим · микрофон включён")
+
     def _speak_edge(self, text: str) -> None:
         start = time.perf_counter()
 

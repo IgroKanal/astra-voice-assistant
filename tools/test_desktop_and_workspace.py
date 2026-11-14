@@ -144,6 +144,8 @@ class WorkspaceTests(unittest.TestCase):
             encode_file_result,
             make_file_open_request,
             make_file_open_result,
+            make_file_read_request,
+            make_file_read_result,
             make_search_request,
             make_search_result,
             parse_control_line,
@@ -162,6 +164,12 @@ class WorkspaceTests(unittest.TestCase):
             ensure_ascii=False,
         )
         self.assertEqual(parse_event(open_line), ("file_open_request", json.dumps(open_request, ensure_ascii=False)))
+        read_request = make_file_read_request("c" * 32, "memo.txt")
+        read_line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_read_request", "text": json.dumps(read_request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(read_line), ("file_read_request", json.dumps(read_request, ensure_ascii=False)))
 
         process = Mock()
         process.poll.return_value = None
@@ -172,6 +180,10 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(bridge.reply_file_search(result))
         control_line = process.stdin.write.call_args.args[0]
         self.assertEqual(parse_control_line(control_line.rstrip()), result)
+        read_result = make_file_read_result("c" * 32, "ok", "memo.txt", "private content")
+        self.assertTrue(bridge.reply_file_request(read_result))
+        read_control_line = process.stdin.write.call_args.args[0]
+        self.assertEqual(parse_control_line(read_control_line.rstrip()), read_result)
         bridge.mode = "text"
         self.assertFalse(bridge.reply_file_search(result))
         replacement_process = Mock()

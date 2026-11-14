@@ -14,7 +14,9 @@ from tkinter import filedialog, messagebox, simpledialog
 from src.desktop_bridge import DesktopBridge
 from src.desktop_file_search import (
     make_file_open_result,
+    make_file_read_result,
     make_search_result,
+    normalize_spoken_excerpt,
     parse_file_request,
 )
 from src.file_workspace import FileWorkspace
@@ -531,6 +533,9 @@ class AstraDesktop:
     def _handle_file_open_request(self, text):
         self._handle_file_request(text, "open")
 
+    def _handle_file_read_request(self, text):
+        self._handle_file_request(text, "read")
+
     def _handle_file_request(self, text, expected_operation):
         try:
             operation, request = parse_file_request(text)
@@ -549,6 +554,8 @@ class AstraDesktop:
                 result = (
                     make_file_open_result(request_id, "no_workspace")
                     if operation == "open"
+                    else make_file_read_result(request_id, "no_workspace")
+                    if operation == "read"
                     else make_search_result(request_id, "no_workspace")
                 )
                 self.bridge.reply_file_request(
@@ -566,6 +573,8 @@ class AstraDesktop:
             status = "ok"
             entries = []
             relative_path = ""
+            filename = ""
+            excerpt = ""
             deadline = time.monotonic() + 8.0
             try:
                 if operation == "search":
@@ -584,12 +593,27 @@ class AstraDesktop:
                         status = "not_found"
                     elif len(entries) > 1:
                         status = "ambiguous"
+                    elif operation == "open":
+                        relative_path = entries[0].path
                     else:
                         relative_path = entries[0].path
+                        candidate = Path(relative_path)
+                        if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
+                            status = "unsafe_file"
+                        else:
+                            workspace.checked_openable_file(relative_path)
+                            document_text = workspace.read_text(
+                                relative_path,
+                                is_cancelled=cancellation.is_set,
+                                deadline=deadline,
+                            )
+                            excerpt = normalize_spoken_excerpt(document_text, truncate=True)
+                            filename = candidate.name
+                            del document_text
             except WorkspaceDenied:
-                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "open_failed"
+                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "read_failed" if operation == "read" else "open_failed"
             except Exception:
-                status = "search_failed" if operation == "search" else "open_failed"
+                status = "search_failed" if operation == "search" else "read_failed" if operation == "read" else "open_failed"
 
             with self._file_search_lock:
                 current = (
@@ -603,6 +627,8 @@ class AstraDesktop:
                     status = "cancelled"
                     entries = []
                     relative_path = ""
+                    filename = ""
+                    excerpt = ""
                 elif operation == "open" and status == "ok":
                     try:
                         # Validate the complete reply before invoking the Windows file association.
@@ -630,6 +656,8 @@ class AstraDesktop:
                 try:
                     if operation == "open":
                         result = make_file_open_result(request_id, status, relative_path)
+                    elif operation == "read":
+                        result = make_file_read_result(request_id, status, filename, excerpt)
                     else:
                         result = make_search_result(
                             request_id,
@@ -641,6 +669,8 @@ class AstraDesktop:
                     result = (
                         make_file_open_result(request_id, "open_failed")
                         if operation == "open"
+                        else make_file_read_result(request_id, "read_failed")
+                        if operation == "read"
                         else make_search_result(request_id, "search_failed")
                     )
                 self.bridge.reply_file_request(result, expected_process=runtime_process)
@@ -879,6 +909,8 @@ class AstraDesktop:
                 self._handle_file_search_request(text)
             elif kind == "file_open_request":
                 self._handle_file_open_request(text)
+            elif kind == "file_read_request":
+                self._handle_file_read_request(text)
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:

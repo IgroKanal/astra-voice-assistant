@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from main import process_turn
 from src.action_policy import DEFAULT_SCOPES, ActionPolicy
-from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
+from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_READ_HELP_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile
 from src.desktop_file_search import (
@@ -22,10 +22,13 @@ from src.desktop_file_search import (
     encode_file_result,
     make_file_open_request,
     make_file_open_result,
+    make_file_read_request,
+    make_file_read_result,
     make_search_request,
     make_search_result,
     parse_control_line,
     parse_file_open_request,
+    parse_file_read_request,
     parse_search_request,
     validate_query,
 )
@@ -54,8 +57,13 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertEqual(opened.type, CommandType.FILE_OPEN)
         self.assertEqual(opened.target, "Отчёт 2026.pdf")
         self.assertEqual(parse_command_text("открой документ").target, FILE_OPEN_HELP_TARGET)
+        read = parse_command_text("прочитай документ Отчёт 2026.pdf")
+        self.assertEqual(read.type, CommandType.FILE_READ)
+        self.assertEqual(read.target, "Отчёт 2026.pdf")
+        self.assertEqual(parse_command_text("зачитай файл").target, FILE_READ_HELP_TARGET)
         self.assertEqual(parse_command_text("поищи документ").target, FILE_SEARCH_HELP_TARGET)
         self.assertTrue(is_command_like_text("найди файл отчёт"))
+        self.assertTrue(is_command_like_text("прочитай файл отчёт.txt"))
 
     def test_query_is_only_a_bounded_filename_fragment(self):
         self.assertEqual(validate_query("  отчёт  2026.pdf  "), "отчёт 2026.pdf")
@@ -75,12 +83,25 @@ class VoiceFileSearchTests(unittest.TestCase):
         open_request["unexpected"] = True
         with self.assertRaises(ValueError):
             parse_file_open_request(json.dumps(open_request))
+        read_request = make_file_read_request("d" * 32, "report.txt")
+        self.assertEqual(parse_file_read_request(json.dumps(read_request))["type"], "file_read_request")
+        read_request["unexpected"] = True
+        with self.assertRaises(ValueError):
+            parse_file_read_request(json.dumps(read_request))
         with self.assertRaises(ValueError):
             make_search_result("a" * 32, "ok", 1, ["..\\secret.txt"])
         valid = make_search_result("a" * 32, "ok", 1, ["reports\\report.txt"])
         self.assertEqual(parse_control_line(encode_search_result(valid).rstrip()), valid)
         opened = make_file_open_result("d" * 32, "ok", "Reports\\report.pdf")
         self.assertEqual(parse_control_line(encode_file_result(opened).rstrip()), opened)
+        read = make_file_read_result("f" * 32, "ok", "report.txt", "  Привет,\n мир!  ")
+        self.assertEqual(read["text"], "Привет, мир!")
+        self.assertEqual(parse_control_line(encode_file_result(read).rstrip()), read)
+        with self.assertRaises(ValueError):
+            make_file_read_result("f" * 32, "ok", "..\\secret.txt", "secret")
+        with self.assertRaises(ValueError):
+            make_file_read_result("f" * 32, "ok", "report.txt", "x" * 1601)
+        self.assertIsNone(parse_control_line(encode_file_result(make_file_read_result("e" * 32, "read_failed")).rstrip().replace('"text":""', '"text":"unexpected"')))
         self.assertIsNone(parse_control_line(encode_file_result(make_file_open_result("e" * 32, "ambiguous")).rstrip().replace('"count":0', '"count":1')))
         self.assertIsNone(parse_control_line(CONTROL_PREFIX + '{"version":1,"type":"file_search_result"}'))
 
@@ -141,6 +162,40 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertEqual(result["type"], "file_open_result")
         self.assertEqual(result["status"], "open_failed")
 
+    def test_runtime_channel_pairs_bounded_read_with_strict_read_reply(self):
+        stream = _QueueLineStream()
+        emitted = []
+
+        def emit(kind, text):
+            emitted.append((kind, text))
+            request = parse_file_read_request(text)
+            stream.feed(encode_file_result(make_file_read_result(request["request_id"], "ok", "memo.txt", "Private excerpt")))
+            return True
+
+        channel = DesktopFileSearchChannel(emit=emit)
+        with patch.dict("os.environ", {"ASTRA_DESKTOP_EVENTS": "1"}):
+            self.assertTrue(channel.start_control_reader(stream))
+            result = channel.read_exact("memo.txt")
+        stream.feed("")
+        self.assertEqual(emitted[0][0], "file_read_request")
+        self.assertEqual(result["text"], "Private excerpt")
+
+    def test_runtime_channel_rejects_open_reply_for_read_request(self):
+        stream = _QueueLineStream()
+
+        def emit(_kind, text):
+            request = parse_file_read_request(text)
+            stream.feed(encode_file_result(make_file_open_result(request["request_id"], "ok", "memo.txt")))
+            return True
+
+        channel = DesktopFileSearchChannel(emit=emit)
+        with patch.dict("os.environ", {"ASTRA_DESKTOP_EVENTS": "1"}):
+            self.assertTrue(channel.start_control_reader(stream))
+            result = channel.read_exact("memo.txt", timeout_seconds=0.1)
+        stream.feed("")
+        self.assertEqual(result["type"], "file_read_result")
+        self.assertEqual(result["status"], "read_failed")
+
     def test_voice_search_requires_wake_scope_and_never_uses_llm(self):
         ctx, responses, ai, *_ = make_context()
         search = Mock(return_value={
@@ -185,6 +240,9 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertNotIn("open_files", DEFAULT_SCOPES)
         self.assertNotIn("open_files", Settings().action_permissions)
         self.assertNotIn("open_files", AIProfile().allowed_scopes)
+        self.assertNotIn("read_files", DEFAULT_SCOPES)
+        self.assertNotIn("read_files", Settings().action_permissions)
+        self.assertNotIn("read_files", AIProfile().allowed_scopes)
         action = AssistantAction(ActionType.FILE_SEARCH, query="report", source="local_parser")
         self.assertFalse(ActionPolicy().check(action).allowed)
 
@@ -210,6 +268,157 @@ class VoiceFileSearchTests(unittest.TestCase):
         process_turn("Астра, открой файл contract.pdf", ctx)
         self.assertIn("навык отключён", responses[-1])
         open_file.assert_not_called()
+
+    def test_voice_document_read_requires_wake_and_separate_scope_and_never_uses_llm(self):
+        from src.desktop_file_search import make_file_read_result
+
+        ctx, responses, ai, *_ = make_context()
+        secret_text = "Содержимое документа не должно появиться в чате"
+        read_file = Mock(return_value=make_file_read_result("a" * 32, "ok", "memo.txt", secret_text))
+        speak_private = Mock(return_value=True)
+        settings = replace(
+            ctx.settings,
+            action_permissions=("read_files",),
+            allow_commands_without_wake=True,
+            tts_enabled=True,
+            tts_engine="sapi",
+        )
+        ctx = replace(ctx, settings=settings, file_read=read_file, speak_private_local=speak_private)
+
+        process_turn("Астра, прочитай файл memo.txt", ctx)
+        self.assertIn("локальным голосом", responses[-1])
+        self.assertNotIn(secret_text, " ".join(responses))
+        read_file.assert_called_once_with("memo.txt")
+        speak_private.assert_called_once_with(secret_text)
+        self.assertEqual(ai.ask_calls, 0)
+        self.assertEqual(ai.route_calls, 0)
+
+        process_turn("прочитай файл memo.txt", ctx)
+        self.assertIn("Назови меня", responses[-1])
+        self.assertEqual(read_file.call_count, 1)
+
+    def test_voice_document_read_refuses_without_grant_or_local_sapi_before_fetch(self):
+        ctx, responses, _ai, *_ = make_context()
+        read_file = Mock(side_effect=AssertionError("document content must not be fetched"))
+        speak_private = Mock(return_value=True)
+        ctx = replace(ctx, file_read=read_file, speak_private_local=speak_private)
+        process_turn("Астра, прочитай файл memo.txt", ctx)
+        self.assertIn("навык отключён", responses[-1])
+        read_file.assert_not_called()
+
+        local_settings = replace(ctx.settings, action_permissions=("read_files",), tts_enabled=True, tts_engine="edge")
+        ctx = replace(ctx, settings=local_settings)
+        process_turn("Астра, прочитай файл memo.txt", ctx)
+        self.assertIn("Windows SAPI", responses[-1])
+        read_file.assert_not_called()
+        speak_private.assert_not_called()
+
+    def test_private_sapi_reader_does_not_emit_document_text_or_log_it(self):
+        from src.audio_io import VoiceIO
+
+        voice = VoiceIO.__new__(VoiceIO)
+        voice.settings = replace(Settings(), tts_enabled=True, tts_engine="sapi")
+        voice.tts_engine = Mock()
+        voice.tts_has_russian_voice = True
+        voice.logger = Mock()
+        events = []
+        with patch("src.audio_io.emit_event", side_effect=lambda kind, text: events.append((kind, text)) or True):
+            self.assertTrue(voice.speak_private_local("секретный текст документа"))
+        self.assertEqual(voice.tts_engine.say.call_args.args[0], "секретный текст документа")
+        self.assertTrue(events)
+        self.assertTrue(all(kind == "state" for kind, _text in events))
+        self.assertNotIn("секретный текст документа", json.dumps(events, ensure_ascii=False))
+        self.assertNotIn("секретный текст документа", str(voice.logger.mock_calls))
+
+        voice.settings = replace(voice.settings, tts_engine="edge")
+        voice.tts_engine.reset_mock()
+        self.assertFalse(voice.speak_private_local("не отправлять в облако"))
+        voice.tts_engine.say.assert_not_called()
+
+    def test_ui_voice_read_only_returns_unique_supported_excerpt_from_selected_workspace(self):
+        import runpy
+        import tempfile
+        root_path = Path(__file__).resolve().parents[1]
+        AstraDesktop = runpy.run_path(str(root_path / "astra_desktop.pyw"))["AstraDesktop"]
+
+        class Panel:
+            def winfo_exists(self):
+                return True
+
+        with tempfile.TemporaryDirectory(prefix="astra-voice-read-", dir=root_path) as temp:
+            root = Path(temp)
+            expected = "Локальный текст документа. " * 120
+            (root / "memo.txt").write_text(expected, encoding="utf-8")
+            (root / "script.exe").write_bytes(b"MZ")
+            panel = Panel()
+            app = AstraDesktop.__new__(AstraDesktop)
+            app.active_file_workspace = FileWorkspace(root)
+            app.active_file_panel = panel
+            app._file_search_lock = threading.RLock()
+            app._file_search_generation = 1
+            app._file_search_jobs = {}
+            app.bridge = Mock()
+            replied = threading.Event()
+            app.bridge.reply_file_request.side_effect = lambda _result, **_kwargs: replied.set() or True
+
+            app._handle_file_read_request(json.dumps(make_file_read_request("9" * 32, "memo.txt")))
+            self.assertTrue(replied.wait(3))
+            result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["filename"], "memo.txt")
+            self.assertLessEqual(len(result["text"]), 1600)
+            self.assertNotIn(str(root), json.dumps(result, ensure_ascii=False))
+            self.assertNotIn("script.exe", json.dumps(result, ensure_ascii=False))
+
+            replied.clear()
+            app._handle_file_read_request(json.dumps(make_file_read_request("8" * 32, "script.exe")))
+            self.assertTrue(replied.wait(3))
+            self.assertEqual(app.bridge.reply_file_request.call_args.args[0]["status"], "unsafe_file")
+
+    def test_ui_revokes_read_and_discards_text_when_selected_folder_closes(self):
+        import runpy
+        import tempfile
+        from src.file_workspace import WorkspaceDenied
+
+        root_path = Path(__file__).resolve().parents[1]
+        AstraDesktop = runpy.run_path(str(root_path / "astra_desktop.pyw"))["AstraDesktop"]
+
+        class Panel:
+            def winfo_exists(self):
+                return True
+
+        with tempfile.TemporaryDirectory(prefix="astra-voice-read-revoke-", dir=root_path) as temp:
+            root = Path(temp)
+            (root / "memo.txt").write_text("contents", encoding="utf-8")
+            panel = Panel()
+            app = AstraDesktop.__new__(AstraDesktop)
+            app.active_file_workspace = FileWorkspace(root)
+            app.active_file_panel = panel
+            app._file_search_lock = threading.RLock()
+            app._file_search_generation = 1
+            app._file_search_jobs = {}
+            app.bridge = Mock()
+            started = threading.Event()
+            release = threading.Event()
+            replied = threading.Event()
+            app.bridge.reply_file_request.side_effect = lambda _result, **_kwargs: replied.set() or True
+
+            def delayed_read(_relative, *, is_cancelled=None, **_kwargs):
+                started.set()
+                release.wait(3)
+                if is_cancelled and is_cancelled():
+                    raise WorkspaceDenied("cancelled")
+                return "private contents"
+
+            with patch.object(FileWorkspace, "read_text", side_effect=delayed_read):
+                app._handle_file_read_request(json.dumps(make_file_read_request("7" * 32, "memo.txt")))
+                self.assertTrue(started.wait(2))
+                app._revoke_file_workspace(panel)
+                release.set()
+                self.assertTrue(replied.wait(3))
+            result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(result["text"], "")
 
     def test_ui_search_uses_only_live_selected_workspace_and_revokes_on_close(self):
         import runpy

@@ -1,4 +1,4 @@
-"""Bounded request/reply channel for voice search inside the desktop-granted folder."""
+"""Bounded voice search/open/read requests for the desktop-granted folder."""
 from __future__ import annotations
 
 import json
@@ -16,13 +16,17 @@ REQUEST_TYPE = "file_search_request"
 RESULT_TYPE = "file_search_result"
 OPEN_REQUEST_TYPE = "file_open_request"
 OPEN_RESULT_TYPE = "file_open_result"
+READ_REQUEST_TYPE = "file_read_request"
+READ_RESULT_TYPE = "file_read_result"
 MAX_QUERY_CHARS = 120
 MAX_RESULT_PATH_CHARS = 400
 MAX_SPOKEN_RESULTS = 3
+MAX_SPOKEN_DOCUMENT_CHARS = 1600
 MAX_RESULT_COUNT = 500
 MAX_CONTROL_LINE = 8192
 _SEARCH_STATUSES = frozenset({"ok", "no_workspace", "cancelled", "search_failed"})
 _OPEN_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "open_failed"})
+_READ_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "read_failed"})
 
 
 def validate_query(query: object) -> str:
@@ -81,6 +85,25 @@ def parse_file_open_request(text: str) -> dict[str, object]:
     return make_file_open_request(payload["request_id"], payload["query"])
 
 
+def make_file_read_request(request_id: str, filename: str) -> dict[str, object]:
+    request = make_search_request(request_id, filename)
+    return {**request, "type": READ_REQUEST_TYPE}
+
+
+def parse_file_read_request(text: str) -> dict[str, object]:
+    if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
+        raise ValueError("Некорректный запрос чтения файла")
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        raise ValueError("Некорректный запрос чтения файла") from None
+    if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "query"}:
+        raise ValueError("Некорректный запрос чтения файла")
+    if payload["version"] != 1 or payload["type"] != READ_REQUEST_TYPE:
+        raise ValueError("Неподдерживаемая версия запроса чтения файла")
+    return make_file_read_request(payload["request_id"], payload["query"])
+
+
 def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
     if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
         raise ValueError("Некорректный запрос файлового действия")
@@ -94,7 +117,36 @@ def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
         return "search", parse_search_request(text)
     if payload.get("type") == OPEN_REQUEST_TYPE:
         return "open", parse_file_open_request(text)
+    if payload.get("type") == READ_REQUEST_TYPE:
+        return "read", parse_file_read_request(text)
     raise ValueError("Неизвестный тип файлового действия")
+
+
+def normalize_spoken_excerpt(text: object, *, truncate: bool = False) -> str:
+    """Remove non-speech controls and bound a document excerpt for local SAPI."""
+    if not isinstance(text, str):
+        raise ValueError("Некорректный текст документа")
+    if truncate:
+        # The source extractor is bounded to 1 MB of characters. Inspect only a
+        # small prefix so control-heavy documents cannot make this copy costly.
+        text = text[: MAX_SPOKEN_DOCUMENT_CHARS * 4]
+    elif len(text) > MAX_SPOKEN_DOCUMENT_CHARS:
+        raise ValueError("Текст документа превышает лимит озвучивания")
+    safe = []
+    for char in text:
+        if char.isspace():
+            safe.append(" ")
+        elif unicodedata.category(char).startswith("C"):
+            continue
+        else:
+            safe.append(char)
+    normalized = " ".join("".join(safe).split())
+    if truncate and len(normalized) > MAX_SPOKEN_DOCUMENT_CHARS:
+        clipped = normalized[:MAX_SPOKEN_DOCUMENT_CHARS]
+        normalized = clipped.rsplit(" ", 1)[0] if " " in clipped else clipped
+    if not normalized or len(normalized) > MAX_SPOKEN_DOCUMENT_CHARS:
+        raise ValueError("В документе нет допустимого текста для чтения")
+    return normalized
 
 
 def make_search_result(
@@ -146,6 +198,41 @@ def make_file_open_result(request_id: str, status: str, relative_path: str = "")
     return {**checked, "type": OPEN_RESULT_TYPE, "status": status}
 
 
+def make_file_read_result(
+    request_id: str,
+    status: str,
+    filename: str = "",
+    text: str = "",
+) -> dict[str, object]:
+    if not isinstance(request_id, str) or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
+        raise ValueError("Некорректный идентификатор чтения")
+    if not isinstance(status, str) or status not in _READ_STATUSES:
+        raise ValueError("Некорректный результат чтения файла")
+    if not isinstance(filename, str) or not isinstance(text, str):
+        raise ValueError("Некорректные данные результата чтения")
+    if status != "ok":
+        if filename or text:
+            raise ValueError("Отказ не может содержать данные файла")
+        return {
+            "version": 1,
+            "type": READ_RESULT_TYPE,
+            "request_id": request_id,
+            "status": status,
+            "filename": "",
+            "text": "",
+        }
+    clean_filename = validate_query(filename)
+    clean_text = normalize_spoken_excerpt(text)
+    return {
+        "version": 1,
+        "type": READ_RESULT_TYPE,
+        "request_id": request_id,
+        "status": status,
+        "filename": clean_filename,
+        "text": clean_text,
+    }
+
+
 def encode_search_result(result: dict[str, object]) -> str:
     normalized = make_search_result(
         result.get("request_id"),
@@ -159,7 +246,14 @@ def encode_search_result(result: dict[str, object]) -> str:
 def encode_file_result(result: dict[str, object]) -> str:
     if not isinstance(result, dict):
         raise ValueError("Некорректный результат файлового действия")
-    if result.get("type") == OPEN_RESULT_TYPE:
+    if result.get("type") == READ_RESULT_TYPE:
+        normalized = make_file_read_result(
+            result.get("request_id"),
+            result.get("status"),
+            result.get("filename", ""),
+            result.get("text", ""),
+        )
+    elif result.get("type") == OPEN_RESULT_TYPE:
         files = result.get("files")
         count = result.get("count")
         status = result.get("status")
@@ -190,9 +284,17 @@ def parse_control_line(line: str) -> dict[str, object] | None:
         return None
     try:
         payload = json.loads(line[len(CONTROL_PREFIX):])
-        if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "status", "count", "files"}:
+        if not isinstance(payload, dict):
             return None
-        if payload["version"] != 1 or payload["type"] not in {RESULT_TYPE, OPEN_RESULT_TYPE}:
+        if payload.get("version") != 1 or payload.get("type") not in {RESULT_TYPE, OPEN_RESULT_TYPE, READ_RESULT_TYPE}:
+            return None
+        if payload["type"] == READ_RESULT_TYPE:
+            if set(payload) != {"version", "type", "request_id", "status", "filename", "text"}:
+                return None
+            return make_file_read_result(
+                payload["request_id"], payload["status"], payload["filename"], payload["text"],
+            )
+        if set(payload) != {"version", "type", "request_id", "status", "count", "files"}:
             return None
         if payload["type"] == OPEN_RESULT_TYPE:
             if type(payload["count"]) is not int or not isinstance(payload["files"], list):
@@ -215,7 +317,7 @@ def parse_control_line(line: str) -> dict[str, object] | None:
 
 
 class DesktopFileSearchChannel:
-    """Synchronous runtime requests paired with bounded asynchronous UI replies."""
+    """Synchronous runtime file requests paired with bounded asynchronous UI replies."""
 
     def __init__(self, emit=emit_event):
         self._emit = emit
@@ -263,12 +365,19 @@ class DesktopFileSearchChannel:
     def open_exact(self, filename: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
         return self._request(filename, "open", timeout_seconds)
 
+    def read_exact(self, filename: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
+        return self._request(filename, "read", timeout_seconds)
+
     def _request(self, query: str, operation: str, timeout_seconds: float) -> dict[str, object] | None:
         clean_query = validate_query(query)
         if operation == "open":
             request = make_file_open_request(uuid4().hex, clean_query)
             event_type = OPEN_REQUEST_TYPE
             result_type = OPEN_RESULT_TYPE
+        elif operation == "read":
+            request = make_file_read_request(uuid4().hex, clean_query)
+            event_type = READ_REQUEST_TYPE
+            result_type = READ_RESULT_TYPE
         elif operation == "search":
             request = make_search_request(uuid4().hex, clean_query)
             event_type = REQUEST_TYPE
@@ -296,6 +405,8 @@ class DesktopFileSearchChannel:
             return (
                 make_file_open_result(request_id, "open_failed")
                 if operation == "open"
+                else make_file_read_result(request_id, "read_failed")
+                if operation == "read"
                 else make_search_result(request_id, "search_failed")
             )
         with self._lock:
@@ -305,6 +416,8 @@ class DesktopFileSearchChannel:
         return (
             make_file_open_result(request_id, "open_failed")
             if operation == "open"
+            else make_file_read_result(request_id, "read_failed")
+            if operation == "read"
             else make_search_result(request_id, "search_failed")
         )
 

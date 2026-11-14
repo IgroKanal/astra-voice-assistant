@@ -85,7 +85,7 @@ def main():
                     "src.desktop_file_search" not in runtime_modules):
                 raise ValueError("The runtime model client, provider adapter or voice file-access module is missing from AstraRuntime.exe")
             print("PACKAGED_LLM_PROVIDER_PASS: AIClient and the shared provider adapters are embedded in AstraRuntime.exe")
-            print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open IPC and workspace checks are embedded in AstraRuntime.exe")
+            print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open/read IPC and workspace checks are embedded in AstraRuntime.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")
             print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded preview/execution UI are embedded in Astra.exe")
             print("PACKAGED_AVATAR_LAUNCHER_PASS: the packaged UI includes the isolated 3D preview launcher")

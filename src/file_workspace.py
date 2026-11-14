@@ -58,6 +58,7 @@ class FileWorkspace:
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
         ".mp3", ".wav", ".m4a", ".mp4", ".avi", ".mkv",
     }
+    READABLE_SUFFIXES = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx"}
     BLOCKED = {".astra-history", ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube", "appdata", ".venv", "__pycache__", "node_modules"}
     SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx"}
 

@@ -5,7 +5,7 @@ import json
 import os
 
 PREFIX = "@ASTRA_EVENT "
-KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request"})
+KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request", "file_read_request"})
 
 
 def emit_event(kind: str, text: str) -> bool:

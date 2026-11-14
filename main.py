@@ -33,6 +33,7 @@ from src.command_parser import (
     MEMORY_SAVE_TARGET,
     MEMORY_SEARCH_PREFIX,
     FILE_OPEN_HELP_TARGET,
+    FILE_READ_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
@@ -91,6 +92,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.MEMORY_NOTE,
     CommandType.FILE_SEARCH,
     CommandType.FILE_OPEN,
+    CommandType.FILE_READ,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -108,6 +110,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.MEMORY_NOTE,
     ActionType.FILE_SEARCH,
     ActionType.FILE_OPEN,
+    ActionType.FILE_READ,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -149,6 +152,8 @@ class TurnContext:
     audit: Callable | None = None
     file_search: Callable | None = None
     file_open: Callable | None = None
+    file_read: Callable | None = None
+    speak_private_local: Callable[[str], bool] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -639,6 +644,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.MEMORY_NOTE: ActionType.MEMORY_NOTE,
         CommandType.FILE_SEARCH: ActionType.FILE_SEARCH,
         CommandType.FILE_OPEN: ActionType.FILE_OPEN,
+        CommandType.FILE_READ: ActionType.FILE_READ,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -656,6 +662,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     elif parsed.type == CommandType.FILE_SEARCH:
         query = parsed.target
     elif parsed.type == CommandType.FILE_OPEN:
+        query = parsed.target
+    elif parsed.type == CommandType.FILE_READ:
         query = parsed.target
 
     return AssistantAction(
@@ -1082,6 +1090,59 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         else:
             filename = _safe_memory_voice_text(result["files"][0].replace("\\", "/").rsplit("/", 1)[-1], 160)
             ctx.respond(f"Открываю файл {filename}.")
+        return True
+
+    if action.type == ActionType.FILE_READ:
+        if action.target == FILE_READ_HELP_TARGET:
+            ctx.respond("Скажи: прочитай файл и его точное имя с расширением. Сначала выбери папку в разделе «Файлы» и отдельно включи чтение документов в разрешениях.")
+            return True
+        if not ctx.settings.tts_enabled or ctx.settings.tts_engine != "sapi" or not callable(ctx.speak_private_local):
+            ctx.respond("Приватное чтение документов доступно только с включённым локальным голосом Windows SAPI в голосовом режиме.")
+            return True
+        if not callable(ctx.file_read):
+            ctx.respond("Голосовое чтение доступно в настольном приложении. Открой раздел «Файлы» и выбери папку.")
+            return True
+        try:
+            result = ctx.file_read(action.query)
+        except (ValueError, TypeError):
+            ctx.respond("Назови точное имя документа с расширением, без пути.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось проверить документ в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Голосовое чтение недоступно. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» и выбери папку для чтения.")
+        elif result.get("status") == "not_found":
+            ctx.respond("Документ с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.respond("В выбранной папке несколько документов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.respond("Этот тип файла или ссылка не разрешены для голосового чтения.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Чтение отменено: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.respond("Не удалось прочитать документ. Поддерживаются TXT, MD, PDF, DOCX, XLSX и PPTX.")
+        else:
+            from src.desktop_file_search import make_file_read_result
+            try:
+                checked = make_file_read_result(
+                    result.get("request_id"), result.get("status"),
+                    result.get("filename"), result.get("text"),
+                )
+            except (TypeError, ValueError):
+                ctx.respond("Получен некорректный ответ чтения документа.")
+                return True
+            filename = checked["filename"]
+            ctx.respond(f"Читаю начало документа «{filename}» локальным голосом. Текст не попадёт в чат.")
+            try:
+                spoken = ctx.speak_private_local(checked["text"])
+            except Exception as exc:
+                ctx.logger.error("Приватная локальная озвучка завершилась ошибкой (%s)", type(exc).__name__)
+                spoken = False
+            if not spoken:
+                ctx.respond("Не удалось озвучить документ локальным голосом. Проверь настройки Windows SAPI и русский голос.")
         return True
 
     if action.type == ActionType.MEMORY_NOTE:
@@ -1813,6 +1874,8 @@ def run_voice_mode(
         media=media,
         file_search=file_search_channel.search,
         file_open=file_search_channel.open_exact,
+        file_read=file_search_channel.read_exact,
+        speak_private_local=getattr(voice, "speak_private_local", None),
     )
 
     if _wake_only_voice_enabled(settings):

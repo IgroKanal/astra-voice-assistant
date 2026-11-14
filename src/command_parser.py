@@ -31,6 +31,7 @@ class CommandType(str, Enum):
     MEMORY_NOTE = "memory_note"
     FILE_SEARCH = "file_search"
     FILE_OPEN = "file_open"
+    FILE_READ = "file_read"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
@@ -66,6 +67,7 @@ MEMORY_SEARCH_PREFIX = "__memory_search__:"
 MEMORY_FORGET_PREFIX = "__memory_forget__:"
 FILE_SEARCH_HELP_TARGET = "__file_search_help__"
 FILE_OPEN_HELP_TARGET = "__file_open_help__"
+FILE_READ_HELP_TARGET = "__file_read_help__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -899,6 +901,10 @@ COMMAND_HINTS = (
     "поиск документа",
     "открой файл",
     "открой документ",
+    "прочитай файл",
+    "прочитай документ",
+    "зачитай файл",
+    "зачитай документ",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
@@ -1605,6 +1611,18 @@ def _parse_file_open_command(raw_text: str, normalized: str) -> ParsedCommand | 
     return None
 
 
+def _parse_file_read_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = ("прочитай файл", "прочитай документ", "зачитай файл", "зачитай документ")
+    for prefix in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            filename = tail or ""
+            if 2 <= len(filename) <= 120 and all(char.isprintable() for char in filename) and not any(char in filename for char in "/\\:"):
+                return ParsedCommand(CommandType.FILE_READ, text=normalized, target=filename)
+            return ParsedCommand(CommandType.FILE_READ, text=normalized, target=FILE_READ_HELP_TARGET)
+    return None
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
@@ -1621,6 +1639,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     file_open = _parse_file_open_command(text, normalized)
     if file_open is not None:
         return file_open
+
+    file_read = _parse_file_read_command(text, normalized)
+    if file_read is not None:
+        return file_read
 
     memory_command = _parse_memory_command(text, normalized)
     if memory_command is not None:

@@ -321,6 +321,7 @@ class VoiceFileSearchTests(unittest.TestCase):
         voice.tts_engine = Mock()
         voice.tts_has_russian_voice = True
         voice.logger = Mock()
+        voice._log_tts_timing = Mock()
         events = []
         with patch("src.audio_io.emit_event", side_effect=lambda kind, text: events.append((kind, text)) or True):
             self.assertTrue(voice.speak_private_local("секретный текст документа"))
@@ -329,6 +330,7 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertTrue(all(kind == "state" for kind, _text in events))
         self.assertNotIn("секретный текст документа", json.dumps(events, ensure_ascii=False))
         self.assertNotIn("секретный текст документа", str(voice.logger.mock_calls))
+        self.assertEqual(voice._log_tts_timing.call_args.args[1], "sapi_private")
 
         voice.settings = replace(voice.settings, tts_engine="edge")
         voice.tts_engine.reset_mock()

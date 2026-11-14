@@ -304,6 +304,20 @@ class TTSLatencyTests(unittest.TestCase):
         voice._log_tts_timing = Mock()
         return voice
 
+    def test_sapi_playback_logs_duration_without_speech_text(self):
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(tts_enabled=True, tts_engine="sapi", tts_log_timing=True)
+        voice.tts_engine = Mock()
+        voice.tts_has_russian_voice = True
+        voice.logger = Mock()
+        voice._log_tts_timing = Mock()
+
+        voice._speak_sapi("A short local response")
+
+        voice.tts_engine.say.assert_called_once_with("A short local response")
+        self.assertEqual(voice._log_tts_timing.call_args.args[1], "sapi")
+        self.assertNotIn("A short local response", str(voice.logger.mock_calls))
+
     def test_dynamic_cache_miss_streams_directly_without_waiting_for_cache_generation(self):
         with tempfile.TemporaryDirectory() as temp:
             voice = self._voice(Path(temp))

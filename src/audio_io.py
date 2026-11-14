@@ -589,6 +589,7 @@ class VoiceIO:
         if self._has_cyrillic(excerpt) and not self.tts_has_russian_voice:
             return False
         emit_event("state", "Читаю выбранный документ локально…")
+        started = time.perf_counter()
         try:
             self.tts_engine.say(excerpt)
             self.tts_engine.runAndWait()
@@ -599,6 +600,7 @@ class VoiceIO:
             self.logger.error("Приватная локальная SAPI-озвучка завершилась ошибкой (%s)", type(exc).__name__)
             return False
         finally:
+            self._log_tts_timing(started, "sapi_private")
             emit_event("state", "Голосовой режим · микрофон включён")
 
     def _speak_edge(self, text: str) -> None:
@@ -838,9 +840,12 @@ class VoiceIO:
             )
             return
 
+        started = time.perf_counter()
         try:
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
         except Exception:
             self.logger.exception("Ошибка SAPI TTS")
             print("[TTS ошибка] Не удалось озвучить ответ, но текст выведен.")
+        finally:
+            self._log_tts_timing(started, "sapi")

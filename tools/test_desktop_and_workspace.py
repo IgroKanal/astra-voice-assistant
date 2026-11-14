@@ -48,6 +48,46 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkspaceDenied, "не поддерживается"):
             self.workspace.read_text("payload.exe")
 
+    def test_html_read_extracts_visible_text_without_granting_open_permission(self):
+        (self.root / "guide.html").write_text(
+            """<!doctype html><html><head><title>Заголовок окна</title></head><body>
+            <main><h1>Привет &amp; мир</h1><p>Текст <strong>для чтения</strong>.</p>
+            <div hidden>скрытый блок</div><span aria-hidden="true">скрытая метка</span>
+            <div style="display: none">скрытый стиль</div>
+            <script>скрытый скрипт</script><script/>скрытая запись</script>
+            <style>.secret { color: red }</style>
+            <template>шаблон</template><noscript>fallback</noscript><svg>vector label</svg>
+            <canvas>canvas fallback</canvas><iframe>встроенное содержимое</iframe>
+            <pre>    code one
+      code two</pre>
+            <p>Конец</p></main></body></html>""",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(
+            self.workspace.read_text("guide.html"),
+            "Привет & мир\nТекст для чтения.\n    code one\n      code two\nКонец",
+        )
+        self.assertEqual(self.workspace.checked_readable_file("guide.html"), self.root / "guide.html")
+        with self.assertRaisesRegex(WorkspaceDenied, "тип файла"):
+            self.workspace.checked_openable_file("guide.html")
+
+        (self.root / "guide.htm").write_text("<p>Короткая версия</p>", encoding="utf-8")
+        self.assertEqual(self.workspace.read_text("guide.htm"), "Короткая версия")
+
+    def test_html_read_honors_cancellation_while_parsing(self):
+        (self.root / "long.html").write_text("<p>строка</p>" * 100, encoding="utf-8")
+        checks = 0
+
+        def cancel_after_some_parser_events():
+            nonlocal checks
+            checks += 1
+            return checks >= 12
+
+        with self.assertRaisesRegex(WorkspaceDenied, "отменено"):
+            self.workspace.read_text("long.html", is_cancelled=cancel_after_some_parser_events)
+        self.assertLess(checks, 20)
+
     def test_file_question_retrieval_can_read_a_selected_csv_without_model_or_network(self):
         from src.file_rag import FileQuestionSession
 

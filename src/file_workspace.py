@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
+from html.parser import HTMLParser
 import os
 from pathlib import Path
 import posixpath
+import re
 import stat
 import time
 from typing import Callable
@@ -31,6 +33,129 @@ class ImagePreview:
     image_format: str
     original_width: int
     original_height: int
+
+
+class _VisibleHTMLTextParser(HTMLParser):
+    """Extract bounded visible HTML text without interpreting active content."""
+
+    IGNORED_TAGS = {
+        "head", "script", "style", "noscript", "template", "svg", "canvas",
+        "iframe", "object", "embed",
+    }
+    VOID_TAGS = {
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr",
+    }
+    BLOCK_TAGS = {
+        "address", "article", "aside", "blockquote", "br", "dd", "details", "div",
+        "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form", "h1",
+        "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav",
+        "ol", "p", "pre", "section", "table", "tbody", "td", "tfoot", "th",
+        "thead", "tr", "ul",
+    }
+
+    def __init__(self, check_limits: Callable[[], None]):
+        super().__init__(convert_charrefs=True)
+        self._check_limits = check_limits
+        self._ignored_stack: list[str] = []
+        self._parts: list[tuple[str, bool]] = []
+        self._pre_depth = 0
+
+    @staticmethod
+    def _is_hidden(attrs: list[tuple[str, str | None]]) -> bool:
+        values = {name.casefold(): value or "" for name, value in attrs}
+        if "hidden" in values or values.get("aria-hidden", "").strip().casefold() == "true":
+            return True
+        style = values.get("style", "")
+        return bool(re.search(r"(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b", style, re.IGNORECASE))
+
+    def _separator(self) -> None:
+        if not self._parts:
+            return
+        text, preserve = self._parts[-1]
+        if text.endswith("\n"):
+            return
+        if not preserve:
+            text = text.rstrip(" ")
+            if text:
+                self._parts[-1] = (text, preserve)
+            else:
+                self._parts.pop()
+            if not self._parts or self._parts[-1][0].endswith("\n"):
+                return
+        self._parts.append(("\n", False))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._check_limits()
+        tag = tag.casefold()
+        if self._ignored_stack:
+            if tag not in self.VOID_TAGS:
+                self._ignored_stack.append(tag)
+            return
+        if tag in self.IGNORED_TAGS or self._is_hidden(attrs):
+            if tag not in self.VOID_TAGS:
+                self._ignored_stack.append(tag)
+            return
+        if tag == "pre":
+            self._pre_depth += 1
+        if tag in self.BLOCK_TAGS:
+            self._separator()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._check_limits()
+        tag = tag.casefold()
+        if self._ignored_stack:
+            if tag not in self.VOID_TAGS:
+                self._ignored_stack.append(tag)
+            return
+        if tag in self.IGNORED_TAGS or self._is_hidden(attrs):
+            if tag not in self.VOID_TAGS:
+                self._ignored_stack.append(tag)
+            return
+        if tag in self.BLOCK_TAGS:
+            self._separator()
+
+    def handle_endtag(self, tag: str) -> None:
+        self._check_limits()
+        tag = tag.casefold()
+        if self._ignored_stack:
+            for index in range(len(self._ignored_stack) - 1, -1, -1):
+                if self._ignored_stack[index] == tag:
+                    del self._ignored_stack[index:]
+                    break
+            return
+        if tag == "pre" and self._pre_depth:
+            self._pre_depth -= 1
+        if tag in self.BLOCK_TAGS:
+            self._separator()
+
+    def handle_data(self, data: str) -> None:
+        self._check_limits()
+        if self._ignored_stack or not data:
+            return
+        if self._pre_depth:
+            self._parts.append((data, True))
+            return
+        data = re.sub(r"[ \t\f\r\n]+", " ", data)
+        if data == " ":
+            if not self._parts or self._parts[-1][0].endswith((" ", "\n")):
+                return
+        self._parts.append((data, False))
+
+    def visible_text(self, max_characters: int) -> str:
+        parts = list(self._parts)
+        while parts and not parts[-1][1] and parts[-1][0] == "\n":
+            parts.pop()
+        if parts and not parts[0][1]:
+            text, preserve = parts[0]
+            parts[0] = (text.lstrip(" \t\f\v\n"), preserve)
+        if parts and not parts[-1][1]:
+            text, preserve = parts[-1]
+            parts[-1] = (text.rstrip(" \t\f\v\n"), preserve)
+        result = "".join(text.replace("\r\n", "\n").replace("\r", "\n") for text, _ in parts)
+        if len(result) > max_characters:
+            raise WorkspaceDenied("Извлечённый HTML-текст превышает безопасный лимит")
+        return result
 
 
 class FileWorkspace:
@@ -68,7 +193,7 @@ class FileWorkspace:
         ".gradle", ".properties",
     })
     READABLE_SUFFIXES = PLAIN_TEXT_SUFFIXES | frozenset(
-        {".pdf", ".docx", ".xlsx", ".pptx"}
+        {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx"}
     )
     BLOCKED = {".astra-history", ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube", "appdata", ".venv", "__pycache__", "node_modules"}
     SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx"}
@@ -313,8 +438,28 @@ class FileWorkspace:
                         result = data.decode("cp1251")
                     except UnicodeDecodeError:
                         raise WorkspaceDenied("Поддерживаются текст UTF-8, UTF-16 с BOM и CP1251") from None
+            if suffix in {".html", ".htm"}:
+                result = self._extract_html(result, check_limits=check_limits)
         check_limits()
         return result
+
+    @classmethod
+    def _extract_html(
+        cls,
+        source: str,
+        *,
+        check_limits: Callable[[], None],
+    ) -> str:
+        parser = _VisibleHTMLTextParser(check_limits)
+        try:
+            parser.feed(source)
+            parser.close()
+        except WorkspaceDenied:
+            raise
+        except Exception as exc:
+            raise WorkspaceDenied("Не удалось безопасно разобрать выбранный HTML-файл") from exc
+        check_limits()
+        return parser.visible_text(cls.MAX_DOCUMENT_CHARACTERS)
 
     def preview_image(self, relative: str) -> ImagePreview:
         """Decode one explicitly selected image into a bounded, metadata-free PNG."""

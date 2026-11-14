@@ -45,7 +45,7 @@ class OllamaClient:
             raise ValueError("Неверный ответ Ollama")
         return result
 
-    def _streaming_request(self, path, payload, is_cancelled):
+    def _streaming_request(self, path, payload, is_cancelled, on_chunk=None):
         """Read Ollama NDJSON while allowing a caller to abort the local socket."""
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = urlsplit(self.base_url)
@@ -176,6 +176,12 @@ class OllamaClient:
                             content.append(part)
                             if part and first_token_seconds is None:
                                 first_token_seconds = time.perf_counter() - request_started
+                            if part and on_chunk is not None:
+                                try:
+                                    on_chunk(part)
+                                except Exception:
+                                    # Speech/telemetry callbacks must not break model output.
+                                    pass
                     if item.get("done") is True:
                         done_reason = item.get("done_reason")
                         saw_done = True
@@ -300,7 +306,7 @@ class OllamaClient:
         )
         return True
 
-    def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None, cancelled=None, timing_callback=None):
+    def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None, cancelled=None, timing_callback=None, on_chunk=None):
         if model not in self.models():
             raise ValueError("Модель не установлена в Ollama. Автоматическое скачивание отключено.")
         prior = []
@@ -328,15 +334,19 @@ class OllamaClient:
             raise ValueError("Некорректная проверка отмены запроса к локальной модели")
         if timing_callback is not None and not callable(timing_callback):
             raise ValueError("Некорректный обработчик замеров локальной модели")
+        if on_chunk is not None and not callable(on_chunk):
+            raise ValueError("Некорректный обработчик потокового ответа")
         metadata = self._model_info(model)
         # By default preserve each model's existing behavior. Fast request paths
         # may explicitly disable hidden reasoning and get the final answer sooner.
         thinking = ("thinking" in metadata.get("capabilities", [])) if think is None else think
-        stream = cancelled is not None or timing_callback is not None
+        stream = cancelled is not None or timing_callback is not None or on_chunk is not None
         payload = {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": stream, "think": thinking, "options": {"temperature": temperature, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"}
         if stream:
             is_cancelled = cancelled if cancelled is not None else (lambda: False)
-            result = self._streaming_request("/api/chat", payload, is_cancelled)
+            result = self._streaming_request(
+                "/api/chat", payload, is_cancelled, on_chunk=on_chunk
+            )
         else:
             result = self._request("/api/chat", payload)
         if timing_callback is not None:

@@ -46,12 +46,13 @@ class LocalModelLatencyTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
+        chunks = []
         try:
             client = OllamaClient(
                 f"http://127.0.0.1:{server.server_address[1]}", timeout=3
             )
             result = client._streaming_request(
-                "/api/chat", {"stream": True}, lambda: False
+                "/api/chat", {"stream": True}, lambda: False, on_chunk=chunks.append
             )
         finally:
             server.shutdown()
@@ -59,6 +60,7 @@ class LocalModelLatencyTests(unittest.TestCase):
             server_thread.join(timeout=2)
 
         self.assertEqual(result["message"]["content"], "first second")
+        self.assertEqual(chunks, ["first", " second"])
         self.assertGreaterEqual(result["timing"]["first_token_seconds"], 0)
         self.assertGreater(result["timing"]["elapsed_seconds"], result["timing"]["first_token_seconds"])
 
@@ -422,6 +424,16 @@ class TTSLatencyTests(unittest.TestCase):
         voice.tts_engine.say.assert_called_once_with("A short local response")
         self.assertEqual(voice._log_tts_timing.call_args.args[1], "sapi")
         self.assertNotIn("A short local response", str(voice.logger.mock_calls))
+
+    def test_audio_only_playback_does_not_emit_a_duplicate_chat_answer(self):
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(tts_enabled=True, tts_engine="edge")
+        voice._speak_edge = Mock(return_value=True)
+        with patch("src.audio_io.emit_event") as emit:
+            self.assertTrue(voice.speak_audio_only("Первая фраза.", manage_state=False))
+
+        voice._speak_edge.assert_called_once_with("Первая фраза.")
+        emit.assert_not_called()
 
     def test_dynamic_cache_miss_streams_directly_without_waiting_for_cache_generation(self):
         with tempfile.TemporaryDirectory() as temp:

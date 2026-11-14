@@ -555,26 +555,30 @@ class VoiceIO:
         if not text:
             return
 
+        self.publish_response(text)
+        self.speak_audio_only(text)
+
+    def publish_response(self, text: str) -> None:
+        """Show one complete assistant answer without starting another TTS pass."""
+        text = text.strip()
+        if not text:
+            return
         if not emit_event("assistant", text):
             print(f"Астра: {text}")
         self.logger.info("Ответ подготовлен: %s символов", len(text))
 
-        if not self.settings.tts_enabled:
-            return
-
-        if self.settings.tts_engine == "edge":
+    def speak_audio_only(self, text: str, *, manage_state: bool = True) -> bool:
+        """Speak one bounded answer fragment without duplicating the chat event."""
+        text = text.strip()
+        if not text or not self.settings.tts_enabled:
+            return False
+        if manage_state:
             emit_event("state", "Говорю…")
-            try:
-                self._speak_edge(text)
-            finally:
-                emit_event("state", "Голосовой режим · микрофон включён")
-            return
-
-        emit_event("state", "Говорю…")
         try:
-            self._speak_sapi(text)
+            return self._speak_edge(text) if self.settings.tts_engine == "edge" else self._speak_sapi(text)
         finally:
-            emit_event("state", "Голосовой режим · микрофон включён")
+            if manage_state:
+                emit_event("state", "Голосовой режим · микрофон включён")
 
     def speak_private_local(self, text: str) -> bool:
         """Speak a bounded document excerpt with SAPI without emitting its text."""
@@ -603,12 +607,12 @@ class VoiceIO:
             self._log_tts_timing(started, "sapi_private")
             emit_event("state", "Голосовой режим · микрофон включён")
 
-    def _speak_edge(self, text: str) -> None:
+    def _speak_edge(self, text: str) -> bool:
         start = time.perf_counter()
 
         if self.edge_playback_command is None:
             self.logger.error("Edge TTS недоступен: edge-playback не найден.")
-            return
+            return False
 
         if self.settings.tts_cache_enabled:
             # Dynamic replies use direct playback on a miss. Persisting every
@@ -620,7 +624,7 @@ class VoiceIO:
             )
             if cached.is_file() and self._play_cached_audio(cached):
                 self._log_tts_timing(start, "cache")
-                return
+                return True
             self.logger.debug("TTS cache miss: using direct playback to avoid synthesis wait")
 
         playback_timeout = min(
@@ -635,7 +639,7 @@ class VoiceIO:
             timeout_seconds=primary_budget,
         ):
             self._log_tts_timing(start, "direct")
-            return
+            return True
 
         fallback_voice = self.settings.tts_edge_fallback_voice.strip()
         if fallback_voice and fallback_voice != self.settings.tts_edge_voice:
@@ -650,10 +654,11 @@ class VoiceIO:
                 timeout_seconds=fallback_budget,
             ):
                 self._log_tts_timing(start, "direct_fallback_voice")
-                return
+                return True
 
         self._log_tts_timing(start, "failed")
         print("[TTS ошибка] Не удалось озвучить ответ.")
+        return False
 
     def _ensure_edge_cached_audio(self, text: str, voice: str) -> Path | None:
         cache_path = self._edge_cache_path(text=text, voice=voice)
@@ -829,23 +834,25 @@ class VoiceIO:
         elapsed = time.perf_counter() - start
         self.logger.info("TTS timing: %.2fs [%s]", elapsed, mode)
 
-    def _speak_sapi(self, text: str) -> None:
+    def _speak_sapi(self, text: str) -> bool:
         if self.tts_engine is None:
-            return
+            return False
 
         if self._has_cyrillic(text) and not self.tts_has_russian_voice:
             self.logger.warning(
                 "Ответ содержит кириллицу, но русский SAPI-голос не найден. "
                 "Озвучка пропущена."
             )
-            return
+            return False
 
         started = time.perf_counter()
         try:
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
+            return True
         except Exception:
             self.logger.exception("Ошибка SAPI TTS")
             print("[TTS ошибка] Не удалось озвучить ответ, но текст выведен.")
+            return False
         finally:
             self._log_tts_timing(started, "sapi")

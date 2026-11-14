@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import json
 import sys
 import tempfile
@@ -137,6 +138,31 @@ class AIProfileTests(unittest.TestCase):
         self.assertEqual(len(timing_lines), 1)
         self.assertIn("elapsed=0.250s", timing_lines[0])
         self.assertNotIn("Секретный", "\n".join(captured.output))
+
+    def test_local_answer_streams_text_only_when_hidden_thinking_is_disabled(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        chunks = []
+
+        def answer(*_args, **kwargs):
+            kwargs["on_chunk"]("Первое предложение.")
+            return "Первое предложение."
+
+        with patch.object(OllamaClient, "chat", side_effect=answer) as chat:
+            result = AIClient(settings).ask("Вопрос", on_text_chunk=chunks.append)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(chunks, ["Первое предложение."])
+        self.assertTrue(callable(chat.call_args.kwargs["on_chunk"]))
+
+        settings = replace(settings, ollama_thinking_enabled=True)
+        with patch.object(OllamaClient, "chat", return_value="Полный ответ.") as chat:
+            result = AIClient(settings).ask("Вопрос", on_text_chunk=chunks.append)
+        self.assertTrue(result.ok)
+        self.assertNotIn("on_chunk", chat.call_args.kwargs)
 
     def test_local_thinking_can_be_enabled_through_runtime_settings(self):
         settings = Settings(

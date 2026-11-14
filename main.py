@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ from src.routine_controller import RoutineConfigError, RoutineController, Routin
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
+from src.streaming_speech import FirstSentenceBuffer
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -169,6 +171,8 @@ class TurnContext:
     file_read: Callable | None = None
     file_question: Callable | None = None
     speak_private_local: Callable[[str], bool] | None = None
+    speak_partial: Callable[[str], bool] | None = None
+    respond_streamed: Callable[[str, str], None] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1667,8 +1671,34 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.ASK_LLM:
         question = action.query or action.text
         emit_event("state", "Думаю · локальная модель" if ctx.settings.llm_provider == "ollama" else "Думаю · выбранный ИИ")
-        result = ctx.ai_client.ask(question)
-        ctx.respond(result.message)
+        spoken_parts = []
+        can_stream_speech = (
+            ctx.settings.llm_provider == "ollama"
+            and not ctx.settings.ollama_thinking_enabled
+            and callable(ctx.speak_partial)
+            and callable(ctx.respond_streamed)
+        )
+        if can_stream_speech:
+            cleaner = getattr(ctx.ai_client, "_clean_llm_answer", None)
+            first_sentence = FirstSentenceBuffer(cleaner if callable(cleaner) else None)
+
+            def speak_first_sentence(chunk: str) -> None:
+                sentence = first_sentence.feed(chunk)
+                if not sentence:
+                    return
+                try:
+                    if ctx.speak_partial(sentence):
+                        spoken_parts.append(sentence)
+                except Exception:
+                    ctx.logger.warning("Early local speech failed; final answer will use regular TTS")
+
+            result = ctx.ai_client.ask(question, on_text_chunk=speak_first_sentence)
+        else:
+            result = ctx.ai_client.ask(question)
+        if spoken_parts and callable(ctx.respond_streamed):
+            ctx.respond_streamed(result.message, " ".join(spoken_parts))
+        else:
+            ctx.respond(result.message)
         return True
 
     if action.type == ActionType.EMPTY:
@@ -1954,6 +1984,7 @@ def run_voice_mode(
     voice.speak(f"{settings.assistant_name} запущена.")
 
     state = TurnState()
+    partial_audio: dict[str, object] = {"event": None, "text": "", "ok": False}
 
     def respond(message: str) -> None:
         shortened = shorten_voice_response(message, settings)
@@ -1961,6 +1992,54 @@ def run_voice_mode(
             logger.info("Voice response shortened. full_characters=%s shortened_characters=%s", len(message), len(shortened))
         state.last_assistant_response = shortened
         voice.speak(shortened)
+
+    def speak_partial(sentence: str) -> bool:
+        if partial_audio["event"] is not None:
+            return False
+        completed = threading.Event()
+        partial_audio.update({"event": completed, "text": sentence, "ok": False})
+
+        def speak_in_background() -> None:
+            try:
+                partial_audio["ok"] = voice.speak_audio_only(sentence, manage_state=False)
+            except Exception:
+                logger.warning("Early Edge TTS playback failed")
+            finally:
+                completed.set()
+
+        emit_event("state", "Говорю · ответ ещё формируется")
+        try:
+            threading.Thread(
+                target=speak_in_background,
+                name="AstraEarlySpeech",
+                daemon=True,
+            ).start()
+        except Exception:
+            partial_audio.update({"event": None, "text": "", "ok": False})
+            emit_event("state", "Думаю · локальная модель")
+            return False
+        return True
+
+    def respond_streamed(message: str, spoken_prefix: str) -> None:
+        shortened = shorten_voice_response(message, settings)
+        state.last_assistant_response = shortened
+        voice.publish_response(shortened)
+        completed = partial_audio.get("event")
+        budget = min(60.0, max(1.0, settings.tts_playback_timeout_seconds))
+        finished = not isinstance(completed, threading.Event) or completed.wait(budget + 2.0)
+        partial_ok = finished and bool(partial_audio.get("ok"))
+        if partial_ok and shortened.startswith(spoken_prefix):
+            remainder = shortened[len(spoken_prefix):].strip()
+            if remainder:
+                voice.speak_audio_only(remainder, manage_state=False)
+        elif finished:
+            if completed is not None and partial_ok:
+                logger.warning("Streamed speech prefix did not match final response; replaying complete answer")
+            voice.speak_audio_only(shortened, manage_state=False)
+        else:
+            logger.error("Early TTS exceeded its playback budget; skipping overlapping final audio")
+        partial_audio.update({"event": None, "text": "", "ok": False})
+        emit_event("state", "Голосовой режим · микрофон включён")
 
     def get_follow_up() -> str:
         follow_up = voice.listen_once(
@@ -1997,6 +2076,12 @@ def run_voice_mode(
         file_read=file_search_channel.read_exact,
         file_question=file_search_channel.ask_file,
         speak_private_local=getattr(voice, "speak_private_local", None),
+        speak_partial=(
+            speak_partial
+            if settings.tts_enabled and settings.tts_engine == "edge"
+            else None
+        ),
+        respond_streamed=respond_streamed,
     )
 
     if _wake_only_voice_enabled(settings):

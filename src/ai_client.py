@@ -8,7 +8,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from openai import OpenAIError
@@ -126,10 +126,16 @@ class AIClient:
             return False
         return True
 
-    def ask(self, question: str) -> LLMResult:
+    def ask(
+        self,
+        question: str,
+        on_text_chunk: Callable[[str], None] | None = None,
+    ) -> LLMResult:
         question = question.strip()
         if not question:
             return LLMResult(False, "Вопрос пустой.")
+        if on_text_chunk is not None and not callable(on_text_chunk):
+            return LLMResult(False, "Некорректный обработчик потокового ответа.")
 
         if not self.settings.llm_enabled:
             return LLMResult(False, "LLM отключена в настройках.")
@@ -147,7 +153,7 @@ class AIClient:
 
             try:
                 context = self._memory_context(question)
-                answer = self.provider.answer(
+                answer_options = dict(
                     model=self.settings.llm_model,
                     system=self._build_answer_system_prompt(),
                     question=question,
@@ -158,6 +164,9 @@ class AIClient:
                     think=self.settings.ollama_thinking_enabled,
                     timing_callback=capture_stream_timing,
                 )
+                if on_text_chunk is not None and not self.settings.ollama_thinking_enabled:
+                    answer_options["on_chunk"] = on_text_chunk
+                answer = self.provider.answer(**answer_options)
                 clean_answer = self._clean_llm_answer(answer)
                 first_token = stream_timing.get("first_token_seconds")
                 if first_token is not None:

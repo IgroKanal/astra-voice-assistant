@@ -325,6 +325,138 @@ class WorkspaceTests(unittest.TestCase):
         with patch.object(FileWorkspace, "MAX_DOCX_XML_BYTES", 8), self.assertRaisesRegex(WorkspaceDenied, "допустимый основной документ"):
             self.workspace.read_text("large.docx")
 
+    def test_odt_paragraphs_lists_and_tables_are_read_without_execution(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:text><text:h>Руководство</text:h>
+          <text:p>Привет <text:span>мир</text:span><text:s text:c="2"/>!</text:p>
+          <text:list><text:list-item><text:p>Пункт списка</text:p></text:list-item></text:list>
+          <text:deletion><text:p>Удалённый текст</text:p></text:deletion>
+          <office:annotation><text:p>Комментарий</text:p></office:annotation>
+          <table:table><table:table-row><table:table-cell><text:p>Ячейка A</text:p></table:table-cell>
+          <table:table-cell><text:p>Ячейка B</text:p></table:table-cell></table:table-row></table:table>
+          </office:text></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "guide.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("guide.odt"),
+            "Руководство\nПривет мир  !\nПункт списка\nЯчейка A\nЯчейка B",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("guide.odt"), self.root / "guide.odt")
+
+    def test_ods_reads_sheet_values_and_expanded_repeated_cells(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:spreadsheet><table:table table:name="Бюджет">
+          <table:table-row><table:table-cell office:value-type="string"><text:p>Месяц</text:p></table:table-cell>
+          <table:table-cell office:value="1200" table:number-columns-repeated="2"/></table:table-row>
+          <table:table-row><table:table-cell office:value-type="string"><text:p>Май</text:p></table:table-cell>
+          <table:table-cell office:value="1800" office:value-type="float"/></table:table-row>
+          </table:table></office:spreadsheet></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "budget.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("budget.ods"),
+            "[Лист: Бюджет]\nA1: Месяц\nB1: 1200\nC1: 1200\nA2: Май\nB2: 1800",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("budget.ods"), self.root / "budget.ods")
+
+    def test_ods_rejects_a_document_without_extractable_values(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">
+          <office:body><office:spreadsheet><table:table table:name="Пустой">
+          <table:table-row><table:table-cell/></table:table-row>
+          </table:table></office:spreadsheet></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "empty.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        with self.assertRaisesRegex(WorkspaceDenied, "нет извлекаемого текста"):
+            self.workspace.read_text("empty.ods")
+
+    def test_odp_preserves_slide_order_and_ignores_speaker_notes(self):
+        content = '''<?xml version="1.0" encoding="UTF-8"?>
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+          xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+          xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+          xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0">
+          <office:body><office:presentation>
+          <draw:page draw:name="intro"><draw:frame><draw:text-box><text:p>Первый слайд</text:p>
+          <text:p>Подзаголовок</text:p></draw:text-box></draw:frame>
+          <presentation:notes><text:p>Заметка докладчика</text:p></presentation:notes></draw:page>
+          <draw:page draw:name="second"><text:p>Второй слайд</text:p></draw:page>
+          </office:presentation></office:body></office:document-content>'''.encode("utf-8")
+        with zipfile.ZipFile(self.root / "briefing.odp", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+
+        self.assertEqual(
+            self.workspace.read_text("briefing.odp"),
+            "[Слайд 1]\nПервый слайд\nПодзаголовок\n\n[Слайд 2]\nВторой слайд",
+        )
+        self.assertEqual(self.workspace.checked_openable_file("briefing.odp"), self.root / "briefing.odp")
+
+    def test_odf_entities_and_xml_expansion_limits_are_rejected(self):
+        unsafe = (
+            b'<!DOCTYPE x [<!ENTITY secret "unsafe">]>'
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body/></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "unsafe.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", unsafe)
+        with self.assertRaisesRegex(WorkspaceDenied, "XML-сущности"):
+            self.workspace.read_text("unsafe.odt")
+
+        valid = (
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">'
+            b'<office:body><office:text/></office:body></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "large.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", valid)
+        with (
+            patch.object(FileWorkspace, "MAX_OFFICE_XML_BYTES", 8),
+            self.assertRaisesRegex(WorkspaceDenied, "превышает 5 МБ"),
+        ):
+            self.workspace.read_text("large.odt")
+
+        repeated = (
+            b'<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            b'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0">'
+            b'<office:body><office:spreadsheet><table:table><table:table-row>'
+            b'<table:table-cell table:number-columns-repeated="999999999"/>'
+            b'</table:table-row></table:table></office:spreadsheet></office:body></office:document-content>'
+        )
+        with zipfile.ZipFile(self.root / "repeat.ods", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", repeated)
+        with self.assertRaisesRegex(WorkspaceDenied, "повторение элемента"):
+            self.workspace.read_text("repeat.ods")
+
+    def test_odf_extraction_honors_cancellation_between_paragraphs(self):
+        paragraphs = "".join(f"<text:p>строка {index}</text:p>" for index in range(100))
+        content = (
+            '<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text>'
+            + paragraphs
+            + "</office:text></office:body></office:document-content>"
+        ).encode("utf-8")
+        with zipfile.ZipFile(self.root / "long.odt", "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("content.xml", content)
+        checks = 0
+
+        def cancel_after_some_paragraphs():
+            nonlocal checks
+            checks += 1
+            return checks >= 18
+
+        with self.assertRaisesRegex(WorkspaceDenied, "Чтение отменено"):
+            self.workspace.read_text("long.odt", is_cancelled=cancel_after_some_paragraphs)
+        self.assertLess(checks, 30)
+
     def test_xlsx_reads_shared_inline_and_cached_formula_values(self):
         parts = {
             "xl/workbook.xml": '''<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Сводка" sheetId="1" r:id="rId1"/></sheets></workbook>''',

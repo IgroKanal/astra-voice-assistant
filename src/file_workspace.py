@@ -179,7 +179,7 @@ class FileWorkspace:
     MAX_RESULTS = 500
     MAX_VISITED = 10000
     OPENABLE_SUFFIXES = {
-        ".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx",
+        ".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
         ".mp3", ".wav", ".m4a", ".mp4", ".avi", ".mkv",
     }
@@ -193,7 +193,7 @@ class FileWorkspace:
         ".gradle", ".properties",
     })
     READABLE_SUFFIXES = PLAIN_TEXT_SUFFIXES | frozenset(
-        {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx"}
+        {".html", ".htm", ".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"}
     )
     BLOCKED = {".astra-history", ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube", "appdata", ".venv", "__pycache__", "node_modules"}
     SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx"}
@@ -411,7 +411,12 @@ class FileWorkspace:
         suffix = path.suffix.casefold()
         if suffix not in self.READABLE_SUFFIXES:
             raise WorkspaceDenied("Этот тип файла не поддерживается для чтения")
-        limit = self.MAX_DOCUMENT_BYTES if suffix in {".pdf", ".docx", ".xlsx", ".pptx"} else self.MAX_READ_BYTES
+        document_suffixes = {".pdf", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"}
+        limit = (
+            self.MAX_DOCUMENT_BYTES
+            if suffix in document_suffixes
+            else self.MAX_READ_BYTES
+        )
         data = self._read_bounded(relative, limit, check_limits=check_limits)
         check_limits()
         if suffix == ".pdf":
@@ -422,6 +427,12 @@ class FileWorkspace:
             result = self._extract_xlsx(data, check_limits=check_limits)
         elif suffix == ".pptx":
             result = self._extract_pptx(data, check_limits=check_limits)
+        elif suffix == ".odt":
+            result = self._extract_odt(data, check_limits=check_limits)
+        elif suffix == ".ods":
+            result = self._extract_ods(data, check_limits=check_limits)
+        elif suffix == ".odp":
+            result = self._extract_odp(data, check_limits=check_limits)
         else:
             if data.startswith((b"\xff\xfe", b"\xfe\xff")):
                 try:
@@ -806,6 +817,286 @@ class FileWorkspace:
             raise
         except (KeyError, OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
             raise WorkspaceDenied("Не удалось разобрать PPTX") from exc
+
+    @classmethod
+    def _odf_inline_text(
+        cls,
+        node: ET.Element,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
+        text_ns = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+        office_ns = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
+        ignored_inline_tags = {
+            office_ns + "annotation",
+            office_ns + "scripts",
+            text_ns + "deletion",
+            text_ns + "script",
+            text_ns + "tracked-changes",
+        }
+        pieces = []
+
+        def collect(current: ET.Element) -> None:
+            if check_limits is not None:
+                check_limits()
+            if current.tag in ignored_inline_tags:
+                return
+            if current.text:
+                pieces.append(current.text)
+            for child in current:
+                if child.tag in ignored_inline_tags:
+                    continue
+                if child.tag == text_ns + "tab":
+                    pieces.append("\t")
+                elif child.tag == text_ns + "line-break":
+                    pieces.append("\n")
+                elif child.tag == text_ns + "s":
+                    raw_count = child.get(text_ns + "c", "1")
+                    if not raw_count.isdecimal() or len(raw_count) > 3:
+                        raise WorkspaceDenied("Некорректный повтор пробела в ODF")
+                    count = int(raw_count)
+                    if not 1 <= count <= 1000:
+                        raise WorkspaceDenied("Слишком много повторных пробелов в ODF")
+                    pieces.append(" " * count)
+                else:
+                    collect(child)
+                if child.tail:
+                    pieces.append(child.tail)
+
+        collect(node)
+        return "".join(pieces)
+
+    @classmethod
+    def _odf_paragraphs(
+        cls,
+        root: ET.Element,
+        paragraph_tags: set[str],
+        ignored_tags: set[str],
+        check_limits: Callable[[], None] | None = None,
+    ):
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            if check_limits is not None:
+                check_limits()
+            if current.tag in ignored_tags:
+                continue
+            if current.tag in paragraph_tags:
+                yield current
+                continue
+            pending.extend(reversed(list(current)))
+
+    @classmethod
+    def _odf_repeat_count(cls, node: ET.Element, attribute: str, label: str) -> int:
+        table_ns = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
+        raw_count = node.get(table_ns + attribute, "1")
+        if not raw_count.isdecimal() or len(raw_count) > 6:
+            raise WorkspaceDenied(f"Некорректное повторение элемента в {label}")
+        count = int(raw_count)
+        if not 1 <= count <= cls.MAX_OFFICE_CELLS:
+            raise WorkspaceDenied(f"Слишком большое повторение элемента в {label}")
+        return count
+
+    @classmethod
+    def _extract_odt(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
+        office_ns = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
+        text_ns = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+        ignored_tags = {
+            office_ns + "annotation", office_ns + "scripts",
+            text_ns + "deletion", text_ns + "script", text_ns + "tracked-changes",
+        }
+        total = [0]
+        try:
+            with cls._office_package(data, "ODT", check_limits) as package:
+                root = cls._office_xml(package, "content.xml", "ODT", total, check_limits)
+                body = root.find(office_ns + "body")
+                text_body = body.find(office_ns + "text") if body is not None else None
+                if text_body is None:
+                    raise WorkspaceDenied("В ODT не найден основной текст")
+                output = []
+                text_chars = 0
+                for node in cls._odf_paragraphs(
+                    text_body,
+                    {text_ns + "p", text_ns + "h"},
+                    ignored_tags,
+                    check_limits,
+                ):
+                    paragraph = cls._odf_inline_text(node, check_limits).strip()
+                    if not paragraph:
+                        continue
+                    output.append(paragraph)
+                    text_chars += len(paragraph) + 1
+                    if text_chars > cls.MAX_DOCUMENT_CHARACTERS:
+                        raise WorkspaceDenied("Извлечённый ODT-текст больше 1 МБ")
+                result = "\n".join(output)
+                if not result:
+                    raise WorkspaceDenied("В ODT нет извлекаемого текста")
+                return result
+        except WorkspaceDenied:
+            raise
+        except (KeyError, OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+            raise WorkspaceDenied("Не удалось разобрать ODT") from exc
+
+    @classmethod
+    def _extract_ods(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
+        office_ns = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
+        text_ns = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+        table_ns = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
+        ignored_tags = {
+            "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}annotation",
+            "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}scripts",
+            text_ns + "deletion", text_ns + "script", text_ns + "tracked-changes",
+        }
+        total = [0]
+
+        def column_name(index: int) -> str:
+            letters = []
+            while index:
+                index, remainder = divmod(index - 1, 26)
+                letters.append(chr(ord("A") + remainder))
+            return "".join(reversed(letters))
+
+        try:
+            with cls._office_package(data, "ODS", check_limits) as package:
+                root = cls._office_xml(package, "content.xml", "ODS", total, check_limits)
+                body = root.find(office_ns + "body")
+                spreadsheet = body.find(office_ns + "spreadsheet") if body is not None else None
+                sheets = spreadsheet.findall(table_ns + "table") if spreadsheet is not None else None
+                if sheets is None or not sheets or len(sheets) > cls.MAX_OFFICE_SHEETS:
+                    raise WorkspaceDenied("ODS должен содержать от 1 до 100 листов")
+                output = []
+                cells_seen = 0
+                text_chars = 0
+                has_content = False
+                for sheet_index, sheet in enumerate(sheets, 1):
+                    if check_limits is not None:
+                        check_limits()
+                    sheet_name = sheet.get(table_ns + "name", f"Лист {sheet_index}")[:120]
+                    output.append(f"[Лист: {sheet_name}]")
+                    row_number = 1
+                    for row in sheet.iter(table_ns + "table-row"):
+                        if check_limits is not None:
+                            check_limits()
+                        repeated_rows = cls._odf_repeat_count(row, "number-rows-repeated", "ODS")
+                        cells = [
+                            cell for cell in row
+                            if cell.tag in {table_ns + "table-cell", table_ns + "covered-table-cell"}
+                        ]
+                        if not cells:
+                            row_number += repeated_rows
+                            continue
+                        repeated_columns = [
+                            cls._odf_repeat_count(cell, "number-columns-repeated", "ODS")
+                            for cell in cells
+                        ]
+                        cells_seen += repeated_rows * sum(repeated_columns)
+                        if cells_seen > cls.MAX_OFFICE_CELLS:
+                            raise WorkspaceDenied("В ODS больше 200000 ячеек; чтение остановлено")
+                        for row_offset in range(repeated_rows):
+                            if check_limits is not None:
+                                check_limits()
+                            column_number = 1
+                            current_row = row_number + row_offset
+                            for cell, repeated_columns_count in zip(cells, repeated_columns):
+                                if check_limits is not None:
+                                    check_limits()
+                                if cell.tag == table_ns + "covered-table-cell":
+                                    value = ""
+                                else:
+                                    paragraphs = [
+                                        cls._odf_inline_text(paragraph, check_limits).strip()
+                                        for paragraph in cls._odf_paragraphs(
+                                            cell, {text_ns + "p"}, ignored_tags, check_limits,
+                                        )
+                                    ]
+                                    value = " ".join(part for part in paragraphs if part)
+                                    if not value:
+                                        for attribute in (
+                                            "string-value", "value", "date-value", "time-value", "boolean-value",
+                                        ):
+                                            candidate = cell.get(office_ns + attribute)
+                                            if candidate:
+                                                value = candidate
+                                                break
+                                    if not value:
+                                        formula = cell.get(table_ns + "formula", "")
+                                        if formula:
+                                            value = "=" + formula
+                                if value:
+                                    for column_offset in range(repeated_columns_count):
+                                        line = f"{column_name(column_number + column_offset)}{current_row}: {value}"
+                                        output.append(line)
+                                        has_content = True
+                                        text_chars += len(line) + 1
+                                        if text_chars > cls.MAX_DOCUMENT_CHARACTERS:
+                                            raise WorkspaceDenied("Извлечённый ODS-текст больше 1 МБ")
+                                column_number += repeated_columns_count
+                        row_number += repeated_rows
+                result = "\n".join(output).strip()
+                if not result or not has_content:
+                    raise WorkspaceDenied("В ODS нет извлекаемого текста")
+                return result
+        except WorkspaceDenied:
+            raise
+        except (KeyError, OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+            raise WorkspaceDenied("Не удалось разобрать ODS") from exc
+
+    @classmethod
+    def _extract_odp(
+        cls,
+        data: bytes,
+        check_limits: Callable[[], None] | None = None,
+    ) -> str:
+        office_ns = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
+        text_ns = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"
+        draw_ns = "{urn:oasis:names:tc:opendocument:xmlns:drawing:1.0}"
+        presentation_ns = "{urn:oasis:names:tc:opendocument:xmlns:presentation:1.0}"
+        ignored_tags = {
+            office_ns + "annotation", office_ns + "scripts",
+            text_ns + "deletion", text_ns + "script", text_ns + "tracked-changes",
+            presentation_ns + "notes",
+        }
+        total = [0]
+        try:
+            with cls._office_package(data, "ODP", check_limits) as package:
+                root = cls._office_xml(package, "content.xml", "ODP", total, check_limits)
+                body = root.find(office_ns + "body")
+                presentation = body.find(office_ns + "presentation") if body is not None else None
+                slides = presentation.findall(draw_ns + "page") if presentation is not None else None
+                if slides is None or len(slides) > cls.MAX_PRESENTATION_SLIDES:
+                    raise WorkspaceDenied("ODP должен содержать не более 200 слайдов")
+                output = []
+                text_chars = 0
+                paragraph_tags = {text_ns + "p", text_ns + "h"}
+                for slide_number, slide in enumerate(slides, 1):
+                    if check_limits is not None:
+                        check_limits()
+                    paragraphs = []
+                    for node in cls._odf_paragraphs(slide, paragraph_tags, ignored_tags, check_limits):
+                        value = cls._odf_inline_text(node, check_limits).strip()
+                        if value:
+                            paragraphs.append(value)
+                    if paragraphs:
+                        block = f"[Слайд {slide_number}]\n" + "\n".join(paragraphs)
+                        output.append(block)
+                        text_chars += len(block) + 1
+                        if text_chars > cls.MAX_DOCUMENT_CHARACTERS:
+                            raise WorkspaceDenied("Извлечённый ODP-текст больше 1 МБ")
+                result = "\n\n".join(output)
+                if not result:
+                    raise WorkspaceDenied("В ODP нет извлекаемого текста")
+                return result
+        except WorkspaceDenied:
+            raise
+        except (KeyError, OSError, ValueError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+            raise WorkspaceDenied("Не удалось разобрать ODP") from exc
 
     @classmethod
     def _extract_pdf(

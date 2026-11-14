@@ -29,6 +29,8 @@ class OllamaClient:
         self.timeout = timeout
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
         self._request_lock = threading.Lock()
+        self._models_lock = threading.Lock()
+        self._model_info_lock = threading.Lock()
         self._models_cache: tuple[float, list[str]] | None = None
         self._model_info_cache: dict[str, tuple[float, dict]] = {}
 
@@ -258,29 +260,39 @@ class OllamaClient:
                 self._request_lock.release()
 
     def models(self):
-        now = time.monotonic()
-        if self._models_cache is not None and now < self._models_cache[0]:
-            return list(self._models_cache[1])
-        result = [item["name"] for item in self._request("/api/tags").get("models", []) if isinstance(item, dict) and isinstance(item.get("name"), str)]
-        self._models_cache = (now + self._MODELS_CACHE_TTL_SECONDS, result)
-        return list(result)
+        with self._models_lock:
+            now = time.monotonic()
+            if self._models_cache is not None and now < self._models_cache[0]:
+                return list(self._models_cache[1])
+            result = [
+                item["name"]
+                for item in self._request("/api/tags").get("models", [])
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            ]
+            self._models_cache = (now + self._MODELS_CACHE_TTL_SECONDS, result)
+            return list(result)
 
     def _model_info(self, model):
-        now = time.monotonic()
-        cached = self._model_info_cache.get(model)
-        if cached is not None and now < cached[0]:
-            return cached[1]
-        metadata = self._request("/api/show", {"model": model})
-        self._model_info_cache[model] = (
-            now + self._MODEL_INFO_CACHE_TTL_SECONDS,
-            metadata,
-        )
-        return metadata
+        with self._model_info_lock:
+            now = time.monotonic()
+            cached = self._model_info_cache.get(model)
+            if cached is not None and now < cached[0]:
+                return cached[1]
+            metadata = self._request("/api/show", {"model": model})
+            self._model_info_cache[model] = (
+                now + self._MODEL_INFO_CACHE_TTL_SECONDS,
+                metadata,
+            )
+            return metadata
 
     def warmup(self, model):
         """Load an already-installed model with a bounded local-only request."""
         if not isinstance(model, str) or model not in self.models():
             return False
+        # Fetch model capabilities while the wake-only warmup is already running.
+        # The first actual answer can then use cached metadata instead of
+        # waiting for a separate /api/show request on the response path.
+        self._model_info(model)
         loaded = self._request("/api/ps").get("models", [])
         if isinstance(loaded, list) and any(
             isinstance(item, dict) and item.get("name") == model

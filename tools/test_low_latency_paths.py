@@ -188,12 +188,16 @@ class LocalModelLatencyTests(unittest.TestCase):
         with patch.object(client, "models", return_value=["qwen3:4b"]), patch.object(
             client,
             "_request",
-            side_effect=[{"models": []}, {"done": True}],
+            side_effect=[{"capabilities": ["thinking"]}, {"models": []}, {"done": True}],
         ) as request:
             self.assertTrue(client.warmup("qwen3:4b"))
 
-        self.assertEqual(request.call_count, 2)
-        path, payload = request.call_args.args
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in request.call_args_list],
+            ["/api/show", "/api/ps", "/api/chat"],
+        )
+        path, payload = request.call_args_list[-1].args
         self.assertEqual(path, "/api/chat")
         self.assertEqual(payload["model"], "qwen3:4b")
         self.assertFalse(payload["think"])
@@ -205,10 +209,101 @@ class LocalModelLatencyTests(unittest.TestCase):
         with patch.object(client, "models", return_value=["qwen3:4b"]), patch.object(
             client,
             "_request",
-            return_value={"models": [{"name": "qwen3:4b"}]},
+            side_effect=[
+                {"capabilities": ["thinking"]},
+                {"models": [{"name": "qwen3:4b"}]},
+            ],
         ) as request:
             self.assertTrue(client.warmup("qwen3:4b"))
-        request.assert_called_once_with("/api/ps")
+        self.assertEqual(
+            [call.args for call in request.call_args_list],
+            [("/api/show", {"model": "qwen3:4b"}), ("/api/ps",)],
+        )
+
+    def test_warmup_prefetches_capabilities_for_the_next_chat_turn(self):
+        client = OllamaClient()
+        requests = []
+
+        def request(path, payload=None):
+            requests.append((path, payload))
+            if path == "/api/show":
+                return {"capabilities": ["thinking"]}
+            if path == "/api/ps":
+                return {"models": [{"name": "qwen3:4b"}]}
+            if path == "/api/chat":
+                return {"message": {"content": "готово"}, "done_reason": "stop"}
+            raise AssertionError(f"unexpected request: {path}")
+
+        with patch.object(client, "models", return_value=["qwen3:4b"]), patch.object(
+            client, "_request", side_effect=request
+        ):
+            self.assertTrue(client.warmup("qwen3:4b"))
+            self.assertEqual(client.chat("qwen3:4b", "system", "question"), "готово")
+
+        self.assertEqual([path for path, _payload in requests], ["/api/show", "/api/ps", "/api/chat"])
+        chat_payload = requests[-1][1]
+        self.assertTrue(chat_payload["think"])
+
+    def test_warmup_and_first_chat_share_one_concurrent_metadata_fetch(self):
+        client = OllamaClient()
+        tags_started = threading.Event()
+        release_tags = threading.Event()
+        metadata_started = threading.Event()
+        release_metadata = threading.Event()
+        paths = []
+        paths_lock = threading.Lock()
+        errors = []
+
+        def request(path, payload=None):
+            with paths_lock:
+                paths.append(path)
+            if path == "/api/tags":
+                tags_started.set()
+                if not release_tags.wait(timeout=2):
+                    raise TimeoutError("model-list test gate timed out")
+                return {"models": [{"name": "qwen3:4b"}]}
+            if path == "/api/show":
+                metadata_started.set()
+                if not release_metadata.wait(timeout=2):
+                    raise TimeoutError("metadata test gate timed out")
+                return {"capabilities": ["thinking"]}
+            if path == "/api/ps":
+                return {"models": [{"name": "qwen3:4b"}]}
+            if path == "/api/chat":
+                return {"message": {"content": "готово"}, "done_reason": "stop"}
+            raise AssertionError(f"unexpected request: {path}")
+
+        def warmup():
+            try:
+                client.warmup("qwen3:4b")
+            except Exception as exc:
+                errors.append(exc)
+
+        def answer():
+            try:
+                client.chat("qwen3:4b", "system", "question")
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(client, "_request", side_effect=request):
+            warmup_thread = threading.Thread(target=warmup)
+            answer_thread = threading.Thread(target=answer)
+            warmup_thread.start()
+            self.assertTrue(tags_started.wait(timeout=2))
+            answer_thread.start()
+            release_tags.set()
+            self.assertTrue(metadata_started.wait(timeout=2))
+            release_metadata.set()
+            warmup_thread.join(timeout=2)
+            answer_thread.join(timeout=2)
+
+        self.assertFalse(warmup_thread.is_alive())
+        self.assertFalse(answer_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(paths.count("/api/tags"), 1)
+        self.assertEqual(paths.count("/api/show"), 1)
+        self.assertIn("/api/ps", paths)
+        self.assertIn("/api/chat", paths)
 
     def test_local_http_requests_are_serialized(self):
         client = OllamaClient()

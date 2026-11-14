@@ -22,7 +22,7 @@
 - Ранее установленная `qwen3:4b` локально прогрета через localhost за 11 секунд; модель не скачивалась. Это единичный замер прогрева модели, не измерение полного ответа.
 - Базовый voice-core, кооперативная отмена поиска/чтения/File RAG и локальный отчёт задержек прошли GitHub Windows CI `43489284075`, `43493497060`, `43495159745`, `43496136563` и `43498745535`, включая portable-package validation; документационный commit прошёл `43497299929`.
 - Документационный CI `43499930483` выявил два хрупких теста точного сравнения float для TTS-бюджета; заменил их сравнением с допуском `1e-6`. Все 24 теста voice-latency suite прошли локально; новая полная CI-проверка ожидается после push.
-- Полный локальный gate текущей ревизии прошёл: compileall, desktop/runtime compilation, 292 unit/UI/runtime tests, 9 smoke tests, 4 config validators и Astra Doctor. Сборка portable ZIP/установщика и Windows CI именно этого изменения ожидаются после push.
+- Полный локальный gate текущей ревизии прошёл: compileall, desktop/runtime compilation, 292 unit/UI/runtime tests, 9 smoke tests, 4 config validators и Astra Doctor. GitHub Windows CI `43549909211` прошёл с проверкой portable-пакета; ручная микрофонная и звуковая приёмка остаётся открытой.
 
 ## Открытые gates
 

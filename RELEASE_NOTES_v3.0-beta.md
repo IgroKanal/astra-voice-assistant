@@ -20,7 +20,7 @@
 - Windows CI для коммита `2dd0362` прошёл в run `43541082070`, включая сборку переносимого ZIP и интеграционную проверку установщика.
 - Windows package/installer CI для чтения документа прошёл в run `43543628718`: проверены встроенный runtime, переносимый ZIP и установка с сохранением данных при удалении.
 - SAPI duration-only logging прошёл Windows CI `43544336055`. Продолжение чтения прошло локальный gate и Windows package/installer CI `43546387923`.
-- Полный локальный gate текущего voice core прошёл: компиляция, 292 unit/UI/runtime tests, 9 smoke tests, 4 config validators и Astra Doctor. Windows package/installer CI для нового голосового вопроса ожидается после push; ручная приёмка остаётся открытой.
+- Полный локальный gate текущего voice core прошёл: компиляция, 292 unit/UI/runtime tests, 9 smoke tests, 4 config validators и Astra Doctor. Windows CI `43549909211` прошёл, включая проверку portable-пакета; ручная приёмка остаётся открытой.
 - Ручная проверка реального микрофона и голоса ещё не проведена.
 
 ## Открытые критерии Beta

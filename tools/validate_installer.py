@@ -43,8 +43,6 @@ def validate(installer: Path) -> None:
         prefix="astra-installer-check-", dir=paths.temp_root
     ) as temp:
         root = Path(temp)
-        child_temp = root / "temp"
-        child_temp.mkdir()
         install_root = root / "Astra installed under a path with spaces"
         local_app_data = root / "User profile" / "AppData" / "Local"
         user_data = local_app_data / "AstraVoiceAssistant"
@@ -54,9 +52,9 @@ def validate(installer: Path) -> None:
         env = dict(
             os.environ,
             LOCALAPPDATA=str(local_app_data),
-            TEMP=str(child_temp),
-            TMP=str(child_temp),
-            TMPDIR=str(child_temp),
+            TEMP=str(paths.temp_root),
+            TMP=str(paths.temp_root),
+            TMPDIR=str(paths.temp_root),
         )
 
         setup = run(

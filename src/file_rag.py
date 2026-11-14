@@ -168,14 +168,27 @@ class FileQuestionSession:
             )))
         if self.collection_fingerprint(current) != digest:
             raise WorkspaceDenied("Один из выбранных файлов изменился во время ответа. Повтори вопрос по актуальному содержимому.")
-        invalid_citations = {
+        citation_matches = [
             int(match.group(1))
             for match in re.finditer(r"\[\s*(\d+)\s*\]", answer)
-            if not 1 <= int(match.group(1)) <= len(selected)
+        ]
+        invalid_citations = {
+            index for index in citation_matches
+            if not 1 <= index <= len(selected)
         }
         if invalid_citations:
             raise ValueError("Локальная модель сослалась на отсутствующий фрагмент; повтори вопрос и проверь источники вручную.")
-        transmitted = tuple(Passage(item["lines"][0], item["lines"][1], item["text"],
-                                    passages[index].score, passages[index].file)
-                            for index, item in enumerate(selected))
+        if not citation_matches:
+            raise ValueError("Локальная модель не указала источник ответа; повтори вопрос или проверь документ вручную.")
+        cited_indices = tuple(dict.fromkeys(index - 1 for index in citation_matches))
+        transmitted = tuple(
+            Passage(
+                selected[index]["lines"][0],
+                selected[index]["lines"][1],
+                selected[index]["text"],
+                passages[index].score,
+                passages[index].file,
+            )
+            for index in cited_indices
+        )
         return FileAnswer(answer, transmitted, digest)

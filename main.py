@@ -32,6 +32,7 @@ from src.command_parser import (
     MEMORY_LIST_TARGET,
     MEMORY_SAVE_TARGET,
     MEMORY_SEARCH_PREFIX,
+    FILE_SEARCH_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -87,6 +88,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.SCREENSHOT,
     CommandType.SYSTEM_INFO,
     CommandType.MEMORY_NOTE,
+    CommandType.FILE_SEARCH,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -102,6 +104,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.ROUTINE,
     ActionType.REMINDER,
     ActionType.MEMORY_NOTE,
+    ActionType.FILE_SEARCH,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -141,6 +144,7 @@ class TurnContext:
     routines: RoutineController | None = None
     media: MediaController | None = None
     audit: Callable | None = None
+    file_search: Callable | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -629,6 +633,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.ROUTINE: ActionType.ROUTINE,
         CommandType.REMINDER: ActionType.REMINDER,
         CommandType.MEMORY_NOTE: ActionType.MEMORY_NOTE,
+        CommandType.FILE_SEARCH: ActionType.FILE_SEARCH,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -643,6 +648,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         query = parsed.target or parsed.text
     elif parsed.type == CommandType.MEMORY_NOTE and parsed.target == MEMORY_SAVE_TARGET:
         query = parsed.text
+    elif parsed.type == CommandType.FILE_SEARCH:
+        query = parsed.target
 
     return AssistantAction(
         type=mapping.get(parsed.type, ActionType.UNKNOWN),
@@ -978,6 +985,54 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.FILE_SEARCH:
+        if action.target == FILE_SEARCH_HELP_TARGET:
+            ctx.respond("Скажи: найди файл и его имя. Сначала выбери папку в разделе «Файлы» приложения Astra.")
+            return True
+        if not callable(ctx.file_search):
+            ctx.respond("Голосовой поиск доступен в настольном приложении. Сначала выбери папку в разделе «Файлы».")
+            return True
+        try:
+            result = ctx.file_search(action.query)
+        except (ValueError, TypeError):
+            ctx.respond("Скажи имя файла без пути. Можно искать фрагмент от двух до 120 символов.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось выполнить поиск в выбранной папке.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Голосовой поиск недоступен. Открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» приложения Astra и выбери папку для поиска.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Поиск отменён: доступ к выбранной папке закрыт.")
+        elif result.get("status") != "ok":
+            ctx.respond("Поиск не завершился. Попробуй уточнить имя файла.")
+        elif (
+            type(result.get("count")) is not int
+            or not 0 <= result.get("count") <= 500
+            or not isinstance(result.get("files"), list)
+            or len(result.get("files")) > 3
+            or any(not isinstance(value, str) for value in result.get("files", []))
+        ):
+            ctx.respond("Получен некорректный ответ от поиска файлов.")
+        elif result.get("count") == 0:
+            ctx.respond("В выбранной папке файл с таким именем не найден.")
+        else:
+            files = [
+                _safe_memory_voice_text(value, 180)
+                for value in result.get("files", [])[:3]
+                if isinstance(value, str)
+            ]
+            count = result.get("count", 0)
+            count_text = "не менее 500" if count >= 500 else str(count)
+            count_word = "совпадение" if count == 1 else "совпадения" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "совпадений"
+            if files:
+                ctx.respond(f"Нашла {count_text} {count_word}: " + "; ".join(files) + ".")
+            else:
+                ctx.respond(f"Нашла {count_text} {count_word} по имени. Подробный список открой в окне «Файлы».")
         return True
 
     if action.type == ActionType.MEMORY_NOTE:
@@ -1649,6 +1704,10 @@ def run_voice_mode(
     routines: RoutineController | None = None,
     media: MediaController | None = None,
 ) -> None:
+    from src.desktop_file_search import DesktopFileSearchChannel
+
+    file_search_channel = DesktopFileSearchChannel()
+    file_search_channel.start_control_reader()
     voice = VoiceIO(settings=settings, logger=logger)
     if voice.microphone is None:
         emit_event("error", "Микрофон недоступен. Выбери текстовый режим.")
@@ -1703,6 +1762,7 @@ def run_voice_mode(
         state=state,
         routines=routines,
         media=media,
+        file_search=file_search_channel.search,
     )
 
     if _wake_only_voice_enabled(settings):

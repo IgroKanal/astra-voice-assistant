@@ -29,6 +29,7 @@ class CommandType(str, Enum):
     ROUTINE = "routine"
     REMINDER = "reminder"
     MEMORY_NOTE = "memory_note"
+    FILE_SEARCH = "file_search"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
@@ -62,6 +63,7 @@ MEMORY_LIST_TARGET = "__memory_list__"
 MEMORY_SAVE_TARGET = "__memory_save__"
 MEMORY_SEARCH_PREFIX = "__memory_search__:"
 MEMORY_FORGET_PREFIX = "__memory_forget__:"
+FILE_SEARCH_HELP_TARGET = "__file_search_help__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -887,6 +889,12 @@ COMMAND_HINTS = (
     "что ты помнишь",
     "забудь заметку",
     "найди заметку",
+    "найди файл",
+    "найди документ",
+    "поищи файл",
+    "поищи документ",
+    "поиск файла",
+    "поиск документа",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
     *EXIT_COMMANDS,
     *SCREENSHOT_COMMANDS,
@@ -1558,6 +1566,29 @@ def _parse_memory_command(raw_text: str, normalized: str) -> ParsedCommand | Non
     return None
 
 
+def _parse_file_search_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = (
+        "найди файл в папке",
+        "найди документ в папке",
+        "найди файл",
+        "найди документ",
+        "поищи файл",
+        "поищи документ",
+        "поиск файла",
+        "поиск документа",
+    )
+    for prefix in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            query = tail or ""
+            if 2 <= len(query) <= 120 and all(char.isprintable() for char in query) and not any(char in query for char in "/\\:"):
+                return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=query)
+            return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=FILE_SEARCH_HELP_TARGET)
+    if normalized in {"найди файл", "найди документ", "поищи файл", "поищи документ", "поиск файла", "поиск документа"}:
+        return ParsedCommand(CommandType.FILE_SEARCH, text=normalized, target=FILE_SEARCH_HELP_TARGET)
+    return None
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
@@ -1566,6 +1597,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
+
+    file_search = _parse_file_search_command(text, normalized)
+    if file_search is not None:
+        return file_search
 
     memory_command = _parse_memory_command(text, normalized)
     if memory_command is not None:

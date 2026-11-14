@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 import win32crypt
 
 from src.config_loader import Settings
-from src.action_policy import ALL_SCOPES
+from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
 
 AVATAR_PROFILES = {
@@ -31,7 +31,7 @@ class AIProfile:
     api_key: str = field(default="", repr=False)
     memory_enabled: bool = False
     local_command_router_enabled: bool = False
-    allowed_scopes: tuple[str, ...] = ALL_SCOPES
+    allowed_scopes: tuple[str, ...] = DEFAULT_SCOPES
     assistant_name: str | None = None
     voice_id: str = ""
     microphone_index: int | None = None

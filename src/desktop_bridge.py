@@ -7,6 +7,9 @@ import queue
 import subprocess
 import threading
 from src.runtime_events import parse_event
+from src.desktop_file_search import encode_search_result
+
+_UNSET_PROCESS = object()
 
 
 class DesktopBridge:
@@ -88,6 +91,24 @@ class DesktopBridge:
         assert self.process is not None and self.process.stdin is not None
         self.process.stdin.write(text + "\n")
         self.process.stdin.flush()
+
+    def reply_file_search(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
+        line = encode_search_result(result)
+        if len(line) > 8192:
+            raise ValueError("Результат поиска слишком велик")
+        with self._lock:
+            process = self.process
+            if (
+                process is None
+                or (expected_process is not _UNSET_PROCESS and process is not expected_process)
+                or process.poll() is not None
+                or process.stdin is None
+                or self.mode != "voice"
+            ):
+                return False
+            process.stdin.write(line)
+            process.stdin.flush()
+        return True
 
     def stop(self) -> None:
         with self._lock:

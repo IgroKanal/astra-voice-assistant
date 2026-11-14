@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from src.action_policy import ALL_SCOPES
+from src.action_policy import DEFAULT_SCOPES
 
 
 class ConfigError(Exception):
@@ -149,7 +149,7 @@ class Settings:
     tts_debug_voices: bool = True
     personal_memory_enabled: bool = False
     personal_memory_path: str = ""
-    action_permissions: tuple[str, ...] = ALL_SCOPES
+    action_permissions: tuple[str, ...] = DEFAULT_SCOPES
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
 from src.desktop_bridge import DesktopBridge
+from src.desktop_file_search import make_search_result, parse_search_request
 from src.file_workspace import FileWorkspace
 from src.personal_memory import PersonalMemory
 from src.skill_executor import ActionPlan, SkillCall, SkillExecutor
@@ -39,6 +40,11 @@ class AstraDesktop:
     def __init__(self, window: tk.Tk, reminder_store=None):
         self.window = window
         self.bridge = DesktopBridge(ROOT)
+        self.active_file_workspace = None
+        self.active_file_panel = None
+        self._file_search_lock = threading.RLock()
+        self._file_search_generation = 0
+        self._file_search_jobs = {}
         self.tray = None
         self.reminder_store = reminder_store
         self.reminder_worker = None
@@ -450,6 +456,7 @@ class AstraDesktop:
         panel.protocol("WM_DELETE_WINDOW", close_files)
         def destroyed(event):
             if event.widget == panel:
+                self._revoke_file_workspace(panel)
                 generation[0] += 1
                 if drain_timer[0] is not None:
                     panel.after_cancel(drain_timer[0])
@@ -491,8 +498,100 @@ class AstraDesktop:
         panel.astra_open_selected = read
         query.bind("<Return>", lambda event: search())
         results.bind("<Double-Button-1>", read)
+        self._set_active_file_workspace(workspace, panel)
         search()
         drain()
+
+    def _set_active_file_workspace(self, workspace, panel):
+        with self._file_search_lock:
+            self._file_search_generation += 1
+            for cancellation, _generation in self._file_search_jobs.values():
+                cancellation.set()
+            self._file_search_jobs.clear()
+            self.active_file_workspace = workspace
+            self.active_file_panel = panel
+
+    def _revoke_file_workspace(self, panel=None):
+        with self._file_search_lock:
+            if panel is not None and self.active_file_panel is not panel:
+                return
+            self._file_search_generation += 1
+            self.active_file_workspace = None
+            self.active_file_panel = None
+            for cancellation, _generation in self._file_search_jobs.values():
+                cancellation.set()
+
+    def _handle_file_search_request(self, text):
+        try:
+            request = parse_search_request(text)
+        except ValueError:
+            return
+        request_id = request["request_id"]
+        query = request["query"]
+        runtime_process = self.bridge.process
+        with self._file_search_lock:
+            workspace = self.active_file_workspace
+            panel = self.active_file_panel
+            generation = self._file_search_generation
+            if workspace is None or panel is None or not panel.winfo_exists():
+                self.bridge.reply_file_search(
+                    make_search_result(request_id, "no_workspace"),
+                    expected_process=runtime_process,
+                )
+                return
+            cancellation = threading.Event()
+            self._file_search_jobs[request_id] = (cancellation, generation)
+
+        def work():
+            import time
+            from src.file_workspace import WorkspaceDenied
+
+            status = "ok"
+            entries = []
+            try:
+                entries = workspace.search(
+                    query,
+                    is_cancelled=cancellation.is_set,
+                    deadline=time.monotonic() + 8.0,
+                )
+            except WorkspaceDenied:
+                status = "cancelled" if cancellation.is_set() else "search_failed"
+            except Exception:
+                status = "search_failed"
+
+            with self._file_search_lock:
+                current = (
+                    generation == self._file_search_generation
+                    and workspace is self.active_file_workspace
+                    and panel is self.active_file_panel
+                    and not cancellation.is_set()
+                )
+                self._file_search_jobs.pop(request_id, None)
+            if not current:
+                status = "cancelled"
+                entries = []
+            try:
+                result = make_search_result(
+                    request_id,
+                    status,
+                    min(len(entries), 500),
+                    [entry.path for entry in entries[:3]],
+                )
+            except (TypeError, ValueError):
+                result = make_search_result(request_id, "search_failed")
+            with self._file_search_lock:
+                still_current = (
+                    current
+                    and generation == self._file_search_generation
+                    and workspace is self.active_file_workspace
+                    and panel is self.active_file_panel
+                    and not cancellation.is_set()
+                )
+                if not still_current:
+                    result = make_search_result(request_id, "cancelled")
+                self.bridge.reply_file_search(result, expected_process=runtime_process)
+
+        threading.Thread(target=work, name="astra-file-search", daemon=True).start()
 
     def open_tasks(self):
         try:
@@ -722,6 +821,8 @@ class AstraDesktop:
                 self.chat.configure(state="normal")
                 self.chat.delete("1.0", "end")
                 self.chat.configure(state="disabled")
+            elif kind == "file_search_request":
+                self._handle_file_search_request(text)
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:

@@ -8,7 +8,7 @@ import tempfile
 import time
 import unittest
 import zipfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from io import BytesIO
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +115,36 @@ class WorkspaceTests(unittest.TestCase):
             {"version": 1, "type": "clear_all_user_data", "text": ""},
         )
         self.assertIsNone(parse_event(unsupported))
+
+    def test_file_search_event_and_voice_reply_use_strict_protocols(self):
+        import json
+        from src.desktop_file_search import make_search_request, make_search_result, parse_control_line
+        from src.runtime_events import PREFIX
+
+        request = make_search_request("a" * 32, "contract")
+        line = PREFIX + json.dumps(
+            {"version": 1, "type": "file_search_request", "text": json.dumps(request)},
+            ensure_ascii=False,
+        )
+        self.assertEqual(parse_event(line), ("file_search_request", json.dumps(request, ensure_ascii=False)))
+
+        process = Mock()
+        process.poll.return_value = None
+        bridge = DesktopBridge(ROOT)
+        bridge.process = process
+        bridge.mode = "voice"
+        result = make_search_result("a" * 32, "ok", 1, ["Reports\\contract.pdf"])
+        self.assertTrue(bridge.reply_file_search(result))
+        control_line = process.stdin.write.call_args.args[0]
+        self.assertEqual(parse_control_line(control_line.rstrip()), result)
+        bridge.mode = "text"
+        self.assertFalse(bridge.reply_file_search(result))
+        replacement_process = Mock()
+        replacement_process.poll.return_value = None
+        bridge.process = replacement_process
+        bridge.mode = "voice"
+        self.assertFalse(bridge.reply_file_search(result, expected_process=process))
+        replacement_process.stdin.write.assert_not_called()
 
     def test_traversal_secrets_and_absolute_paths(self):
         for value in ("../notes.txt", str(self.root / "notes.txt"), ".env", "notes.txt:stream"):

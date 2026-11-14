@@ -205,6 +205,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
         "routines": "Пользовательские режимы",
         "reminders": "Создание напоминаний",
         "memory": "Голосовое управление личными заметками",
+        "files": "Поиск файлов в выбранной папке",
     }
     scope_descriptions = {
         "apps": "Запуск приложений, которые Astra распознаёт по имени.",
@@ -218,6 +219,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
         "routines": "Запуск пользовательских режимов; каждое действие режима проверяется отдельно.",
         "reminders": "Создание, просмотр и отметка локальных напоминаний.",
         "memory": "Запись, поиск и удаление заметок по голосовой команде; нужен локальный Ollama и включённая личная память.",
+        "files": "Поиск только имён в папке, которую выбрали в приложении Astra; доступ заканчивается при закрытии окна файлов.",
     }
     scope_vars = {scope: tk.BooleanVar(value=scope in profile.allowed_scopes) for scope in ALL_SCOPES}
     tk.Label(

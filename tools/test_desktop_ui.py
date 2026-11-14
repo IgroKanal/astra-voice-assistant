@@ -185,6 +185,32 @@ class DesktopUITests(unittest.TestCase):
                 window.after_cancel(app.animation_timer)
                 window.destroy()
 
+    def test_voice_file_search_grant_exists_only_while_selected_folder_window_is_open(self):
+        with tempfile.TemporaryDirectory(prefix="astra-file-session-grant-", dir=ROOT) as temp:
+            window = tk.Tk()
+            window.withdraw()
+            app = AstraDesktop(window)
+            try:
+                self.pump(window, lambda: not app.busy)
+                with patch("astra_desktop.filedialog.askdirectory", return_value=temp):
+                    app.open_files()
+                panel = next(
+                    item for item in window.winfo_children()
+                    if isinstance(item, tk.Toplevel) and item.title().startswith("Astra · файлы")
+                )
+                self.assertIs(app.active_file_panel, panel)
+                self.assertEqual(app.active_file_workspace.root, Path(temp).resolve())
+                panel.destroy()
+                window.update()
+                self.assertIsNone(app.active_file_workspace)
+                self.assertIsNone(app.active_file_panel)
+            finally:
+                app.bridge.prevent_restart()
+                app.bridge.stop()
+                window.after_cancel(app.poll_timer)
+                window.after_cancel(app.animation_timer)
+                window.destroy()
+
     def test_plan_ui_simulation_shows_read_only_steps_without_io(self):
         from src.file_workspace import FileWorkspace
         from src.plan_ui import open_plan_ui
@@ -572,9 +598,9 @@ class DesktopUITests(unittest.TestCase):
                 )
                 canvas = permissions.astra_canvas
                 self.assertGreater(canvas.winfo_height(), 0)
-                memory_card = panel.astra_permission_cards["memory"]
-                self.assertEqual(memory_card.cget("text"), "Голосовое управление личными заметками")
-                last_card = memory_card
+                files_card = panel.astra_permission_cards["files"]
+                self.assertEqual(files_card.cget("text"), "Поиск файлов в выбранной папке")
+                last_card = files_card
                 last_card.event_generate("<FocusIn>")
                 window.update()
                 self.assertGreater(canvas.yview()[0], 0)

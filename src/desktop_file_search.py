@@ -22,6 +22,8 @@ MAX_QUERY_CHARS = 120
 MAX_RESULT_PATH_CHARS = 400
 MAX_SPOKEN_RESULTS = 3
 MAX_SPOKEN_DOCUMENT_CHARS = 1600
+MAX_DOCUMENT_CHARACTERS = 1_000_000
+MAX_READ_OFFSET = MAX_DOCUMENT_CHARACTERS
 MAX_RESULT_COUNT = 500
 MAX_CONTROL_LINE = 8192
 _SEARCH_STATUSES = frozenset({"ok", "no_workspace", "cancelled", "search_failed"})
@@ -85,9 +87,31 @@ def parse_file_open_request(text: str) -> dict[str, object]:
     return make_file_open_request(payload["request_id"], payload["query"])
 
 
-def make_file_read_request(request_id: str, filename: str) -> dict[str, object]:
+def _validate_read_offset(offset: object) -> int:
+    if type(offset) is not int or not 0 <= offset <= MAX_READ_OFFSET:
+        raise ValueError("Некорректное продолжение чтения")
+    return offset
+
+
+def _validate_workspace_generation(generation: object) -> int:
+    if type(generation) is not int or not 0 <= generation <= 2_147_483_647:
+        raise ValueError("Некорректное выбранное рабочее пространство")
+    return generation
+
+
+def make_file_read_request(
+    request_id: str,
+    filename: str,
+    offset: int = 0,
+    workspace_generation: int = 0,
+) -> dict[str, object]:
     request = make_search_request(request_id, filename)
-    return {**request, "type": READ_REQUEST_TYPE}
+    return {
+        **request,
+        "type": READ_REQUEST_TYPE,
+        "offset": _validate_read_offset(offset),
+        "workspace_generation": _validate_workspace_generation(workspace_generation),
+    }
 
 
 def parse_file_read_request(text: str) -> dict[str, object]:
@@ -97,11 +121,13 @@ def parse_file_read_request(text: str) -> dict[str, object]:
         payload = json.loads(text)
     except (ValueError, TypeError):
         raise ValueError("Некорректный запрос чтения файла") from None
-    if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "query"}:
+    if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "query", "offset", "workspace_generation"}:
         raise ValueError("Некорректный запрос чтения файла")
     if payload["version"] != 1 or payload["type"] != READ_REQUEST_TYPE:
         raise ValueError("Неподдерживаемая версия запроса чтения файла")
-    return make_file_read_request(payload["request_id"], payload["query"])
+    return make_file_read_request(
+        payload["request_id"], payload["query"], payload["offset"], payload["workspace_generation"],
+    )
 
 
 def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
@@ -147,6 +173,56 @@ def normalize_spoken_excerpt(text: object, *, truncate: bool = False) -> str:
     if not normalized or len(normalized) > MAX_SPOKEN_DOCUMENT_CHARS:
         raise ValueError("В документе нет допустимого текста для чтения")
     return normalized
+
+
+def spoken_document_chunk(text: object, offset: int = 0) -> tuple[str, int, bool]:
+    """Return one normalized speech chunk and a raw-text cursor without retaining content."""
+    if not isinstance(text, str) or len(text) > MAX_DOCUMENT_CHARACTERS:
+        raise ValueError("Размер документа для чтения превышает лимит")
+    cursor = _validate_read_offset(offset)
+    if cursor > len(text):
+        raise ValueError("Продолжение чтения не соответствует документу")
+
+    output: list[str] = []
+    source_ends: list[int] = []
+    position = cursor
+    while position < len(text) and len(output) <= MAX_SPOKEN_DOCUMENT_CHARS:
+        char = text[position]
+        position += 1
+        if char.isspace():
+            spoken = " "
+        elif unicodedata.category(char).startswith("C"):
+            continue
+        else:
+            spoken = char
+        if spoken == " " and (not output or output[-1] == " "):
+            continue
+        output.append(spoken)
+        source_ends.append(position)
+
+    has_more = False
+    next_offset = position
+    if len(output) > MAX_SPOKEN_DOCUMENT_CHARS:
+        output = output[: MAX_SPOKEN_DOCUMENT_CHARS + 1]
+        source_ends = source_ends[: MAX_SPOKEN_DOCUMENT_CHARS + 1]
+        split_at = "".join(output[:MAX_SPOKEN_DOCUMENT_CHARS]).rfind(" ")
+        if split_at >= int(MAX_SPOKEN_DOCUMENT_CHARS * 0.65):
+            next_offset = source_ends[split_at]
+            output = output[:split_at]
+        else:
+            next_offset = source_ends[MAX_SPOKEN_DOCUMENT_CHARS - 1]
+            output = output[:MAX_SPOKEN_DOCUMENT_CHARS]
+        while next_offset < len(text):
+            char = text[next_offset]
+            if char.isspace() or unicodedata.category(char).startswith("C"):
+                next_offset += 1
+                continue
+            has_more = True
+            break
+    chunk = " ".join("".join(output).split())
+    if not chunk:
+        raise ValueError("В документе больше нет допустимого текста для чтения")
+    return chunk, next_offset, has_more
 
 
 def make_search_result(
@@ -203,6 +279,9 @@ def make_file_read_result(
     status: str,
     filename: str = "",
     text: str = "",
+    next_offset: int = 0,
+    has_more: bool = False,
+    workspace_generation: int = 0,
 ) -> dict[str, object]:
     if not isinstance(request_id, str) or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
         raise ValueError("Некорректный идентификатор чтения")
@@ -210,8 +289,14 @@ def make_file_read_result(
         raise ValueError("Некорректный результат чтения файла")
     if not isinstance(filename, str) or not isinstance(text, str):
         raise ValueError("Некорректные данные результата чтения")
+    next_offset = _validate_read_offset(next_offset)
+    workspace_generation = _validate_workspace_generation(workspace_generation)
+    if type(has_more) is not bool:
+        raise ValueError("Некорректное состояние продолжения чтения")
+    if has_more and (next_offset == 0 or workspace_generation == 0):
+        raise ValueError("Для продолжения нужен курсор и выбранная папка")
     if status != "ok":
-        if filename or text:
+        if filename or text or next_offset or has_more or workspace_generation:
             raise ValueError("Отказ не может содержать данные файла")
         return {
             "version": 1,
@@ -220,6 +305,9 @@ def make_file_read_result(
             "status": status,
             "filename": "",
             "text": "",
+            "next_offset": 0,
+            "has_more": False,
+            "workspace_generation": 0,
         }
     clean_filename = validate_query(filename)
     clean_text = normalize_spoken_excerpt(text)
@@ -230,6 +318,9 @@ def make_file_read_result(
         "status": status,
         "filename": clean_filename,
         "text": clean_text,
+        "next_offset": next_offset,
+        "has_more": has_more,
+        "workspace_generation": workspace_generation,
     }
 
 
@@ -252,6 +343,9 @@ def encode_file_result(result: dict[str, object]) -> str:
             result.get("status"),
             result.get("filename", ""),
             result.get("text", ""),
+            result.get("next_offset", 0),
+            result.get("has_more", False),
+            result.get("workspace_generation", 0),
         )
     elif result.get("type") == OPEN_RESULT_TYPE:
         files = result.get("files")
@@ -289,10 +383,12 @@ def parse_control_line(line: str) -> dict[str, object] | None:
         if payload.get("version") != 1 or payload.get("type") not in {RESULT_TYPE, OPEN_RESULT_TYPE, READ_RESULT_TYPE}:
             return None
         if payload["type"] == READ_RESULT_TYPE:
-            if set(payload) != {"version", "type", "request_id", "status", "filename", "text"}:
+            if set(payload) != {"version", "type", "request_id", "status", "filename", "text", "next_offset", "has_more", "workspace_generation"}:
                 return None
             return make_file_read_result(
                 payload["request_id"], payload["status"], payload["filename"], payload["text"],
+                payload["next_offset"], payload["has_more"],
+                payload["workspace_generation"],
             )
         if set(payload) != {"version", "type", "request_id", "status", "count", "files"}:
             return None
@@ -365,17 +461,37 @@ class DesktopFileSearchChannel:
     def open_exact(self, filename: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
         return self._request(filename, "open", timeout_seconds)
 
-    def read_exact(self, filename: str, timeout_seconds: float = 10.0) -> dict[str, object] | None:
-        return self._request(filename, "read", timeout_seconds)
+    def read_exact(
+        self,
+        filename: str,
+        offset: int = 0,
+        workspace_generation: int = 0,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, object] | None:
+        return self._request(
+            filename,
+            "read",
+            timeout_seconds,
+            offset=offset,
+            workspace_generation=workspace_generation,
+        )
 
-    def _request(self, query: str, operation: str, timeout_seconds: float) -> dict[str, object] | None:
+    def _request(
+        self,
+        query: str,
+        operation: str,
+        timeout_seconds: float,
+        *,
+        offset: int = 0,
+        workspace_generation: int = 0,
+    ) -> dict[str, object] | None:
         clean_query = validate_query(query)
         if operation == "open":
             request = make_file_open_request(uuid4().hex, clean_query)
             event_type = OPEN_REQUEST_TYPE
             result_type = OPEN_RESULT_TYPE
         elif operation == "read":
-            request = make_file_read_request(uuid4().hex, clean_query)
+            request = make_file_read_request(uuid4().hex, clean_query, offset, workspace_generation)
             event_type = READ_REQUEST_TYPE
             result_type = READ_RESULT_TYPE
         elif operation == "search":

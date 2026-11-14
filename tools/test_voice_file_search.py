@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from main import process_turn
 from src.action_policy import DEFAULT_SCOPES, ActionPolicy
-from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_READ_HELP_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
+from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_READ_HELP_TARGET, FILE_READ_NEXT_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile
 from src.desktop_file_search import (
@@ -30,6 +30,7 @@ from src.desktop_file_search import (
     parse_file_open_request,
     parse_file_read_request,
     parse_search_request,
+    spoken_document_chunk,
     validate_query,
 )
 from src.file_workspace import FileWorkspace
@@ -64,6 +65,12 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertEqual(parse_command_text("поищи документ").target, FILE_SEARCH_HELP_TARGET)
         self.assertTrue(is_command_like_text("найди файл отчёт"))
         self.assertTrue(is_command_like_text("прочитай файл отчёт.txt"))
+        for phrase in ("прочитай дальше", "продолжи чтение", "продолжи читать", "следующая часть"):
+            with self.subTest(phrase=phrase):
+                continued = parse_command_text(phrase)
+                self.assertEqual(continued.type, CommandType.FILE_READ)
+                self.assertEqual(continued.target, FILE_READ_NEXT_TARGET)
+                self.assertTrue(is_command_like_text(phrase))
 
     def test_query_is_only_a_bounded_filename_fragment(self):
         self.assertEqual(validate_query("  отчёт  2026.pdf  "), "отчёт 2026.pdf")
@@ -85,9 +92,17 @@ class VoiceFileSearchTests(unittest.TestCase):
             parse_file_open_request(json.dumps(open_request))
         read_request = make_file_read_request("d" * 32, "report.txt")
         self.assertEqual(parse_file_read_request(json.dumps(read_request))["type"], "file_read_request")
+        next_request = make_file_read_request("d" * 32, "report.txt", 3200, 4)
+        self.assertEqual(parse_file_read_request(json.dumps(next_request))["offset"], 3200)
+        self.assertEqual(parse_file_read_request(json.dumps(next_request))["workspace_generation"], 4)
         read_request["unexpected"] = True
         with self.assertRaises(ValueError):
             parse_file_read_request(json.dumps(read_request))
+        for offset in (True, -1, 1_000_001, "4"):
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                make_file_read_request("d" * 32, "report.txt", offset)
+        with self.assertRaises(ValueError):
+            make_file_read_request("d" * 32, "report.txt", 0, True)
         with self.assertRaises(ValueError):
             make_search_result("a" * 32, "ok", 1, ["..\\secret.txt"])
         valid = make_search_result("a" * 32, "ok", 1, ["reports\\report.txt"])
@@ -101,6 +116,12 @@ class VoiceFileSearchTests(unittest.TestCase):
             make_file_read_result("f" * 32, "ok", "..\\secret.txt", "secret")
         with self.assertRaises(ValueError):
             make_file_read_result("f" * 32, "ok", "report.txt", "x" * 1601)
+        with self.assertRaises(ValueError):
+            make_file_read_result("f" * 32, "ok", "report.txt", "текст", 0, True, 1)
+        with self.assertRaises(ValueError):
+            make_file_read_result("f" * 32, "ok", "report.txt", "текст", 3000, True)
+        with self.assertRaises(ValueError):
+            make_file_read_result("f" * 32, "read_failed", next_offset=1)
         self.assertIsNone(parse_control_line(encode_file_result(make_file_read_result("e" * 32, "read_failed")).rstrip().replace('"text":""', '"text":"unexpected"')))
         self.assertIsNone(parse_control_line(encode_file_result(make_file_open_result("e" * 32, "ambiguous")).rstrip().replace('"count":0', '"count":1')))
         self.assertIsNone(parse_control_line(CONTROL_PREFIX + '{"version":1,"type":"file_search_result"}'))
@@ -313,6 +334,65 @@ class VoiceFileSearchTests(unittest.TestCase):
         read_file.assert_not_called()
         speak_private.assert_not_called()
 
+    def test_voice_document_read_continuation_is_wake_only_private_and_expires(self):
+        from src.desktop_file_search import make_file_read_result
+
+        ctx, responses, ai, *_ = make_context()
+        first_text = "Первая часть секретного документа"
+        second_text = "Вторая часть секретного документа"
+        read_file = Mock(side_effect=[
+            make_file_read_result("a" * 32, "ok", "memo.txt", first_text, 1700, True, 1),
+            make_file_read_result("b" * 32, "ok", "memo.txt", second_text, 0, False, 1),
+            make_file_read_result("c" * 32, "ok", "memo.txt", first_text, 1700, True, 1),
+        ])
+        speak_private = Mock(return_value=True)
+        settings = replace(
+            ctx.settings,
+            action_permissions=("read_files",),
+            tts_enabled=True,
+            tts_engine="sapi",
+        )
+        ctx = replace(ctx, settings=settings, file_read=read_file, speak_private_local=speak_private)
+
+        process_turn("Астра, прочитай файл memo.txt", ctx)
+        self.assertEqual(ctx.state.private_read_filename, "memo.txt")
+        self.assertEqual(ctx.state.private_read_offset, 1700)
+        process_turn("Астра, прочитай дальше", ctx)
+        self.assertEqual(read_file.call_args_list[0].args, ("memo.txt",))
+        self.assertEqual(read_file.call_args_list[1].args, ("memo.txt",))
+        self.assertEqual(read_file.call_args_list[1].kwargs, {"offset": 1700, "workspace_generation": 1})
+        self.assertEqual(speak_private.call_args_list, [unittest.mock.call(first_text), unittest.mock.call(second_text)])
+        self.assertEqual(ctx.state.private_read_filename, "")
+        self.assertNotIn(first_text, " ".join(responses))
+        self.assertNotIn(second_text, " ".join(responses))
+        self.assertEqual(ai.ask_calls, 0)
+        self.assertEqual(ai.route_calls, 0)
+
+        process_turn("Астра, прочитай дальше", ctx)
+        self.assertIn("Нет активного чтения", responses[-1])
+        self.assertEqual(read_file.call_count, 2)
+
+        process_turn("Астра, прочитай файл memo.txt", ctx)
+        self.assertEqual(ctx.state.private_read_filename, "memo.txt")
+        ctx.state.private_read_updated_at -= 181
+        process_turn("Астра, прочитай дальше", ctx)
+        self.assertIn("Нет активного чтения", responses[-1])
+        self.assertEqual(read_file.call_count, 3)
+
+    def test_spoken_document_chunks_cover_text_without_gaps_or_duplicates(self):
+        source = ("Первое предложение. Второе предложение; перенос строки.\n\u0000" * 140)
+        normalized = " ".join("".join(char if char.isspace() or not __import__("unicodedata").category(char).startswith("C") else "" for char in source).split())
+        pieces = []
+        offset = 0
+        has_more = True
+        while has_more:
+            piece, next_offset, has_more = spoken_document_chunk(source, offset)
+            self.assertLessEqual(len(piece), 1600)
+            self.assertGreater(next_offset, offset)
+            pieces.append(piece)
+            offset = next_offset
+        self.assertEqual(" ".join(pieces), normalized)
+
     def test_private_sapi_reader_does_not_emit_document_text_or_log_it(self):
         from src.audio_io import VoiceIO
 
@@ -369,8 +449,36 @@ class VoiceFileSearchTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["filename"], "memo.txt")
             self.assertLessEqual(len(result["text"]), 1600)
+            self.assertTrue(result["has_more"])
+            self.assertGreater(result["next_offset"], 0)
             self.assertNotIn(str(root), json.dumps(result, ensure_ascii=False))
             self.assertNotIn("script.exe", json.dumps(result, ensure_ascii=False))
+
+            chunks = [result["text"]]
+            current_result = result
+            previous_offset = result["next_offset"]
+            iteration = 0
+            while current_result["has_more"]:
+                iteration += 1
+                self.assertLessEqual(iteration, 10)
+                replied.clear()
+                request_id = f"{iteration:032x}"
+                app._handle_file_read_request(json.dumps(make_file_read_request(
+                    request_id, "memo.txt", current_result["next_offset"], current_result["workspace_generation"],
+                )))
+                self.assertTrue(replied.wait(3))
+                current_result = app.bridge.reply_file_request.call_args.args[0]
+                self.assertEqual(current_result["status"], "ok")
+                self.assertGreater(current_result["next_offset"], previous_offset)
+                previous_offset = current_result["next_offset"]
+                chunks.append(current_result["text"])
+            self.assertGreater(len(chunks), 1)
+            self.assertEqual(" ".join(chunks), " ".join(expected.split()))
+
+            replied.clear()
+            app._handle_file_read_request(json.dumps(make_file_read_request("5" * 32, "memo.txt", 1600, 99)))
+            self.assertTrue(replied.wait(3))
+            self.assertEqual(app.bridge.reply_file_request.call_args.args[0]["status"], "cancelled")
 
             replied.clear()
             app._handle_file_read_request(json.dumps(make_file_read_request("8" * 32, "script.exe")))

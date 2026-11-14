@@ -16,8 +16,8 @@ from src.desktop_file_search import (
     make_file_open_result,
     make_file_read_result,
     make_search_result,
-    normalize_spoken_excerpt,
     parse_file_request,
+    spoken_document_chunk,
 )
 from src.file_workspace import FileWorkspace
 from src.personal_memory import PersonalMemory
@@ -545,6 +545,8 @@ class AstraDesktop:
             return
         request_id = request["request_id"]
         query = request["query"]
+        read_offset = request.get("offset", 0)
+        requested_workspace_generation = request.get("workspace_generation", 0)
         runtime_process = self.bridge.process
         with self._file_search_lock:
             workspace = self.active_file_workspace
@@ -563,6 +565,13 @@ class AstraDesktop:
                     expected_process=runtime_process,
                 )
                 return
+            if operation == "read" and (read_offset > 0 or requested_workspace_generation > 0):
+                if not requested_workspace_generation or requested_workspace_generation != generation:
+                    self.bridge.reply_file_request(
+                        make_file_read_result(request_id, "cancelled"),
+                        expected_process=runtime_process,
+                    )
+                    return
             cancellation = threading.Event()
             self._file_search_jobs[request_id] = (cancellation, generation)
 
@@ -575,6 +584,8 @@ class AstraDesktop:
             relative_path = ""
             filename = ""
             excerpt = ""
+            next_offset = 0
+            has_more = False
             deadline = time.monotonic() + 8.0
             try:
                 if operation == "search":
@@ -607,7 +618,7 @@ class AstraDesktop:
                                 is_cancelled=cancellation.is_set,
                                 deadline=deadline,
                             )
-                            excerpt = normalize_spoken_excerpt(document_text, truncate=True)
+                            excerpt, next_offset, has_more = spoken_document_chunk(document_text, read_offset)
                             filename = candidate.name
                             del document_text
             except WorkspaceDenied:
@@ -629,6 +640,8 @@ class AstraDesktop:
                     relative_path = ""
                     filename = ""
                     excerpt = ""
+                    next_offset = 0
+                    has_more = False
                 elif operation == "open" and status == "ok":
                     try:
                         # Validate the complete reply before invoking the Windows file association.
@@ -657,7 +670,10 @@ class AstraDesktop:
                     if operation == "open":
                         result = make_file_open_result(request_id, status, relative_path)
                     elif operation == "read":
-                        result = make_file_read_result(request_id, status, filename, excerpt)
+                        result = make_file_read_result(
+                            request_id, status, filename, excerpt, next_offset, has_more,
+                            generation if status == "ok" else 0,
+                        )
                     else:
                         result = make_search_result(
                             request_id,

@@ -34,6 +34,7 @@ from src.command_parser import (
     MEMORY_SEARCH_PREFIX,
     FILE_OPEN_HELP_TARGET,
     FILE_READ_HELP_TARGET,
+    FILE_READ_NEXT_TARGET,
     FILE_SEARCH_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
@@ -128,6 +129,16 @@ class TurnState:
     last_context_kind: str = ""
     last_context_target: str = ""
     last_context_at: float = 0.0
+    private_read_filename: str = ""
+    private_read_offset: int = 0
+    private_read_updated_at: float = 0.0
+    private_read_workspace_generation: int = 0
+
+    def clear_private_read_cursor(self) -> None:
+        self.private_read_filename = ""
+        self.private_read_offset = 0
+        self.private_read_updated_at = 0.0
+        self.private_read_workspace_generation = 0
 
 
 @dataclass(frozen=True)
@@ -1094,7 +1105,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.FILE_READ:
         if action.target == FILE_READ_HELP_TARGET:
-            ctx.respond("Скажи: прочитай файл и его точное имя с расширением. Сначала выбери папку в разделе «Файлы» и отдельно включи чтение документов в разрешениях.")
+            ctx.respond("Скажи: прочитай файл и его точное имя с расширением. Чтобы озвучить следующий отрывок, скажи: прочитай дальше. Сначала выбери папку в разделе «Файлы» и отдельно включи чтение документов в разрешениях.")
             return True
         if not ctx.settings.tts_enabled or ctx.settings.tts_engine != "sapi" or not callable(ctx.speak_private_local):
             ctx.respond("Приватное чтение документов доступно только с включённым локальным голосом Windows SAPI в голосовом режиме.")
@@ -1102,27 +1113,57 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         if not callable(ctx.file_read):
             ctx.respond("Голосовое чтение доступно в настольном приложении. Открой раздел «Файлы» и выбери папку.")
             return True
+        continuing = action.target == FILE_READ_NEXT_TARGET
+        if continuing:
+            if (
+                not ctx.state.private_read_filename
+                or not ctx.state.private_read_workspace_generation
+                or time.monotonic() - ctx.state.private_read_updated_at > 180.0
+            ):
+                ctx.state.clear_private_read_cursor()
+                ctx.respond("Нет активного чтения для продолжения. Назови документ командой «прочитай файл».")
+                return True
+            filename = ctx.state.private_read_filename
+            offset = ctx.state.private_read_offset
+            workspace_generation = ctx.state.private_read_workspace_generation
+        else:
+            ctx.state.clear_private_read_cursor()
+            filename = action.query
+            offset = 0
+            workspace_generation = 0
         try:
-            result = ctx.file_read(action.query)
+            result = (
+                ctx.file_read(filename, offset=offset, workspace_generation=workspace_generation)
+                if continuing else ctx.file_read(filename)
+            )
         except (ValueError, TypeError):
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Назови точное имя документа с расширением, без пути.")
             return True
         except Exception:
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Не удалось проверить документ в выбранной папке.")
             return True
         if not isinstance(result, dict):
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Голосовое чтение недоступно. Открой раздел «Файлы» и выбери папку.")
         elif result.get("status") == "no_workspace":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Сначала открой раздел «Файлы» и выбери папку для чтения.")
         elif result.get("status") == "not_found":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Документ с таким точным именем не найден в выбранной папке.")
         elif result.get("status") == "ambiguous":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("В выбранной папке несколько документов с таким именем. Уточни папку или имя.")
         elif result.get("status") == "unsafe_file":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Этот тип файла или ссылка не разрешены для голосового чтения.")
         elif result.get("status") == "cancelled":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Чтение отменено: доступ к выбранной папке закрыт.")
         elif result.get("status") != "ok":
+            ctx.state.clear_private_read_cursor()
             ctx.respond("Не удалось прочитать документ. Поддерживаются TXT, MD, PDF, DOCX, XLSX и PPTX.")
         else:
             from src.desktop_file_search import make_file_read_result
@@ -1130,19 +1171,33 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 checked = make_file_read_result(
                     result.get("request_id"), result.get("status"),
                     result.get("filename"), result.get("text"),
+                    result.get("next_offset", 0), result.get("has_more", False),
+                    result.get("workspace_generation", 0),
                 )
             except (TypeError, ValueError):
+                ctx.state.clear_private_read_cursor()
                 ctx.respond("Получен некорректный ответ чтения документа.")
                 return True
             filename = checked["filename"]
-            ctx.respond(f"Читаю начало документа «{filename}» локальным голосом. Текст не попадёт в чат.")
+            if checked["has_more"]:
+                ctx.state.private_read_filename = filename
+                ctx.state.private_read_offset = checked["next_offset"]
+                ctx.state.private_read_updated_at = time.monotonic()
+                ctx.state.private_read_workspace_generation = checked["workspace_generation"]
+            else:
+                ctx.state.clear_private_read_cursor()
+            part_label = "следующую часть" if continuing else "начало документа"
+            ctx.respond(f"Читаю {part_label} «{filename}» локальным голосом. Текст не попадёт в чат.")
             try:
                 spoken = ctx.speak_private_local(checked["text"])
             except Exception as exc:
                 ctx.logger.error("Приватная локальная озвучка завершилась ошибкой (%s)", type(exc).__name__)
                 spoken = False
             if not spoken:
+                ctx.state.clear_private_read_cursor()
                 ctx.respond("Не удалось озвучить документ локальным голосом. Проверь настройки Windows SAPI и русский голос.")
+            elif continuing and not checked["has_more"]:
+                ctx.respond("В документе больше нет текста.")
         return True
 
     if action.type == ActionType.MEMORY_NOTE:

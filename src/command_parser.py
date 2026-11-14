@@ -68,6 +68,7 @@ MEMORY_FORGET_PREFIX = "__memory_forget__:"
 FILE_SEARCH_HELP_TARGET = "__file_search_help__"
 FILE_OPEN_HELP_TARGET = "__file_open_help__"
 FILE_READ_HELP_TARGET = "__file_read_help__"
+FILE_READ_NEXT_TARGET = "__file_read_next__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -903,6 +904,10 @@ COMMAND_HINTS = (
     "открой документ",
     "прочитай файл",
     "прочитай документ",
+    "прочитай дальше",
+    "продолжи чтение",
+    "продолжи читать",
+    "следующая часть",
     "зачитай файл",
     "зачитай документ",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
@@ -1612,6 +1617,8 @@ def _parse_file_open_command(raw_text: str, normalized: str) -> ParsedCommand | 
 
 
 def _parse_file_read_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    if normalized in {"прочитай дальше", "продолжи чтение", "продолжи читать", "следующая часть"}:
+        return ParsedCommand(CommandType.FILE_READ, text=normalized, target=FILE_READ_NEXT_TARGET)
     prefixes = ("прочитай файл", "прочитай документ", "зачитай файл", "зачитай документ")
     for prefix in prefixes:
         tail = _memory_match_tail(raw_text, prefix)

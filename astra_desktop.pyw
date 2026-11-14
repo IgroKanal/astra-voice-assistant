@@ -623,7 +623,7 @@ class AstraDesktop:
                             if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
                                 status = "unsafe_file"
                             else:
-                                workspace.checked_openable_file(relative_path)
+                                workspace.checked_readable_file(relative_path)
                                 timeout_cancelled = threading.Event()
                                 timeout_timer = threading.Timer(40.0, timeout_cancelled.set)
                                 timeout_timer.daemon = True
@@ -674,7 +674,7 @@ class AstraDesktop:
                         if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
                             status = "unsafe_file"
                         else:
-                            workspace.checked_openable_file(relative_path)
+                            workspace.checked_readable_file(relative_path)
                             document_text = workspace.read_text(
                                 relative_path,
                                 is_cancelled=cancellation.is_set,

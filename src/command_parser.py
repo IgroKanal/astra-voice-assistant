@@ -34,6 +34,10 @@ class CommandType(str, Enum):
     FILE_OPEN = "file_open"
     FILE_READ = "file_read"
     FILE_QUESTION = "file_question"
+    BACKGROUND_ASK = "background_ask"
+    BACKGROUND_LIST = "background_list"
+    BACKGROUND_CANCEL = "background_cancel"
+    BACKGROUND_RESULT = "background_result"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
@@ -73,6 +77,7 @@ FILE_OPEN_HELP_TARGET = "__file_open_help__"
 FILE_READ_HELP_TARGET = "__file_read_help__"
 FILE_READ_NEXT_TARGET = "__file_read_next__"
 FILE_QUESTION_HELP_TARGET = "__file_question_help__"
+BACKGROUND_TASK_HELP_TARGET = "__background_task_help__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -1073,6 +1078,14 @@ def is_command_like_text(text: str) -> bool:
         return True
     if any(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) for phrase in LIST_REMINDER_PHRASES):
         return True
+    if re.search(
+        r"(?<!\w)(?:спроси|ответь) в фоне(?!\w)|"
+        r"(?<!\w)(?:покажи|список|статус|какие) фоновые (?:запросы|задачи)(?!\w)|"
+        r"(?<!\w)(?:статус|результат) фонового запроса(?!\w)|"
+        r"(?<!\w)отмени фонов(?:ый запрос|ую задачу)(?!\w)",
+        normalized,
+    ):
+        return True
 
     hints = sorted({normalize_text(item) for item in COMMAND_HINTS}, key=len, reverse=True)
     for hint in hints:
@@ -1660,6 +1673,88 @@ def _parse_file_question_command(raw_text: str, normalized: str) -> ParsedComman
     return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=filename, query=question)
 
 
+def _parse_background_task_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    if normalized in {
+        "покажи фоновые запросы",
+        "покажи фоновые задачи",
+        "список фоновых запросов",
+        "список фоновых задач",
+        "статус фоновых запросов",
+        "статус фоновых задач",
+        "какие фоновые запросы",
+    }:
+        return ParsedCommand(CommandType.BACKGROUND_LIST, text=normalized)
+
+    ask_prefixes = ("спроси в фоне", "ответь в фоне")
+    for prefix in ask_prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            if not tail or not (
+                2 <= len(tail) <= 1000
+                and all(
+                    char.isprintable()
+                    and unicodedata.category(char) not in {"Cf", "Cs"}
+                    for char in tail
+                )
+            ):
+                return ParsedCommand(
+                    CommandType.BACKGROUND_ASK,
+                    text=normalized,
+                    target=BACKGROUND_TASK_HELP_TARGET,
+                )
+            return ParsedCommand(
+                CommandType.BACKGROUND_ASK,
+                text=normalized,
+                query=tail,
+            )
+
+    if normalized in {"отмени фоновый запрос", "отмени фоновую задачу"}:
+        return ParsedCommand(
+            CommandType.BACKGROUND_CANCEL,
+            text=normalized,
+            target=BACKGROUND_TASK_HELP_TARGET,
+        )
+
+    cancel_match = re.fullmatch(r"отмени фонов(?:ый запрос|ую задачу) ([1-9]\d{0,8})", normalized)
+    if cancel_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_CANCEL,
+            text=normalized,
+            target=cancel_match[1],
+        )
+
+    if normalized == "статус фонового запроса":
+        return ParsedCommand(
+            CommandType.BACKGROUND_LIST,
+            text=normalized,
+        )
+
+    if normalized == "результат фонового запроса":
+        return ParsedCommand(
+            CommandType.BACKGROUND_RESULT,
+            text=normalized,
+            target=BACKGROUND_TASK_HELP_TARGET,
+        )
+
+    status_match = re.fullmatch(r"статус фонового запроса ([1-9]\d{0,8})", normalized)
+    if status_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_LIST,
+            text=normalized,
+            target=status_match[1],
+        )
+
+    result_match = re.fullmatch(r"результат фонового запроса ([1-9]\d{0,8})", normalized)
+    if result_match:
+        return ParsedCommand(
+            CommandType.BACKGROUND_RESULT,
+            text=normalized,
+            target=result_match[1],
+        )
+
+    return None
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
@@ -1668,6 +1763,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
+
+    background_task_command = _parse_background_task_command(text, normalized)
+    if background_task_command is not None:
+        return background_task_command
 
     file_question = _parse_file_question_command(text, normalized)
     if file_question is not None:

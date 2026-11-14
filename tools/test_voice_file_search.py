@@ -554,7 +554,9 @@ class VoiceFileSearchTests(unittest.TestCase):
             root = Path(temp)
             expected = "Локальный текст документа. " * 120
             (root / "memo.txt").write_text(expected, encoding="utf-8")
+            (root / "report.csv").write_text("month,amount\nМай,1200", encoding="utf-8")
             (root / "script.exe").write_bytes(b"MZ")
+            (root / "run.ps1").write_text("Write-Output 'не запускать'", encoding="utf-8")
             panel = Panel()
             app = AstraDesktop.__new__(AstraDesktop)
             app.active_file_workspace = FileWorkspace(root)
@@ -576,6 +578,20 @@ class VoiceFileSearchTests(unittest.TestCase):
             self.assertGreater(result["next_offset"], 0)
             self.assertNotIn(str(root), json.dumps(result, ensure_ascii=False))
             self.assertNotIn("script.exe", json.dumps(result, ensure_ascii=False))
+
+            replied.clear()
+            app._handle_file_read_request(json.dumps(make_file_read_request("a" * 32, "report.csv")))
+            self.assertTrue(replied.wait(3))
+            csv_result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(csv_result["status"], "ok")
+            self.assertIn("Май,1200", csv_result["text"])
+
+            replied.clear()
+            app._handle_file_read_request(json.dumps(make_file_read_request("b" * 32, "run.ps1")))
+            self.assertTrue(replied.wait(3))
+            script_result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(script_result["status"], "ok")
+            self.assertIn("не запускать", script_result["text"])
 
             chunks = [result["text"]]
             current_result = result

@@ -319,8 +319,23 @@ class OllamaClient:
         return True
 
     def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None, cancelled=None, timing_callback=None, on_chunk=None):
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("Некорректная проверка отмены запроса к локальной модели")
+
+        def check_cancelled():
+            if cancelled is None:
+                return
+            try:
+                should_cancel = bool(cancelled())
+            except Exception:
+                should_cancel = True
+            if should_cancel:
+                raise OllamaRequestCancelled("Запрос к Ollama отменён")
+
+        check_cancelled()
         if model not in self.models():
             raise ValueError("Модель не установлена в Ollama. Автоматическое скачивание отключено.")
+        check_cancelled()
         prior = []
         remaining = 4000
         for item in reversed((history or [])[-8:]):
@@ -342,13 +357,12 @@ class OllamaClient:
             raise ValueError("Некорректная температура локальной модели")
         if think is not None and type(think) is not bool:
             raise ValueError("Некорректный режим рассуждений локальной модели")
-        if cancelled is not None and not callable(cancelled):
-            raise ValueError("Некорректная проверка отмены запроса к локальной модели")
         if timing_callback is not None and not callable(timing_callback):
             raise ValueError("Некорректный обработчик замеров локальной модели")
         if on_chunk is not None and not callable(on_chunk):
             raise ValueError("Некорректный обработчик потокового ответа")
         metadata = self._model_info(model)
+        check_cancelled()
         # By default preserve each model's existing behavior. Fast request paths
         # may explicitly disable hidden reasoning and get the final answer sooner.
         thinking = ("thinking" in metadata.get("capabilities", [])) if think is None else think

@@ -503,7 +503,13 @@ class TTSLatencyTests(unittest.TestCase):
         voice.edge_playback_command = "edge-playback"
         voice.edge_tts_command = "edge-tts"
         voice.tts_cache_dir = cache_dir
+        voice.tts_engine = None
+        voice.tts_has_russian_voice = False
+        voice._sapi_tts_init_attempted = False
+        voice._sapi_tts_lock = threading.RLock()
+        voice._edge_tts_retry_after = 0.0
         voice._log_tts_timing = Mock()
+        voice._ensure_sapi_tts = Mock(return_value=False)
         return voice
 
     def test_sapi_playback_logs_duration_without_speech_text(self):
@@ -519,6 +525,40 @@ class TTSLatencyTests(unittest.TestCase):
         voice.tts_engine.say.assert_called_once_with("A short local response")
         self.assertEqual(voice._log_tts_timing.call_args.args[1], "sapi")
         self.assertNotIn("A short local response", str(voice.logger.mock_calls))
+
+    def test_packaged_tts_helper_is_preferred_to_a_global_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime_dir = Path(temp)
+            executable = runtime_dir / "AstraRuntime.exe"
+            helper = runtime_dir / "edge-playback.exe"
+            executable.touch()
+            helper.touch()
+            voice = object.__new__(VoiceIO)
+            with patch("src.audio_io.sys.executable", str(executable)), patch(
+                "src.audio_io.shutil.which", return_value="C:/Global/edge-playback.exe"
+            ):
+                self.assertEqual(voice._find_script_command("edge-playback"), str(helper))
+
+    def test_direct_edge_helper_receives_sibling_folder_on_child_path_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            helper = Path(temp) / "runtime" / "edge-playback.exe"
+            helper.parent.mkdir()
+            voice = self._voice(Path(temp) / "cache")
+            voice.edge_playback_command = str(helper)
+            voice.edge_tts_command = str(helper.parent / "edge-tts.exe")
+            original_path = os.environ.get("PATH", "")
+            with patch("src.audio_io.subprocess.run") as run:
+                self.assertTrue(
+                    voice._speak_edge_direct(
+                        "Короткая фраза",
+                        "ru-RU-SvetlanaNeural",
+                        timeout_seconds=7.5,
+                    )
+                )
+
+        self.assertEqual(run.call_args.kwargs["env"]["PATH"].split(os.pathsep)[0], str(helper.parent.resolve()))
+        self.assertEqual(os.environ.get("PATH", ""), original_path)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7.5)
 
     def test_audio_only_playback_does_not_emit_a_duplicate_chat_answer(self):
         voice = object.__new__(VoiceIO)
@@ -591,7 +631,7 @@ class TTSLatencyTests(unittest.TestCase):
             voice._speak_edge_direct = Mock(side_effect=[False, True])
 
             # The primary call consumed ten seconds of the twenty-five-second budget.
-            with patch("src.audio_io.time.monotonic", side_effect=[100, 100, 110]):
+            with patch("src.audio_io.time.monotonic", side_effect=[100, 100, 100, 110]):
                 voice._speak_edge("Ограниченный резерв")
 
             timeouts = [call.kwargs["timeout_seconds"] for call in voice._speak_edge_direct.call_args_list]
@@ -605,11 +645,65 @@ class TTSLatencyTests(unittest.TestCase):
             voice._edge_cache_path = Mock(return_value=Path(temp) / "missing.mp3")
             voice._play_cached_audio = Mock(return_value=False)
             voice._speak_edge_direct = Mock(return_value=False)
+            voice._speak_sapi_fallback = Mock(return_value=False)
 
-            with patch("src.audio_io.time.monotonic", side_effect=[100, 100, 130]):
+            with patch("src.audio_io.time.monotonic", side_effect=[100, 100, 100, 130, 130]):
                 voice._speak_edge("Бюджет исчерпан")
 
             voice._speak_edge_direct.assert_called_once()
+
+    def test_edge_failure_falls_back_to_local_sapi_voice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            voice = self._voice(Path(temp))
+            voice._edge_cache_path = Mock(return_value=Path(temp) / "missing.mp3")
+            voice._play_cached_audio = Mock(return_value=False)
+            voice._speak_edge_direct = Mock(return_value=False)
+            voice._ensure_sapi_tts = Mock(return_value=True)
+            voice._speak_sapi = Mock(return_value=True)
+
+            self.assertTrue(voice._speak_edge("Локальный резерв"))
+
+            voice._speak_sapi.assert_called_once_with("Локальный резерв")
+            self.assertEqual(voice._speak_edge_direct.call_count, 2)
+            self.assertGreater(voice._edge_tts_retry_after, time.monotonic())
+
+    def test_open_edge_circuit_uses_local_sapi_without_network_attempt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            voice = self._voice(Path(temp))
+            voice._edge_cache_path = Mock(return_value=Path(temp) / "missing.mp3")
+            voice._play_cached_audio = Mock(return_value=False)
+            voice._speak_edge_direct = Mock(side_effect=AssertionError("cooldown must skip network"))
+            voice._ensure_sapi_tts = Mock(return_value=True)
+            voice._speak_sapi = Mock(return_value=True)
+            voice._edge_tts_retry_after = time.monotonic() + 90
+
+            self.assertTrue(voice._speak_edge("Быстрый локальный ответ"))
+
+            voice._speak_edge_direct.assert_not_called()
+            voice._speak_sapi.assert_called_once_with("Быстрый локальный ответ")
+
+    def test_missing_edge_helper_uses_local_sapi_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            voice = self._voice(Path(temp))
+            voice.edge_playback_command = None
+            voice._ensure_sapi_tts = Mock(return_value=True)
+            voice._speak_sapi = Mock(return_value=True)
+
+            self.assertTrue(voice._speak_edge("Ответ без сетевого помощника"))
+
+            voice._speak_sapi.assert_called_once_with("Ответ без сетевого помощника")
+
+    def test_failed_lazy_sapi_initialization_is_not_repeated(self):
+        voice = object.__new__(VoiceIO)
+        voice.tts_engine = None
+        voice._sapi_tts_init_attempted = False
+        voice._sapi_tts_lock = threading.RLock()
+        voice._init_sapi_tts = Mock()
+
+        self.assertFalse(voice._ensure_sapi_tts())
+        self.assertFalse(voice._ensure_sapi_tts())
+
+        voice._init_sapi_tts.assert_called_once()
 
     def test_direct_edge_playback_passes_timeout_to_subprocess(self):
         with tempfile.TemporaryDirectory() as temp:

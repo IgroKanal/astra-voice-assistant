@@ -59,6 +59,19 @@ def validate(installer: Path) -> None:
         app = install_root / "Astra.exe"
         if not app.is_file() or not runtime.is_file():
             raise RuntimeError("Installer did not place the desktop/runtime executables")
+        edge_tts = runtime.parent / "edge-tts.exe"
+        edge_playback = runtime.parent / "edge-playback.exe"
+        if not edge_tts.is_file() or not edge_playback.is_file():
+            raise RuntimeError("Installer did not place the portable Edge TTS helpers")
+        helper_env = dict(env, PATH=str(runtime.parent) + os.pathsep + os.environ.get("PATH", ""))
+        tts_version = run([str(edge_tts), "--version"], helper_env, timeout=20)
+        playback_help = run([str(edge_playback), "--help"], helper_env, timeout=20)
+        if tts_version.returncode != 0 or not tts_version.stdout.strip().startswith("edge-tts 7.3."):
+            raise RuntimeError("Installed Edge TTS helper failed its local version check")
+        if playback_help.returncode != 0 or "Speak text" not in playback_help.stdout + playback_help.stderr:
+            raise RuntimeError("Installed Edge playback helper failed its local help check")
+        if not (install_root / "third_party_licenses" / "edge-tts-LICENSE.txt").is_file():
+            raise RuntimeError("Installer did not place the bundled Edge TTS license")
 
         runtime_env = dict(
             env,

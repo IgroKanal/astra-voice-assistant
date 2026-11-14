@@ -15,7 +15,7 @@ from openai import OpenAIError
 
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
-from src.ollama_client import OllamaClient
+from src.ollama_client import OllamaClient, OllamaRequestCancelled
 from src.llm_providers import create_provider
 
 
@@ -130,12 +130,27 @@ class AIClient:
         self,
         question: str,
         on_text_chunk: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> LLMResult:
         question = question.strip()
         if not question:
             return LLMResult(False, "Вопрос пустой.")
         if on_text_chunk is not None and not callable(on_text_chunk):
             return LLMResult(False, "Некорректный обработчик потокового ответа.")
+        if cancelled is not None and not callable(cancelled):
+            return LLMResult(False, "Некорректный обработчик отмены запроса.")
+
+        def is_cancelled() -> bool:
+            if cancelled is None:
+                return False
+            try:
+                return bool(cancelled())
+            except Exception:
+                # A failed cancellation signal must stop work, not keep it alive.
+                return True
+
+        if is_cancelled():
+            return LLMResult(False, "Запрос отменён.")
 
         if not self.settings.llm_enabled:
             return LLMResult(False, "LLM отключена в настройках.")
@@ -164,6 +179,8 @@ class AIClient:
                     think=self.settings.ollama_thinking_enabled,
                     timing_callback=capture_stream_timing,
                 )
+                if cancelled is not None:
+                    answer_options["cancelled"] = is_cancelled
                 if on_text_chunk is not None and not self.settings.ollama_thinking_enabled:
                     answer_options["on_chunk"] = on_text_chunk
                 answer = self.provider.answer(**answer_options)
@@ -188,6 +205,12 @@ class AIClient:
                     time.perf_counter() - started,
                 )
                 return LLMResult(True, clean_answer)
+            except OllamaRequestCancelled:
+                self.logger.info(
+                    "Local model request cancelled: provider=ollama elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                return LLMResult(False, "Запрос отменён.")
             except Exception:
                 self.logger.warning(
                     "Local model request failed; no cloud fallback; elapsed=%.3fs",
@@ -200,6 +223,12 @@ class AIClient:
                 False,
                 "LLM API-ключ не настроен. Я могу выполнять локальные команды, "
                 "но не могу отвечать на вопросы.",
+            )
+
+        if cancelled is not None:
+            return LLMResult(
+                False,
+                "Отмена фонового запроса доступна только для локального Ollama.",
             )
 
         # Personal notes never enter the cloud branch, even if a caller passes

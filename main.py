@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.ai_client import AIClient
+from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
 from src.audio_io import VoiceIO
@@ -38,6 +39,7 @@ from src.command_parser import (
     FILE_READ_NEXT_TARGET,
     FILE_QUESTION_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
+    BACKGROUND_TASK_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
     UNSUPPORTED_CLOSE_TARGET,
@@ -98,6 +100,10 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.FILE_OPEN,
     CommandType.FILE_READ,
     CommandType.FILE_QUESTION,
+    CommandType.BACKGROUND_ASK,
+    CommandType.BACKGROUND_LIST,
+    CommandType.BACKGROUND_CANCEL,
+    CommandType.BACKGROUND_RESULT,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -117,6 +123,10 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.FILE_OPEN,
     ActionType.FILE_READ,
     ActionType.FILE_QUESTION,
+    ActionType.BACKGROUND_ASK,
+    ActionType.BACKGROUND_LIST,
+    ActionType.BACKGROUND_CANCEL,
+    ActionType.BACKGROUND_RESULT,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -173,6 +183,7 @@ class TurnContext:
     speak_private_local: Callable[[str], bool] | None = None
     speak_partial: Callable[[str], bool] | None = None
     respond_streamed: Callable[[str, str], None] | None = None
+    background_tasks: BackgroundTaskManager | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -665,6 +676,10 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.FILE_OPEN: ActionType.FILE_OPEN,
         CommandType.FILE_READ: ActionType.FILE_READ,
         CommandType.FILE_QUESTION: ActionType.FILE_QUESTION,
+        CommandType.BACKGROUND_ASK: ActionType.BACKGROUND_ASK,
+        CommandType.BACKGROUND_LIST: ActionType.BACKGROUND_LIST,
+        CommandType.BACKGROUND_CANCEL: ActionType.BACKGROUND_CANCEL,
+        CommandType.BACKGROUND_RESULT: ActionType.BACKGROUND_RESULT,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -686,6 +701,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     elif parsed.type == CommandType.FILE_READ:
         query = parsed.target
     elif parsed.type == CommandType.FILE_QUESTION:
+        query = parsed.query
+    elif parsed.type == CommandType.BACKGROUND_ASK:
         query = parsed.query
 
     return AssistantAction(
@@ -847,6 +864,8 @@ def build_help_text(topic: str = "general") -> str:
             "VPN, окнами, музыкой, громкостью и рабочим столом. "
             "Также доступен рабочий режим и напоминания: напомни через пять минут сделать перерыв, "
             "или напомни завтра в 9 позвонить. "
+            "С локальным Ollama можно запустить вопрос в фоне фразой «спроси в фоне …», "
+            "узнать состояние и забрать ответ позже. "
             "В приложении открой «Команды», чтобы найти пример и вставить его в чат. "
             "Для новой темы скажи: имя ассистента, начни новый диалог."
         ),
@@ -974,6 +993,117 @@ def _format_upcoming_reminders(reminders, now: datetime | None = None) -> str:
     return response
 
 
+def _format_background_task_status(task_id: int, status: str) -> str:
+    names = {
+        "queued": "в очереди",
+        "running": "выполняется",
+        "cancelling": "отменяется",
+        "done": "готов",
+        "failed": "завершился с ошибкой",
+        "cancelled": "отменён",
+    }
+    return f"Фоновый запрос {task_id}: {names.get(status, 'состояние неизвестно')}."
+
+
+def _notify_background_task(task_id: int, status: str) -> None:
+    label = "готов" if status == "done" else "завершился с ошибкой"
+    message = (
+        f"Фоновый запрос {task_id} {label}. Чтобы получить результат, "
+        f"скажи: результат фонового запроса {task_id}."
+    )
+    if not emit_event("assistant", message):
+        print(f"Астра: {message}")
+
+
+def _handle_background_action(action: AssistantAction, ctx: TurnContext) -> bool:
+    manager = ctx.background_tasks
+    if manager is None:
+        ctx.respond("Фоновые запросы сейчас недоступны в этом режиме запуска Astra.")
+        return True
+
+    if action.type == ActionType.BACKGROUND_ASK:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: спроси в фоне и затем вопрос. Например: спроси в фоне, как устроен DNS.")
+            return True
+        try:
+            task_id = manager.start(action.query)
+        except BackgroundTaskError as exc:
+            ctx.respond(str(exc))
+            return True
+        ctx.respond(
+            f"Фоновый запрос {task_id} поставлен в очередь. Он использует только локальный Ollama. "
+            f"Вопрос и ответ хранятся только в памяти до закрытия Astra. "
+            f"Результат можно запросить фразой: результат фонового запроса {task_id}."
+        )
+        return True
+
+    if action.type == ActionType.BACKGROUND_LIST:
+        if action.target:
+            try:
+                task_id = int(action.target)
+            except (TypeError, ValueError):
+                ctx.respond("Назови номер фонового запроса.")
+                return True
+            task = manager.get_result(task_id)
+            ctx.respond(
+                _format_background_task_status(task_id, task.status)
+                if task is not None
+                else f"Фоновый запрос {task_id} не найден."
+            )
+            return True
+        tasks = manager.list_tasks(limit=5)
+        if not tasks:
+            ctx.respond("Фоновых запросов пока нет.")
+        else:
+            ctx.respond("Последние фоновые запросы: " + " ".join(
+                _format_background_task_status(task.id, task.status)
+                for task in tasks
+            ))
+        return True
+
+    if action.type == ActionType.BACKGROUND_CANCEL:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: отмени фоновый запрос и его номер.")
+            return True
+        try:
+            task_id = int(action.target)
+        except (TypeError, ValueError):
+            ctx.respond("Назови номер фонового запроса для отмены.")
+            return True
+        status = manager.cancel(task_id)
+        messages = {
+            "cancelled": f"Фоновый запрос {task_id} отменён.",
+            "cancelling": f"Останавливаю фоновый запрос {task_id}.",
+            "done": f"Запрос {task_id} уже готов. Его результат можно получить голосом.",
+            "failed": f"Запрос {task_id} уже завершился с ошибкой.",
+            "not_found": f"Фоновый запрос {task_id} не найден.",
+        }
+        ctx.respond(messages.get(status, f"Запрос {task_id} уже не выполняется."))
+        return True
+
+    if action.type == ActionType.BACKGROUND_RESULT:
+        if action.target == BACKGROUND_TASK_HELP_TARGET:
+            ctx.respond("Скажи: результат фонового запроса и его номер.")
+            return True
+        try:
+            task_id = int(action.target)
+        except (TypeError, ValueError):
+            ctx.respond("Назови номер фонового запроса.")
+            return True
+        task = manager.get_result(task_id)
+        if task is None:
+            ctx.respond(f"Фоновый запрос {task_id} не найден.")
+        elif task.status == "done":
+            ctx.respond(task.result)
+        elif task.status == "failed":
+            ctx.respond(task.error or "Локальная модель не смогла ответить.")
+        else:
+            ctx.respond(_format_background_task_status(task_id, task.status))
+        return True
+
+    return False
+
+
 def _personal_memory_store(settings: Settings):
     from src.personal_memory import PersonalMemory
 
@@ -1023,6 +1153,14 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if not decision.allowed:
         ctx.respond(decision.reason)
         return True
+
+    if action.type in {
+        ActionType.BACKGROUND_ASK,
+        ActionType.BACKGROUND_LIST,
+        ActionType.BACKGROUND_CANCEL,
+        ActionType.BACKGROUND_RESULT,
+    }:
+        return _handle_background_action(action, ctx)
 
     if action.type == ActionType.FILE_SEARCH:
         if action.target == FILE_SEARCH_HELP_TARGET:
@@ -1175,7 +1313,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             ctx.respond("Чтение отменено: доступ к выбранной папке закрыт.")
         elif result.get("status") != "ok":
             ctx.state.clear_private_read_cursor()
-            ctx.respond("Не удалось прочитать документ. Поддерживаются TXT, MD, PDF, DOCX, XLSX и PPTX.")
+            ctx.respond("Не удалось прочитать выбранный файл. Поддерживаются текстовые, конфигурационные, исходные и офисные файлы.")
         else:
             from src.desktop_file_search import make_file_read_result
             try:
@@ -1241,7 +1379,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         elif result.get("status") == "ambiguous":
             ctx.respond("В выбранной папке есть несколько документов с таким именем. Уточни папку или имя.")
         elif result.get("status") == "unsafe_file":
-            ctx.respond("Этот тип файла не поддерживается для вопросов. Разрешены TXT, MD, PDF, DOCX, XLSX и PPTX.")
+            ctx.respond("Этот тип файла не поддерживается для вопросов. Выбери поддерживаемый текстовый, конфигурационный, исходный или офисный файл.")
         elif result.get("status") == "cancelled":
             ctx.respond("Вопрос отменён, потому что выбранная папка была закрыта.")
         elif result.get("status") == "local_model_required":
@@ -1842,6 +1980,7 @@ def run_text_mode(
     logger: logging.Logger,
     routines: RoutineController | None = None,
     media: MediaController | None = None,
+    background_tasks: BackgroundTaskManager | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -1896,6 +2035,7 @@ def run_text_mode(
         state=state,
         routines=routines,
         media=media,
+        background_tasks=background_tasks,
     )
 
     while True:
@@ -1963,6 +2103,7 @@ def run_voice_mode(
     logger: logging.Logger,
     routines: RoutineController | None = None,
     media: MediaController | None = None,
+    background_tasks: BackgroundTaskManager | None = None,
 ) -> None:
     from src.desktop_file_search import DesktopFileSearchChannel
 
@@ -2082,6 +2223,7 @@ def run_voice_mode(
             else None
         ),
         respond_streamed=respond_streamed,
+        background_tasks=background_tasks,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -2264,6 +2406,11 @@ def main() -> int:
     )
     ai_client = AIClient(settings=settings, logger=logger)
     media = MediaController(keyboard=keyboard, app_manager=app_manager, logger=logger)
+    background_tasks = BackgroundTaskManager(
+        settings=settings,
+        logger=logger,
+        on_complete=_notify_background_task,
+    )
 
     try:
         if args.stt_test:
@@ -2271,12 +2418,12 @@ def main() -> int:
         elif args.text:
             run_text_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines, media,
+                windows, ai_client, logger, routines, media, background_tasks,
             )
         else:
             run_voice_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
-                windows, ai_client, logger, routines, media,
+                windows, ai_client, logger, routines, media, background_tasks,
             )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
@@ -2286,6 +2433,8 @@ def main() -> int:
         logger.exception("Критическая непредвиденная ошибка")
         print("Произошла критическая ошибка. Подробности смотри в logs/app.log")
         return 1
+    finally:
+        background_tasks.shutdown()
 
     logger.info("Ассистент завершил работу")
     return 0

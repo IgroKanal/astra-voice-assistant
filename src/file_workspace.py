@@ -58,7 +58,18 @@ class FileWorkspace:
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
         ".mp3", ".wav", ".m4a", ".mp4", ".avi", ".mkv",
     }
-    READABLE_SUFFIXES = {".txt", ".md", ".pdf", ".docx", ".xlsx", ".pptx"}
+    PLAIN_TEXT_SUFFIXES = frozenset({
+        ".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml",
+        ".toml", ".ini", ".cfg", ".conf", ".log", ".rst", ".tex", ".diff",
+        ".patch", ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".css",
+        ".scss", ".sql", ".java", ".c", ".h", ".cc", ".cpp", ".hpp",
+        ".cs", ".go", ".rs", ".sh", ".ps1", ".psm1", ".bat", ".cmd",
+        ".xaml", ".vue", ".php", ".rb", ".kt", ".swift", ".dart",
+        ".gradle", ".properties",
+    })
+    READABLE_SUFFIXES = PLAIN_TEXT_SUFFIXES | frozenset(
+        {".pdf", ".docx", ".xlsx", ".pptx"}
+    )
     BLOCKED = {".astra-history", ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube", "appdata", ".venv", "__pycache__", "node_modules"}
     SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12", ".kdbx"}
 
@@ -247,6 +258,13 @@ class FileWorkspace:
             raise WorkspaceDenied("Этот тип файла нельзя открывать голосовой командой")
         return path
 
+    def checked_readable_file(self, relative: str) -> Path:
+        """Revalidate a selected document/text file without granting permission to launch it."""
+        path = self.checked(relative)
+        if not path.is_file() or path.suffix.casefold() not in self.READABLE_SUFFIXES:
+            raise WorkspaceDenied("Этот тип файла нельзя читать голосовой командой")
+        return path
+
     def read_text(
         self,
         relative: str,
@@ -266,6 +284,8 @@ class FileWorkspace:
         if not path.is_file():
             raise WorkspaceDenied("Выбери обычный файл")
         suffix = path.suffix.casefold()
+        if suffix not in self.READABLE_SUFFIXES:
+            raise WorkspaceDenied("Этот тип файла не поддерживается для чтения")
         limit = self.MAX_DOCUMENT_BYTES if suffix in {".pdf", ".docx", ".xlsx", ".pptx"} else self.MAX_READ_BYTES
         data = self._read_bounded(relative, limit, check_limits=check_limits)
         check_limits()
@@ -278,12 +298,21 @@ class FileWorkspace:
         elif suffix == ".pptx":
             result = self._extract_pptx(data, check_limits=check_limits)
         else:
-            if b"\x00" in data:
+            if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+                try:
+                    result = data.decode("utf-16")
+                except UnicodeDecodeError:
+                    raise WorkspaceDenied("Не удалось прочитать текст UTF-16") from None
+            elif b"\x00" in data:
                 raise WorkspaceDenied("Бинарный файл нельзя прочитать как текст")
-            try:
-                result = data.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                raise WorkspaceDenied("Пока поддерживаются текстовые файлы UTF-8") from None
+            else:
+                try:
+                    result = data.decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    try:
+                        result = data.decode("cp1251")
+                    except UnicodeDecodeError:
+                        raise WorkspaceDenied("Поддерживаются текст UTF-8, UTF-16 с BOM и CP1251") from None
         check_limits()
         return result
 

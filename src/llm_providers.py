@@ -32,6 +32,7 @@ class TextProvider(Protocol):
         think: bool | None = None,
         timing_callback: Callable[[dict[str, float | None]], None] | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> str: ...
 
     def classify(
@@ -81,6 +82,7 @@ class OllamaProvider:
         think: bool | None = None,
         timing_callback: Callable[[dict[str, float | None]], None] | None = None,
         on_chunk: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> str:
         arguments = dict(
             max_tokens=max_tokens,
@@ -93,6 +95,8 @@ class OllamaProvider:
             arguments["timing_callback"] = timing_callback
         if on_chunk is not None:
             arguments["on_chunk"] = on_chunk
+        if cancelled is not None:
+            arguments["cancelled"] = cancelled
         return self.client.chat(
             model,
             system,

@@ -1,5 +1,9 @@
 # Third-party notices
 
+## edge-tts 7.3.1
+
+Used for optional online text-to-speech and Windows playback in the portable runtime. The distribution includes standalone helper executables plus the corresponding `edge_tts` and `edge_playback` Python sources. The package is licensed under LGPLv3, with `edge_tts/srt_composer.py` under MIT; the full license text is bundled at `third_party_licenses/edge-tts-LICENSE.txt`, and corresponding sources are under `third_party_sources/edge-tts-7.3.1/`. Project: https://github.com/rany2/edge-tts/.
+
 ## pypdf 7.0.1
 
 Used for local extraction of searchable text from user-selected PDF files. It is not OCR software. Project: https://pypi.org/project/pypdf/.

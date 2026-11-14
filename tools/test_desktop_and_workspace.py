@@ -33,6 +33,34 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
 
+    def test_readable_text_formats_support_utf8_utf16_bom_and_cp1251(self):
+        (self.root / "report.csv").write_text("month,amount\nМай,1200", encoding="utf-8")
+        (self.root / "settings.json").write_bytes('{"имя":"Астра"}'.encode("utf-16"))
+        (self.root / "script.ps1").write_bytes("Write-Output 'Привет'".encode("cp1251"))
+        (self.root / "payload.exe").write_text("not a readable document", encoding="utf-8")
+
+        self.assertEqual(self.workspace.read_text("report.csv"), "month,amount\r\nМай,1200")
+        self.assertEqual(self.workspace.read_text("settings.json"), '{"имя":"Астра"}')
+        self.assertEqual(self.workspace.read_text("script.ps1"), "Write-Output 'Привет'")
+        self.assertEqual(self.workspace.checked_readable_file("script.ps1"), self.root / "script.ps1")
+        with self.assertRaisesRegex(WorkspaceDenied, "нельзя открывать"):
+            self.workspace.checked_openable_file("script.ps1")
+        with self.assertRaisesRegex(WorkspaceDenied, "не поддерживается"):
+            self.workspace.read_text("payload.exe")
+
+    def test_file_question_retrieval_can_read_a_selected_csv_without_model_or_network(self):
+        from src.file_rag import FileQuestionSession
+
+        (self.root / "budget.csv").write_text(
+            "month,amount\nMay,1200\nJune,1800", encoding="utf-8"
+        )
+        passages, _digest = FileQuestionSession(
+            self.workspace, "budget.csv"
+        ).retrieve("amount")
+
+        self.assertTrue(passages)
+        self.assertTrue(any("June,1800" in passage.text for passage in passages))
+
     def test_exact_name_scan_is_bounded_and_reports_duplicate_basenames(self):
         (self.root / "report.pdf").write_bytes(b"one")
         self.assertEqual([item.path for item in self.workspace.find_exact_name("report.pdf")], ["report.pdf"])

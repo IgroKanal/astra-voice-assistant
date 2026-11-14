@@ -18,10 +18,13 @@ OPEN_REQUEST_TYPE = "file_open_request"
 OPEN_RESULT_TYPE = "file_open_result"
 READ_REQUEST_TYPE = "file_read_request"
 READ_RESULT_TYPE = "file_read_result"
+QUESTION_REQUEST_TYPE = "file_question_request"
+QUESTION_RESULT_TYPE = "file_question_result"
 MAX_QUERY_CHARS = 120
 MAX_RESULT_PATH_CHARS = 400
 MAX_SPOKEN_RESULTS = 3
 MAX_SPOKEN_DOCUMENT_CHARS = 1600
+MAX_FILE_ANSWER_CHARS = 1200
 MAX_DOCUMENT_CHARACTERS = 1_000_000
 MAX_READ_OFFSET = MAX_DOCUMENT_CHARACTERS
 MAX_RESULT_COUNT = 500
@@ -29,6 +32,7 @@ MAX_CONTROL_LINE = 8192
 _SEARCH_STATUSES = frozenset({"ok", "no_workspace", "cancelled", "search_failed"})
 _OPEN_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "open_failed"})
 _READ_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "read_failed"})
+_QUESTION_STATUSES = frozenset({"ok", "no_workspace", "not_found", "ambiguous", "unsafe_file", "cancelled", "local_model_required", "question_failed"})
 
 
 def validate_query(query: object) -> str:
@@ -40,6 +44,17 @@ def validate_query(query: object) -> str:
     if any(not char.isprintable() or unicodedata.category(char) in {"Cf", "Cs"} for char in query) or any(char in query for char in "/\\:"):
         raise ValueError("Можно искать только по имени файла, без пути")
     return query
+
+
+def validate_file_question(question: object) -> str:
+    if not isinstance(question, str):
+        raise ValueError("Некорректный вопрос по документу")
+    question = " ".join(question.split()).strip()
+    if not 2 <= len(question) <= 1000:
+        raise ValueError("Вопрос должен содержать от 2 до 1000 символов")
+    if any(not char.isprintable() or unicodedata.category(char) in {"Cf", "Cs"} for char in question):
+        raise ValueError("Вопрос содержит недопустимые символы")
+    return question
 
 
 def make_search_request(request_id: str, query: str) -> dict[str, object]:
@@ -130,6 +145,32 @@ def parse_file_read_request(text: str) -> dict[str, object]:
     )
 
 
+def make_file_question_request(request_id: str, filename: str, question: str) -> dict[str, object]:
+    if not isinstance(request_id, str) or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
+        raise ValueError("Некорректный идентификатор вопроса")
+    return {
+        "version": 1,
+        "type": QUESTION_REQUEST_TYPE,
+        "request_id": request_id,
+        "filename": validate_query(filename),
+        "question": validate_file_question(question),
+    }
+
+
+def parse_file_question_request(text: str) -> dict[str, object]:
+    if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
+        raise ValueError("Некорректный запрос вопроса по файлу")
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        raise ValueError("Некорректный запрос вопроса по файлу") from None
+    if not isinstance(payload, dict) or set(payload) != {"version", "type", "request_id", "filename", "question"}:
+        raise ValueError("Некорректный запрос вопроса по файлу")
+    if payload["version"] != 1 or payload["type"] != QUESTION_REQUEST_TYPE:
+        raise ValueError("Неподдерживаемая версия вопроса по файлу")
+    return make_file_question_request(payload["request_id"], payload["filename"], payload["question"])
+
+
 def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
     if not isinstance(text, str) or len(text) > MAX_CONTROL_LINE:
         raise ValueError("Некорректный запрос файлового действия")
@@ -145,6 +186,8 @@ def parse_file_request(text: str) -> tuple[str, dict[str, object]]:
         return "open", parse_file_open_request(text)
     if payload.get("type") == READ_REQUEST_TYPE:
         return "read", parse_file_read_request(text)
+    if payload.get("type") == QUESTION_REQUEST_TYPE:
+        return "question", parse_file_question_request(text)
     raise ValueError("Неизвестный тип файлового действия")
 
 
@@ -324,6 +367,52 @@ def make_file_read_result(
     }
 
 
+def make_file_question_result(
+    request_id: str,
+    status: str,
+    filename: str = "",
+    answer: str = "",
+) -> dict[str, object]:
+    if not isinstance(request_id, str) or len(request_id) != 32 or any(char not in "0123456789abcdef" for char in request_id):
+        raise ValueError("Некорректный идентификатор вопроса")
+    if not isinstance(status, str) or status not in _QUESTION_STATUSES:
+        raise ValueError("Некорректный результат вопроса по файлу")
+    if not isinstance(filename, str) or not isinstance(answer, str):
+        raise ValueError("Некорректные данные ответа по файлу")
+    if status != "ok":
+        if filename or answer:
+            raise ValueError("Отказ не может содержать данные файла")
+        return {
+            "version": 1,
+            "type": QUESTION_RESULT_TYPE,
+            "request_id": request_id,
+            "status": status,
+            "filename": "",
+            "answer": "",
+        }
+    clean_filename = validate_query(filename)
+    safe_chars = []
+    for char in answer[: MAX_FILE_ANSWER_CHARS * 4]:
+        if char.isspace():
+            safe_chars.append(" ")
+        elif not unicodedata.category(char).startswith("C"):
+            safe_chars.append(char)
+    clean_answer = " ".join("".join(safe_chars).split())
+    if len(clean_answer) > MAX_FILE_ANSWER_CHARS:
+        clipped = clean_answer[:MAX_FILE_ANSWER_CHARS]
+        clean_answer = clipped.rsplit(" ", 1)[0] if " " in clipped else clipped
+    if not clean_answer:
+        raise ValueError("Локальная модель не вернула допустимый ответ")
+    return {
+        "version": 1,
+        "type": QUESTION_RESULT_TYPE,
+        "request_id": request_id,
+        "status": status,
+        "filename": clean_filename,
+        "answer": clean_answer,
+    }
+
+
 def encode_search_result(result: dict[str, object]) -> str:
     normalized = make_search_result(
         result.get("request_id"),
@@ -337,7 +426,14 @@ def encode_search_result(result: dict[str, object]) -> str:
 def encode_file_result(result: dict[str, object]) -> str:
     if not isinstance(result, dict):
         raise ValueError("Некорректный результат файлового действия")
-    if result.get("type") == READ_RESULT_TYPE:
+    if result.get("type") == QUESTION_RESULT_TYPE:
+        normalized = make_file_question_result(
+            result.get("request_id"),
+            result.get("status"),
+            result.get("filename", ""),
+            result.get("answer", ""),
+        )
+    elif result.get("type") == READ_RESULT_TYPE:
         normalized = make_file_read_result(
             result.get("request_id"),
             result.get("status"),
@@ -380,8 +476,14 @@ def parse_control_line(line: str) -> dict[str, object] | None:
         payload = json.loads(line[len(CONTROL_PREFIX):])
         if not isinstance(payload, dict):
             return None
-        if payload.get("version") != 1 or payload.get("type") not in {RESULT_TYPE, OPEN_RESULT_TYPE, READ_RESULT_TYPE}:
+        if payload.get("version") != 1 or payload.get("type") not in {RESULT_TYPE, OPEN_RESULT_TYPE, READ_RESULT_TYPE, QUESTION_RESULT_TYPE}:
             return None
+        if payload["type"] == QUESTION_RESULT_TYPE:
+            if set(payload) != {"version", "type", "request_id", "status", "filename", "answer"}:
+                return None
+            return make_file_question_result(
+                payload["request_id"], payload["status"], payload["filename"], payload["answer"],
+            )
         if payload["type"] == READ_RESULT_TYPE:
             if set(payload) != {"version", "type", "request_id", "status", "filename", "text", "next_offset", "has_more", "workspace_generation"}:
                 return None
@@ -476,6 +578,9 @@ class DesktopFileSearchChannel:
             workspace_generation=workspace_generation,
         )
 
+    def ask_file(self, filename: str, question: str, timeout_seconds: float = 50.0) -> dict[str, object] | None:
+        return self._request(filename, "question", timeout_seconds, question=question)
+
     def _request(
         self,
         query: str,
@@ -484,6 +589,7 @@ class DesktopFileSearchChannel:
         *,
         offset: int = 0,
         workspace_generation: int = 0,
+        question: str = "",
     ) -> dict[str, object] | None:
         clean_query = validate_query(query)
         if operation == "open":
@@ -494,6 +600,10 @@ class DesktopFileSearchChannel:
             request = make_file_read_request(uuid4().hex, clean_query, offset, workspace_generation)
             event_type = READ_REQUEST_TYPE
             result_type = READ_RESULT_TYPE
+        elif operation == "question":
+            request = make_file_question_request(uuid4().hex, clean_query, question)
+            event_type = QUESTION_REQUEST_TYPE
+            result_type = QUESTION_RESULT_TYPE
         elif operation == "search":
             request = make_search_request(uuid4().hex, clean_query)
             event_type = REQUEST_TYPE
@@ -514,7 +624,8 @@ class DesktopFileSearchChannel:
             with self._lock:
                 self._pending.pop(request_id, None)
             return None
-        timeout = min(12.0, max(0.1, float(timeout_seconds)))
+        maximum_timeout = 50.0 if operation == "question" else 12.0
+        timeout = min(maximum_timeout, max(0.1, float(timeout_seconds)))
         if not completed.wait(timeout):
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -523,6 +634,8 @@ class DesktopFileSearchChannel:
                 if operation == "open"
                 else make_file_read_result(request_id, "read_failed")
                 if operation == "read"
+                else make_file_question_result(request_id, "question_failed")
+                if operation == "question"
                 else make_search_result(request_id, "search_failed")
             )
         with self._lock:
@@ -534,6 +647,8 @@ class DesktopFileSearchChannel:
             if operation == "open"
             else make_file_read_result(request_id, "read_failed")
             if operation == "read"
+            else make_file_question_result(request_id, "question_failed")
+            if operation == "question"
             else make_search_result(request_id, "search_failed")
         )
 

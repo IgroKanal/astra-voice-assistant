@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import math
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as datetime_time
 from enum import Enum
@@ -32,6 +33,7 @@ class CommandType(str, Enum):
     FILE_SEARCH = "file_search"
     FILE_OPEN = "file_open"
     FILE_READ = "file_read"
+    FILE_QUESTION = "file_question"
     CLEAR_DIALOGUE = "clear_dialogue"
     HELP = "help"
     ASK_LLM = "ask_llm"
@@ -44,6 +46,7 @@ class ParsedCommand:
     type: CommandType
     text: str = ""
     target: str = ""
+    query: str = ""
 
 
 # v0.9.3: sentinel-таргет для CLOSE_APP, когда команда явно про закрытие
@@ -69,6 +72,7 @@ FILE_SEARCH_HELP_TARGET = "__file_search_help__"
 FILE_OPEN_HELP_TARGET = "__file_open_help__"
 FILE_READ_HELP_TARGET = "__file_read_help__"
 FILE_READ_NEXT_TARGET = "__file_read_next__"
+FILE_QUESTION_HELP_TARGET = "__file_question_help__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
     "покажи мои напоминания",
@@ -908,6 +912,7 @@ COMMAND_HINTS = (
     "продолжи чтение",
     "продолжи читать",
     "следующая часть",
+    "спроси по файлу",
     "зачитай файл",
     "зачитай документ",
     *(item for values in VOICE_FEEDBACK_COMMANDS.values() for item in values),
@@ -1630,6 +1635,31 @@ def _parse_file_read_command(raw_text: str, normalized: str) -> ParsedCommand | 
     return None
 
 
+def _parse_file_question_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefix = "спроси по файлу"
+    tail = _memory_match_tail(raw_text, prefix)
+    if normalized != prefix and tail is None:
+        return None
+    if not tail:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    parts = re.split(r"\s+вопрос\s+", tail, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    filename, question = (part.strip() for part in parts)
+    valid_filename = (
+        2 <= len(filename) <= 120
+        and all(char.isprintable() and unicodedata.category(char) not in {"Cf", "Cs"} for char in filename)
+        and not any(char in filename for char in "/\\:")
+    )
+    valid_question = (
+        2 <= len(question) <= 1000
+        and all(char.isprintable() and unicodedata.category(char) not in {"Cf", "Cs"} for char in question)
+    )
+    if not valid_filename or not valid_question:
+        return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=FILE_QUESTION_HELP_TARGET)
+    return ParsedCommand(CommandType.FILE_QUESTION, text=normalized, target=filename, query=question)
+
+
 def parse_command_text(text: str) -> ParsedCommand:
     """Определяет тип команды уже без wake phrase."""
     normalized = remove_filler_words(text)
@@ -1638,6 +1668,10 @@ def parse_command_text(text: str) -> ParsedCommand:
 
     if normalized in CLEAR_DIALOGUE_COMMANDS:
         return ParsedCommand(CommandType.CLEAR_DIALOGUE, text=normalized)
+
+    file_question = _parse_file_question_command(text, normalized)
+    if file_question is not None:
+        return file_question
 
     file_search = _parse_file_search_command(text, normalized)
     if file_search is not None:

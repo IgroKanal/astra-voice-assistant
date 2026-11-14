@@ -41,6 +41,15 @@ class FileQuestionTests(unittest.TestCase):
         self.assertTrue(any(item["lines"][0] <= 31 <= item["lines"][1] for item in observed))
         self.assertIn("ОРБИТА", result.passages[0].text)
 
+    def test_voice_query_uses_the_requested_finite_local_model_timeout(self):
+        with patch("src.file_rag.OllamaClient") as client_type:
+            client_type.return_value.chat.return_value = "ОРБИТА [1]"
+            self.session.answer("Какое кодовое слово проекта?", self.profile, timeout_seconds=37.0)
+        client_type.assert_called_once_with(self.profile.base_url, timeout=37.0)
+        for timeout_seconds in (0, 120.1, True):
+            with self.subTest(timeout_seconds=timeout_seconds), self.assertRaises(ValueError):
+                self.session.answer("Какое кодовое слово проекта?", self.profile, timeout_seconds=timeout_seconds)
+
     def test_multi_file_question_cites_only_selected_documents_with_bounded_context(self):
         alpha = self.root / "alpha.txt"
         beta = self.root / "beta.txt"

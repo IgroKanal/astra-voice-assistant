@@ -117,8 +117,10 @@ class FileQuestionSession:
         self.check(cancelled)
         return selected, self.collection_fingerprint(contents)
 
-    def answer(self, question, profile, cancelled=None):
+    def answer(self, question, profile, cancelled=None, *, timeout_seconds=120):
         self.check(cancelled)
+        if type(timeout_seconds) not in (int, float) or not 1 <= timeout_seconds <= 120:
+            raise ValueError("Некорректный лимит локального вопроса")
         profile.validate()
         if profile.provider != "ollama":
             raise ValueError("Вопросы по файлу доступны только с явно выбранным локальным Ollama. Содержимое не отправляется в облако.")
@@ -148,7 +150,7 @@ class FileQuestionSession:
             "Ссылайся на каждый факт индексом фрагмента [1], [2]. Не смешивай источники без явной ссылки. "
             "Не утверждай, что прочитаны целые файлы: это ограниченная выборка."
         )
-        answer = OllamaClient(profile.base_url, timeout=120).chat(
+        answer = OllamaClient(profile.base_url, timeout=timeout_seconds).chat(
             profile.model,
             system,
             question,

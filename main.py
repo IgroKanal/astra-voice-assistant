@@ -35,6 +35,7 @@ from src.command_parser import (
     FILE_OPEN_HELP_TARGET,
     FILE_READ_HELP_TARGET,
     FILE_READ_NEXT_TARGET,
+    FILE_QUESTION_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
@@ -94,6 +95,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.FILE_SEARCH,
     CommandType.FILE_OPEN,
     CommandType.FILE_READ,
+    CommandType.FILE_QUESTION,
     CommandType.CLEAR_DIALOGUE,
 }
 
@@ -112,6 +114,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.FILE_SEARCH,
     ActionType.FILE_OPEN,
     ActionType.FILE_READ,
+    ActionType.FILE_QUESTION,
     ActionType.CLEAR_DIALOGUE,
 }
 
@@ -164,6 +167,7 @@ class TurnContext:
     file_search: Callable | None = None
     file_open: Callable | None = None
     file_read: Callable | None = None
+    file_question: Callable | None = None
     speak_private_local: Callable[[str], bool] | None = None
 
 
@@ -656,6 +660,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.FILE_SEARCH: ActionType.FILE_SEARCH,
         CommandType.FILE_OPEN: ActionType.FILE_OPEN,
         CommandType.FILE_READ: ActionType.FILE_READ,
+        CommandType.FILE_QUESTION: ActionType.FILE_QUESTION,
         CommandType.CLEAR_DIALOGUE: ActionType.CLEAR_DIALOGUE,
         CommandType.HELP: ActionType.HELP,
         CommandType.ASK_LLM: ActionType.ASK_LLM,
@@ -676,6 +681,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         query = parsed.target
     elif parsed.type == CommandType.FILE_READ:
         query = parsed.target
+    elif parsed.type == CommandType.FILE_QUESTION:
+        query = parsed.query
 
     return AssistantAction(
         type=mapping.get(parsed.type, ActionType.UNKNOWN),
@@ -1198,6 +1205,64 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 ctx.respond("Не удалось озвучить документ локальным голосом. Проверь настройки Windows SAPI и русский голос.")
             elif continuing and not checked["has_more"]:
                 ctx.respond("В документе больше нет текста.")
+        return True
+
+    if action.type == ActionType.FILE_QUESTION:
+        if action.target == FILE_QUESTION_HELP_TARGET:
+            ctx.respond("Скажи: спроси по файлу, точное имя с расширением, вопрос, затем сам вопрос. Например: спроси по файлу договор.pdf вопрос какие сроки указаны. Нужны открытая выбранная папка, разрешение «Вопросы по выбранным файлам», локальный Ollama и голос Windows SAPI.")
+            return True
+        if not ctx.settings.tts_enabled or ctx.settings.tts_engine != "sapi" or not callable(ctx.speak_private_local):
+            ctx.respond("Приватный ответ по документу доступен только с включённым локальным голосом Windows SAPI. Содержимое документа не появится в чате и не отправится облачному синтезу.")
+            return True
+        if not ctx.settings.llm_enabled or ctx.settings.llm_provider != "ollama":
+            ctx.respond("Вопросы по документам работают только с выбранным локальным Ollama. Облачная модель для этого навыка не используется.")
+            return True
+        if not callable(ctx.file_question):
+            ctx.respond("Голосовой вопрос по файлу доступен в настольном приложении. Открой раздел «Файлы» и выбери папку.")
+            return True
+        try:
+            result = ctx.file_question(action.target, action.query, timeout_seconds=50.0)
+        except (ValueError, TypeError):
+            ctx.respond("Назови точное имя одного документа и задай вопрос длиной до 1000 символов.")
+            return True
+        except Exception:
+            ctx.respond("Не удалось выполнить локальный вопрос по выбранному файлу.")
+            return True
+        if not isinstance(result, dict):
+            ctx.respond("Локальный вопрос по файлу недоступен. Открой Astra и выбери папку в разделе «Файлы».")
+        elif result.get("status") == "no_workspace":
+            ctx.respond("Сначала открой раздел «Файлы» и выбери папку.")
+        elif result.get("status") == "not_found":
+            ctx.respond("Документ с таким точным именем не найден в выбранной папке.")
+        elif result.get("status") == "ambiguous":
+            ctx.respond("В выбранной папке есть несколько документов с таким именем. Уточни папку или имя.")
+        elif result.get("status") == "unsafe_file":
+            ctx.respond("Этот тип файла не поддерживается для вопросов. Разрешены TXT, MD, PDF, DOCX, XLSX и PPTX.")
+        elif result.get("status") == "cancelled":
+            ctx.respond("Вопрос отменён, потому что выбранная папка была закрыта.")
+        elif result.get("status") == "local_model_required":
+            ctx.respond("Включи разрешение «Вопросы по выбранным файлам» и выбери локальный Ollama в настройках.")
+        elif result.get("status") != "ok":
+            ctx.respond("Локальная модель не ответила за 40 секунд. Облачный запрос не выполнялся.")
+        else:
+            from src.desktop_file_search import make_file_question_result
+            try:
+                checked = make_file_question_result(
+                    result.get("request_id"), result.get("status"),
+                    result.get("filename"), result.get("answer"),
+                )
+            except (TypeError, ValueError):
+                ctx.respond("Получен некорректный ответ на локальный вопрос.")
+                return True
+            try:
+                spoken = ctx.speak_private_local(checked["answer"])
+            except Exception as exc:
+                ctx.logger.error("Приватная локальная озвучка ответа по документу завершилась ошибкой (%s)", type(exc).__name__)
+                spoken = False
+            if spoken:
+                ctx.respond("Ответ по документу произнесён локально. Текст не добавлен в чат.")
+            else:
+                ctx.respond("Не удалось произнести ответ локально. Проверь настройки Windows SAPI и русский голос.")
         return True
 
     if action.type == ActionType.MEMORY_NOTE:
@@ -1930,6 +1995,7 @@ def run_voice_mode(
         file_search=file_search_channel.search,
         file_open=file_search_channel.open_exact,
         file_read=file_search_channel.read_exact,
+        file_question=file_search_channel.ask_file,
         speak_private_local=getattr(voice, "speak_private_local", None),
     )
 

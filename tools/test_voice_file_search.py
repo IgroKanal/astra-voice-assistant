@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from main import process_turn
 from src.action_policy import DEFAULT_SCOPES, ActionPolicy
-from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_READ_HELP_TARGET, FILE_READ_NEXT_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
+from src.command_parser import CommandType, FILE_OPEN_HELP_TARGET, FILE_QUESTION_HELP_TARGET, FILE_READ_HELP_TARGET, FILE_READ_NEXT_TARGET, FILE_SEARCH_HELP_TARGET, is_command_like_text, parse_command_text
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile
 from src.desktop_file_search import (
@@ -22,12 +22,15 @@ from src.desktop_file_search import (
     encode_file_result,
     make_file_open_request,
     make_file_open_result,
+    make_file_question_request,
+    make_file_question_result,
     make_file_read_request,
     make_file_read_result,
     make_search_request,
     make_search_result,
     parse_control_line,
     parse_file_open_request,
+    parse_file_question_request,
     parse_file_read_request,
     parse_search_request,
     spoken_document_chunk,
@@ -71,6 +74,16 @@ class VoiceFileSearchTests(unittest.TestCase):
                 self.assertEqual(continued.type, CommandType.FILE_READ)
                 self.assertEqual(continued.target, FILE_READ_NEXT_TARGET)
                 self.assertTrue(is_command_like_text(phrase))
+        question = parse_command_text("спроси по файлу договор 2026.pdf вопрос какие сроки оплаты указаны")
+        self.assertEqual(question.type, CommandType.FILE_QUESTION)
+        self.assertEqual(question.target, "договор 2026.pdf")
+        self.assertEqual(question.query, "какие сроки оплаты указаны")
+        self.assertTrue(is_command_like_text("спроси по файлу договор.pdf вопрос сроки оплаты"))
+        self.assertEqual(parse_command_text("спроси по файлу").target, FILE_QUESTION_HELP_TARGET)
+        self.assertEqual(
+            parse_command_text("спроси по файлу ..\\secret.txt вопрос где пароль").target,
+            FILE_QUESTION_HELP_TARGET,
+        )
 
     def test_query_is_only_a_bounded_filename_fragment(self):
         self.assertEqual(validate_query("  отчёт  2026.pdf  "), "отчёт 2026.pdf")
@@ -103,6 +116,11 @@ class VoiceFileSearchTests(unittest.TestCase):
                 make_file_read_request("d" * 32, "report.txt", offset)
         with self.assertRaises(ValueError):
             make_file_read_request("d" * 32, "report.txt", 0, True)
+        question_request = make_file_question_request("e" * 32, "report.txt", "какие сроки?")
+        self.assertEqual(parse_file_question_request(json.dumps(question_request))["question"], "какие сроки?")
+        question_request["extra"] = "reject"
+        with self.assertRaises(ValueError):
+            parse_file_question_request(json.dumps(question_request))
         with self.assertRaises(ValueError):
             make_search_result("a" * 32, "ok", 1, ["..\\secret.txt"])
         valid = make_search_result("a" * 32, "ok", 1, ["reports\\report.txt"])
@@ -112,6 +130,9 @@ class VoiceFileSearchTests(unittest.TestCase):
         read = make_file_read_result("f" * 32, "ok", "report.txt", "  Привет,\n мир!  ")
         self.assertEqual(read["text"], "Привет, мир!")
         self.assertEqual(parse_control_line(encode_file_result(read).rstrip()), read)
+        question_result = make_file_question_result("f" * 32, "ok", "report.txt", "Ответ по документу")
+        self.assertEqual(parse_control_line(encode_file_result(question_result).rstrip()), question_result)
+        self.assertLessEqual(len(make_file_question_result("f" * 32, "ok", "report.txt", "длинный " * 300)["answer"]), 1200)
         with self.assertRaises(ValueError):
             make_file_read_result("f" * 32, "ok", "..\\secret.txt", "secret")
         with self.assertRaises(ValueError):
@@ -201,6 +222,46 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertEqual(emitted[0][0], "file_read_request")
         self.assertEqual(result["text"], "Private excerpt")
 
+    def test_runtime_channel_pairs_local_file_question_with_strict_answer(self):
+        stream = _QueueLineStream()
+        emitted = []
+
+        def emit(kind, text):
+            emitted.append((kind, text))
+            request = parse_file_question_request(text)
+            reply = make_file_question_result(request["request_id"], "ok", request["filename"], "Срок — 30 дней [1].")
+            stream.feed(encode_file_result(reply))
+            return True
+
+        channel = DesktopFileSearchChannel(emit=emit)
+        with patch.dict("os.environ", {"ASTRA_DESKTOP_EVENTS": "1"}):
+            self.assertTrue(channel.start_control_reader(stream))
+            result = channel.ask_file("contract.pdf", "какой указан срок?")
+        stream.feed("")
+        self.assertEqual(emitted[0][0], "file_question_request")
+        request = parse_file_question_request(emitted[0][1])
+        self.assertEqual(request["filename"], "contract.pdf")
+        self.assertEqual(request["question"], "какой указан срок?")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["answer"], "Срок — 30 дней [1].")
+
+    def test_runtime_channel_rejects_read_reply_for_file_question(self):
+        stream = _QueueLineStream()
+
+        def emit(_kind, text):
+            request = parse_file_question_request(text)
+            reply = make_file_read_result(request["request_id"], "ok", "contract.pdf", "private excerpt")
+            stream.feed(encode_file_result(reply))
+            return True
+
+        channel = DesktopFileSearchChannel(emit=emit)
+        with patch.dict("os.environ", {"ASTRA_DESKTOP_EVENTS": "1"}):
+            self.assertTrue(channel.start_control_reader(stream))
+            result = channel.ask_file("contract.pdf", "какой срок?", timeout_seconds=0.1)
+        stream.feed("")
+        self.assertEqual(result["type"], "file_question_result")
+        self.assertEqual(result["status"], "question_failed")
+
     def test_runtime_channel_rejects_open_reply_for_read_request(self):
         stream = _QueueLineStream()
 
@@ -264,6 +325,9 @@ class VoiceFileSearchTests(unittest.TestCase):
         self.assertNotIn("read_files", DEFAULT_SCOPES)
         self.assertNotIn("read_files", Settings().action_permissions)
         self.assertNotIn("read_files", AIProfile().allowed_scopes)
+        self.assertNotIn("ask_files", DEFAULT_SCOPES)
+        self.assertNotIn("ask_files", Settings().action_permissions)
+        self.assertNotIn("ask_files", AIProfile().allowed_scopes)
         action = AssistantAction(ActionType.FILE_SEARCH, query="report", source="local_parser")
         self.assertFalse(ActionPolicy().check(action).allowed)
 
@@ -317,6 +381,65 @@ class VoiceFileSearchTests(unittest.TestCase):
         process_turn("прочитай файл memo.txt", ctx)
         self.assertIn("Назови меня", responses[-1])
         self.assertEqual(read_file.call_count, 1)
+
+    def test_voice_file_question_requires_wake_separate_grant_and_local_provider(self):
+        ctx, responses, ai, *_ = make_context()
+        speak_private = Mock(return_value=True)
+        question = Mock(return_value={
+            "type": "file_question_result", "request_id": "a" * 32,
+            "status": "ok", "filename": "contract.pdf", "answer": "Срок — 30 дней.",
+        })
+        settings = replace(
+            ctx.settings,
+            action_permissions=("ask_files",),
+            llm_enabled=True,
+            llm_provider="ollama",
+            allow_commands_without_wake=True,
+            tts_enabled=True,
+            tts_engine="sapi",
+        )
+        ctx = replace(ctx, settings=settings, file_question=question, speak_private_local=speak_private)
+
+        process_turn("Астра, спроси по файлу contract.pdf вопрос какой указан срок", ctx)
+        self.assertIn("произнесён локально", responses[-1])
+        self.assertNotIn("Срок — 30 дней", " ".join(responses))
+        question.assert_called_once_with("contract.pdf", "какой указан срок", timeout_seconds=50.0)
+        speak_private.assert_called_once_with("Срок — 30 дней.")
+        self.assertEqual(ai.ask_calls, 0)
+        self.assertEqual(ai.route_calls, 0)
+
+        process_turn("спроси по файлу contract.pdf вопрос какой указан срок", ctx)
+        self.assertIn("Назови меня", responses[-1])
+        self.assertEqual(question.call_count, 1)
+
+    def test_voice_file_question_blocks_without_grant_and_rejects_cloud_provider(self):
+        ctx, responses, ai, *_ = make_context()
+        question = Mock(side_effect=AssertionError("No file request without consent"))
+        settings = replace(ctx.settings, llm_enabled=True, llm_provider="ollama")
+        ctx = replace(ctx, settings=settings, file_question=question)
+        process_turn("Астра, спроси по файлу contract.pdf вопрос какой срок", ctx)
+        self.assertIn("навык отключён", responses[-1])
+        question.assert_not_called()
+
+        settings = replace(
+            ctx.settings, action_permissions=("ask_files",), llm_provider="gemini",
+            tts_enabled=True, tts_engine="sapi",
+        )
+        ctx = replace(ctx, settings=settings, speak_private_local=Mock(return_value=True))
+        process_turn("Астра, спроси по файлу contract.pdf вопрос какой срок", ctx)
+        self.assertIn("только с выбранным локальным Ollama", responses[-1])
+        question.assert_not_called()
+        self.assertEqual(ai.ask_calls, 0)
+        self.assertEqual(ai.route_calls, 0)
+
+    def test_voice_file_question_requires_private_local_sapi_before_request(self):
+        ctx, responses, _ai, *_ = make_context()
+        question = Mock(side_effect=AssertionError("No file request without private local speech"))
+        settings = replace(ctx.settings, action_permissions=("ask_files",), llm_enabled=True, llm_provider="ollama")
+        ctx = replace(ctx, settings=settings, file_question=question)
+        process_turn("Астра, спроси по файлу contract.pdf вопрос какой срок", ctx)
+        self.assertIn("Windows SAPI", responses[-1])
+        question.assert_not_called()
 
     def test_voice_document_read_refuses_without_grant_or_local_sapi_before_fetch(self):
         ctx, responses, _ai, *_ = make_context()
@@ -619,6 +742,149 @@ class VoiceFileSearchTests(unittest.TestCase):
                 self.assertTrue(replied.wait(3))
                 self.assertEqual(app.bridge.reply_file_request.call_args.args[0]["status"], "ambiguous")
                 start_file.assert_called_once()
+
+    def test_ui_file_question_requires_local_profile_consent_and_uses_exact_selected_file(self):
+        import runpy
+        import tempfile
+        from src.file_rag import FileAnswer, FileQuestionSession, Passage
+
+        root_path = Path(__file__).resolve().parents[1]
+        AstraDesktop = runpy.run_path(str(root_path / "astra_desktop.pyw"))["AstraDesktop"]
+
+        class Panel:
+            def winfo_exists(self):
+                return True
+
+        with tempfile.TemporaryDirectory(prefix="astra-voice-question-", dir=root_path) as temp:
+            root = Path(temp)
+            (root / "contract.txt").write_text("Срок оплаты — 30 дней.", encoding="utf-8")
+            panel = Panel()
+            app = AstraDesktop.__new__(AstraDesktop)
+            app.active_file_workspace = FileWorkspace(root)
+            app.active_file_panel = panel
+            app._file_search_lock = threading.RLock()
+            app._file_search_generation = 1
+            app._file_search_jobs = {}
+            app.bridge = Mock()
+            replied = threading.Event()
+            app.bridge.reply_file_request.side_effect = lambda _result, **_kwargs: replied.set() or True
+
+            denied = make_file_question_request("a" * 32, "contract.txt", "какой срок оплаты?")
+            with patch("src.desktop_settings.DesktopSettings.load", return_value=AIProfile(provider="ollama")), \
+                    patch.object(FileWorkspace, "find_exact_name", side_effect=AssertionError("No lookup without consent")) as find_file, \
+                    patch.object(FileWorkspace, "read_text", side_effect=AssertionError("No read without consent")) as read_file:
+                app._handle_file_question_request(json.dumps(denied, ensure_ascii=False))
+                self.assertTrue(replied.wait(3))
+                self.assertEqual(app.bridge.reply_file_request.call_args.args[0]["status"], "local_model_required")
+                find_file.assert_not_called()
+                read_file.assert_not_called()
+
+                replied.clear()
+                cloud = AIProfile(provider="gemini", allowed_scopes=("ask_files",))
+                with patch("src.desktop_settings.DesktopSettings.load", return_value=cloud):
+                    cloud_request = make_file_question_request("b" * 32, "contract.txt", "какой срок оплаты?")
+                    app._handle_file_question_request(json.dumps(cloud_request, ensure_ascii=False))
+                    self.assertTrue(replied.wait(3))
+                self.assertEqual(app.bridge.reply_file_request.call_args.args[0]["status"], "local_model_required")
+                find_file.assert_not_called()
+                read_file.assert_not_called()
+
+            replied.clear()
+            profile = AIProfile(provider="ollama", allowed_scopes=("ask_files",))
+            expected_answer = FileAnswer(
+                "Срок — 30 дней [1].",
+                (Passage(4, 5, "Срок оплаты — 30 дней.", 2, "contract.txt"),),
+                "digest",
+            )
+
+            def answer_selected(session, question, selected_profile, **kwargs):
+                self.assertEqual(session.relatives, ("contract.txt",))
+                self.assertEqual(question, "какой срок оплаты?")
+                self.assertEqual(selected_profile, profile)
+                self.assertEqual(kwargs["timeout_seconds"], 40.0)
+                return expected_answer
+
+            with patch("src.desktop_settings.DesktopSettings.load", return_value=profile), \
+                    patch.object(FileQuestionSession, "answer", autospec=True, side_effect=answer_selected) as answer:
+                allowed = make_file_question_request("c" * 32, "contract.txt", "какой срок оплаты?")
+                app._handle_file_question_request(json.dumps(allowed, ensure_ascii=False))
+                self.assertTrue(replied.wait(3))
+                result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["filename"], "contract.txt")
+            self.assertIn("Срок — 30 дней", result["answer"])
+            self.assertIn("contract.txt, строки 4–5", result["answer"])
+            self.assertNotIn(str(root), result["answer"])
+            answer.assert_called_once()
+
+    def test_ui_file_question_discards_result_when_selected_folder_closes(self):
+        import runpy
+        import tempfile
+        from src.file_rag import FileQuestionSession
+        from src.file_workspace import WorkspaceDenied
+
+        root_path = Path(__file__).resolve().parents[1]
+        AstraDesktop = runpy.run_path(str(root_path / "astra_desktop.pyw"))["AstraDesktop"]
+
+        class Panel:
+            def winfo_exists(self):
+                return True
+
+        with tempfile.TemporaryDirectory(prefix="astra-voice-question-cancel-", dir=root_path) as temp:
+            root = Path(temp)
+            (root / "contract.txt").write_text("Срок оплаты — 30 дней.", encoding="utf-8")
+            panel = Panel()
+            app = AstraDesktop.__new__(AstraDesktop)
+            app.active_file_workspace = FileWorkspace(root)
+            app.active_file_panel = panel
+            app._file_search_lock = threading.RLock()
+            app._file_search_generation = 1
+            app._file_search_jobs = {}
+            app.bridge = Mock()
+            started = threading.Event()
+            release = threading.Event()
+            replied = threading.Event()
+            app.bridge.reply_file_request.side_effect = lambda _result, **_kwargs: replied.set() or True
+            profile = AIProfile(provider="ollama", allowed_scopes=("ask_files",))
+
+            def delayed_answer(_session, _question, _profile, *, cancelled=None, **_kwargs):
+                started.set()
+                release.wait(3)
+                if cancelled and cancelled():
+                    raise WorkspaceDenied("Запрос отменён")
+                return None
+
+            request = make_file_question_request("d" * 32, "contract.txt", "какой срок оплаты?")
+            with patch("src.desktop_settings.DesktopSettings.load", return_value=profile), \
+                    patch.object(FileQuestionSession, "answer", autospec=True, side_effect=delayed_answer):
+                app._handle_file_question_request(json.dumps(request, ensure_ascii=False))
+                self.assertTrue(started.wait(3))
+                app._revoke_file_workspace(panel)
+                release.set()
+                self.assertTrue(replied.wait(3))
+            result = app.bridge.reply_file_request.call_args.args[0]
+            self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(result["answer"], "")
+
+    def test_switching_runtime_cancels_in_flight_file_requests(self):
+        import runpy
+
+        root_path = Path(__file__).resolve().parents[1]
+        AstraDesktop = runpy.run_path(str(root_path / "astra_desktop.pyw"))["AstraDesktop"]
+        app = AstraDesktop.__new__(AstraDesktop)
+        cancellation = threading.Event()
+        app._file_search_lock = threading.RLock()
+        app._file_search_jobs = {"question": (cancellation, 1)}
+        app.closing = False
+        app.busy = True
+        app.pending_mode = None
+        app.mode_pending = False
+
+        app.switch("text")
+
+        self.assertTrue(cancellation.is_set())
+        self.assertEqual(app.pending_mode, "text")
+        self.assertTrue(app.mode_pending)
 
 
 if __name__ == "__main__":

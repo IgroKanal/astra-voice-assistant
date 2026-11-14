@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, simpledialog
 from src.desktop_bridge import DesktopBridge
 from src.desktop_file_search import (
     make_file_open_result,
+    make_file_question_result,
     make_file_read_result,
     make_search_result,
     parse_file_request,
@@ -305,6 +306,7 @@ class AstraDesktop:
     def switch(self, mode):
         if self.closing:
             return
+        self._cancel_file_requests()
         if self.busy:
             self.pending_mode = mode
             self.mode_pending = True
@@ -511,11 +513,15 @@ class AstraDesktop:
     def _set_active_file_workspace(self, workspace, panel):
         with self._file_search_lock:
             self._file_search_generation += 1
-            for cancellation, _generation in self._file_search_jobs.values():
-                cancellation.set()
+            self._cancel_file_requests()
             self._file_search_jobs.clear()
             self.active_file_workspace = workspace
             self.active_file_panel = panel
+
+    def _cancel_file_requests(self):
+        with self._file_search_lock:
+            for cancellation, _generation in self._file_search_jobs.values():
+                cancellation.set()
 
     def _revoke_file_workspace(self, panel=None):
         with self._file_search_lock:
@@ -524,8 +530,7 @@ class AstraDesktop:
             self._file_search_generation += 1
             self.active_file_workspace = None
             self.active_file_panel = None
-            for cancellation, _generation in self._file_search_jobs.values():
-                cancellation.set()
+            self._cancel_file_requests()
 
     def _handle_file_search_request(self, text):
         self._handle_file_request(text, "search")
@@ -536,6 +541,9 @@ class AstraDesktop:
     def _handle_file_read_request(self, text):
         self._handle_file_request(text, "read")
 
+    def _handle_file_question_request(self, text):
+        self._handle_file_request(text, "question")
+
     def _handle_file_request(self, text, expected_operation):
         try:
             operation, request = parse_file_request(text)
@@ -544,7 +552,8 @@ class AstraDesktop:
         if operation != expected_operation:
             return
         request_id = request["request_id"]
-        query = request["query"]
+        query = request.get("filename", request.get("query", ""))
+        question = request.get("question", "")
         read_offset = request.get("offset", 0)
         requested_workspace_generation = request.get("workspace_generation", 0)
         runtime_process = self.bridge.process
@@ -558,6 +567,8 @@ class AstraDesktop:
                     if operation == "open"
                     else make_file_read_result(request_id, "no_workspace")
                     if operation == "read"
+                    else make_file_question_result(request_id, "no_workspace")
+                    if operation == "question"
                     else make_search_result(request_id, "no_workspace")
                 )
                 self.bridge.reply_file_request(
@@ -584,11 +595,62 @@ class AstraDesktop:
             relative_path = ""
             filename = ""
             excerpt = ""
+            private_answer = ""
             next_offset = 0
             has_more = False
             deadline = time.monotonic() + 8.0
             try:
-                if operation == "search":
+                if operation == "question":
+                    from src.desktop_settings import DesktopSettings
+                    from src.file_rag import FileQuestionSession
+
+                    profile = DesktopSettings().load()
+                    if profile.provider != "ollama" or "ask_files" not in profile.allowed_scopes:
+                        status = "local_model_required"
+                    else:
+                        entries = workspace.find_exact_name(
+                            query,
+                            is_cancelled=cancellation.is_set,
+                            deadline=deadline,
+                        )
+                        if not entries:
+                            status = "not_found"
+                        elif len(entries) > 1:
+                            status = "ambiguous"
+                        else:
+                            relative_path = entries[0].path
+                            candidate = Path(relative_path)
+                            if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
+                                status = "unsafe_file"
+                            else:
+                                workspace.checked_openable_file(relative_path)
+                                timeout_cancelled = threading.Event()
+                                timeout_timer = threading.Timer(40.0, timeout_cancelled.set)
+                                timeout_timer.daemon = True
+                                timeout_timer.start()
+                                try:
+                                    answer = FileQuestionSession(workspace, relative_path).answer(
+                                        question,
+                                        profile,
+                                        cancelled=lambda: cancellation.is_set() or timeout_cancelled.is_set(),
+                                        timeout_seconds=40.0,
+                                    )
+                                    if timeout_cancelled.is_set():
+                                        status = "question_failed"
+                                    else:
+                                        citations = []
+                                        for passage in answer.passages[:3]:
+                                            source_name = Path(passage.file).name
+                                            citation = f"{source_name}, строки {passage.start_line}–{passage.end_line}"
+                                            if citation not in citations:
+                                                citations.append(citation)
+                                        private_answer = answer.text
+                                        if citations:
+                                            private_answer += " Источники: " + "; ".join(citations) + "."
+                                        filename = candidate.name
+                                finally:
+                                    timeout_timer.cancel()
+                elif operation == "search":
                     entries = workspace.search(
                         query,
                         is_cancelled=cancellation.is_set,
@@ -622,9 +684,9 @@ class AstraDesktop:
                             filename = candidate.name
                             del document_text
             except WorkspaceDenied:
-                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "read_failed" if operation == "read" else "open_failed"
+                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "read_failed" if operation == "read" else "question_failed" if operation == "question" else "open_failed"
             except Exception:
-                status = "search_failed" if operation == "search" else "read_failed" if operation == "read" else "open_failed"
+                status = "search_failed" if operation == "search" else "read_failed" if operation == "read" else "question_failed" if operation == "question" else "open_failed"
 
             with self._file_search_lock:
                 current = (
@@ -640,6 +702,7 @@ class AstraDesktop:
                     relative_path = ""
                     filename = ""
                     excerpt = ""
+                    private_answer = ""
                     next_offset = 0
                     has_more = False
                 elif operation == "open" and status == "ok":
@@ -674,6 +737,8 @@ class AstraDesktop:
                             request_id, status, filename, excerpt, next_offset, has_more,
                             generation if status == "ok" else 0,
                         )
+                    elif operation == "question":
+                        result = make_file_question_result(request_id, status, filename, private_answer)
                     else:
                         result = make_search_result(
                             request_id,
@@ -687,6 +752,8 @@ class AstraDesktop:
                         if operation == "open"
                         else make_file_read_result(request_id, "read_failed")
                         if operation == "read"
+                        else make_file_question_result(request_id, "question_failed")
+                        if operation == "question"
                         else make_search_result(request_id, "search_failed")
                     )
                 self.bridge.reply_file_request(result, expected_process=runtime_process)
@@ -927,6 +994,8 @@ class AstraDesktop:
                 self._handle_file_open_request(text)
             elif kind == "file_read_request":
                 self._handle_file_read_request(text)
+            elif kind == "file_question_request":
+                self._handle_file_question_request(text)
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:

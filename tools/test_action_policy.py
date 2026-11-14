@@ -11,7 +11,7 @@ from src.task_router import ActionType, AssistantAction
 class ActionPolicyTests(unittest.TestCase):
     def test_revoked_capabilities_block_every_mapped_action(self):
         policy = ActionPolicy(())
-        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE, ActionType.FILE_SEARCH, ActionType.FILE_OPEN, ActionType.FILE_READ):
+        for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE, ActionType.FILE_SEARCH, ActionType.FILE_OPEN, ActionType.FILE_READ, ActionType.FILE_QUESTION):
             with self.subTest(action=action_type):
                 self.assertFalse(policy.check(AssistantAction(action_type)).allowed)
         self.assertTrue(policy.check(AssistantAction(ActionType.GET_TIME)).allowed)
@@ -38,6 +38,13 @@ class ActionPolicyTests(unittest.TestCase):
         self.assertTrue(ActionPolicy(("read_files",)).check(action).allowed)
         routed = AssistantAction(ActionType.FILE_READ, query="memo.txt", source="llm_router", confidence=1.0)
         self.assertFalse(ActionPolicy(("read_files",)).check(routed).allowed)
+
+    def test_file_question_requires_its_separate_user_grant_and_cannot_come_from_router(self):
+        action = AssistantAction(ActionType.FILE_QUESTION, target="report.pdf", query="какие сроки")
+        self.assertFalse(ActionPolicy(("read_files",)).check(action).allowed)
+        self.assertTrue(ActionPolicy(("ask_files",)).check(action).allowed)
+        routed = AssistantAction(ActionType.FILE_QUESTION, target="report.pdf", query="какие сроки", source="llm_router")
+        self.assertFalse(ActionPolicy(("ask_files",)).check(routed).allowed)
 
     def test_shortcuts_respect_appropriate_scope(self):
         self.assertTrue(ActionPolicy(("media",)).check(AssistantAction(ActionType.KEYBOARD_SHORTCUT, target="media_next")).allowed)

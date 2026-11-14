@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.build_paths import resolve_build_paths, using_temp_directory
+
 
 def locate_iscc() -> Path:
     candidates = []
@@ -68,7 +70,10 @@ def compile_installer(source_dir: Path, output_dir: Path, iscc: Path | None = No
         f"/O{output}",
         str(script),
     ]
-    subprocess.run(args, check=True, cwd=ROOT)
+    paths = resolve_build_paths(ROOT)
+    paths.temp_root.mkdir(parents=True, exist_ok=True)
+    with using_temp_directory(paths.temp_root):
+        subprocess.run(args, check=True, cwd=ROOT)
     installer = output / f"Astra-Setup-{version}.exe"
     if not installer.is_file() or installer.stat().st_size < 1024 * 1024:
         raise RuntimeError("ISCC returned successfully but the installer is missing or incomplete")

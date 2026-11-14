@@ -7,6 +7,12 @@ import subprocess
 import sys
 import tempfile
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.build_paths import resolve_build_paths
+
 
 def run(
     args: list[str],
@@ -31,15 +37,27 @@ def run(
 
 def validate(installer: Path) -> None:
     installer = installer.resolve(strict=True)
-    with tempfile.TemporaryDirectory(prefix="astra-installer-check-") as temp:
+    paths = resolve_build_paths(installer.parent)
+    paths.temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="astra-installer-check-", dir=paths.temp_root
+    ) as temp:
         root = Path(temp)
+        child_temp = root / "temp"
+        child_temp.mkdir()
         install_root = root / "Astra installed under a path with spaces"
         local_app_data = root / "User profile" / "AppData" / "Local"
         user_data = local_app_data / "AstraVoiceAssistant"
         user_data.mkdir(parents=True)
         sentinel = user_data / "user-data-preservation.txt"
         sentinel.write_text("keep this user data", encoding="utf-8")
-        env = dict(os.environ, LOCALAPPDATA=str(local_app_data))
+        env = dict(
+            os.environ,
+            LOCALAPPDATA=str(local_app_data),
+            TEMP=str(child_temp),
+            TMP=str(child_temp),
+            TMPDIR=str(child_temp),
+        )
 
         setup = run(
             [

@@ -1,6 +1,7 @@
 """Build an isolated portable preview; never copy the user's .env or logs."""
 from __future__ import annotations
 
+import atexit
 from datetime import datetime
 import hashlib
 import importlib.metadata
@@ -18,9 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.build_paths import cleanup_build_work, configure_temp_directory, resolve_build_paths
+
 
 def build() -> Path:
-    inputs = [ROOT / name for name in ("main.py", "astra_desktop.pyw", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", ".env.example", "src/version.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
+    inputs = [ROOT / name for name in ("main.py", "astra_desktop.pyw", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
     inputs += list((ROOT / "src").glob("*.py")) + list((ROOT / "config").glob("*.json")) + list((ROOT / "assets" / "avatars").glob("*.png"))
     avatar_project = ROOT / "prototypes" / "3d_avatar"
     icon = ROOT / "assets" / "branding" / "astra.ico"
@@ -62,11 +65,36 @@ def build() -> Path:
         except ValueError:
             return "third_party/godot/" + path.name
     fingerprint = {input_key(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
-    output_root = Path(os.environ.get("ASTRA_BUILD_OUTPUT_ROOT", str(ROOT.parent))).resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
-    output = output_root / ("AstraDesktop-preview-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    paths = resolve_build_paths(ROOT)
+    paths.output_root.mkdir(parents=True, exist_ok=True)
+    paths.temp_root.mkdir(parents=True, exist_ok=True)
+    output = paths.output_root / ("AstraDesktop-preview-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    archive_path = output.with_suffix(".zip")
+    work = Path(tempfile.mkdtemp(prefix="astra-desktop-build-", dir=paths.temp_root))
+    cleanup_state = {"output_created": False, "archive_created": False, "complete": False}
+
+    def clean_work() -> None:
+        try:
+            cleanup_build_work(work, temp_root=paths.temp_root)
+        except OSError as exc:
+            print(f"BUILD_TEMP_RETAINED={work} ({exc})", flush=True)
+        if cleanup_state["complete"]:
+            return
+        try:
+            if cleanup_state["archive_created"]:
+                archive_path.unlink(missing_ok=True)
+            if cleanup_state["output_created"]:
+                shutil.rmtree(output)
+        except OSError as exc:
+            print(f"INCOMPLETE_BUILD_RETAINED={output} ({exc})", flush=True)
+
+    atexit.register(clean_work)
     output.mkdir(exist_ok=False)
-    work = Path(tempfile.mkdtemp(prefix="astra-desktop-build-"))
+    cleanup_state["output_created"] = True
+    configure_temp_directory(work)
+    pyinstaller_config = work / "pyinstaller-config"
+    pyinstaller_config.mkdir()
+    os.environ["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_config)
     common = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--noupx", "--clean", "--specpath", str(work), "--icon", str(icon)]
     subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", str(ROOT / "astra_desktop.pyw")], cwd=ROOT, check=True)
     subprocess.run(common + ["--name", "AstraRuntime", "--onedir", "--console", "--distpath", str(output / "runtime"), "--workpath", str(work / "runtime"), "--collect-submodules", "pyttsx3.drivers", "--add-data", str(ROOT / "config") + ":config", str(ROOT / "astra_runtime.py")], cwd=ROOT, check=True)
@@ -106,14 +134,15 @@ def build() -> Path:
     from src.version import PRODUCT_VERSION
     manifest = {"product": "Astra Desktop", "version": PRODUCT_VERSION, "built_at": datetime.now().isoformat(), "python": sys.version.split()[0], "bundled_dependencies": {"edge-tts": edge_tts_version}, "source_sha256": fingerprint, "contains_personal_env": False}
     (output / "build_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    archive_path = output.with_suffix(".zip")
     with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+        cleanup_state["archive_created"] = True
         for path in sorted(output.rglob("*")):
             if path.is_file():
                 archive.write(path, str(Path(output.name) / path.relative_to(output)))
+    cleanup_state["complete"] = True
     print("DESKTOP_ZIP=" + str(archive_path), flush=True)
     print("DESKTOP_OUTPUT=" + str(output), flush=True)
-    print("BUILD_WORK=" + str(work), flush=True)
+    print("BUILD_TEMP_ROOT=" + str(paths.temp_root), flush=True)
     return output
 
 

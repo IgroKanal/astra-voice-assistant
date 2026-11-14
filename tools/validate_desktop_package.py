@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools.build_paths import configure_temp_directory, resolve_build_paths
 from tools.validate_package import _secret_findings, _unsafe_path_reason, _forbidden_file_reason
 
 
@@ -54,7 +56,14 @@ def main():
             raise ValueError("CRC failure: " + bad)
         print(f"DESKTOP_PACKAGE_PASS: {len(entries)} entries, no forbidden files or known secret patterns")
         if args.test_relocated:
-            destination = Path(tempfile.mkdtemp(prefix="astra relocated preview "))
+            paths = resolve_build_paths(ROOT)
+            paths.temp_root.mkdir(parents=True, exist_ok=True)
+            configure_temp_directory(paths.temp_root)
+            destination_temp = tempfile.TemporaryDirectory(
+                prefix="astra-relocated-preview-", dir=paths.temp_root
+            )
+            atexit.register(destination_temp.cleanup)
+            destination = Path(destination_temp.name)
             archive.extractall(destination)
             from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
             ui_exe = destination / folder / "Astra.exe"

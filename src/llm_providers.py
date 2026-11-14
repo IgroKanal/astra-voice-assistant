@@ -5,7 +5,7 @@ caller must still validate any structured output through Astra's action policy.
 """
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from src.ollama_client import OllamaClient
 
@@ -30,6 +30,7 @@ class TextProvider(Protocol):
         history: list[dict[str, str]] | None = None,
         memory_context: str = "",
         think: bool | None = None,
+        timing_callback: Callable[[dict[str, float | None]], None] | None = None,
     ) -> str: ...
 
     def classify(
@@ -77,16 +78,22 @@ class OllamaProvider:
         history: list[dict[str, str]] | None = None,
         memory_context: str = "",
         think: bool | None = None,
+        timing_callback: Callable[[dict[str, float | None]], None] | None = None,
     ) -> str:
-        return self.client.chat(
-            model,
-            system,
-            question,
+        arguments = dict(
             max_tokens=max_tokens,
             history=history,
             memory_context=memory_context,
             temperature=temperature,
             think=think,
+        )
+        if timing_callback is not None:
+            arguments["timing_callback"] = timing_callback
+        return self.client.chat(
+            model,
+            system,
+            question,
+            **arguments,
         )
 
     def classify(

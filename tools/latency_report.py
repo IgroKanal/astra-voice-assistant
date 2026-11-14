@@ -20,6 +20,10 @@ _LLM_RE = re.compile(
     r"LLM timing: provider=[A-Za-z0-9_.-]+ task=answer\b.*?"
     r"\bresult=[A-Za-z0-9_-]+\b.*?\belapsed=(\d+(?:\.\d+)?)s"
 )
+_LLM_FIRST_TOKEN_RE = re.compile(
+    r"LLM first-token timing: provider=ollama task=answer\b.*?"
+    r"\belapsed=(\d+(?:\.\d+)?)s"
+)
 _TTS_RE = re.compile(r"TTS timing: (\d+(?:\.\d+)?)s \[[^\]\r\n]{1,32}\]")
 
 
@@ -38,6 +42,7 @@ def collect_metrics(lines: Iterable[str]) -> dict[str, list[float]]:
         "stt_recognition": [],
         "stt_total": [],
         "llm_answer": [],
+        "llm_first_token": [],
         "tts": [],
     }
     for line in lines:
@@ -49,6 +54,9 @@ def collect_metrics(lines: Iterable[str]) -> dict[str, list[float]]:
         llm_match = _LLM_RE.search(line)
         if llm_match:
             metrics["llm_answer"].append(float(llm_match.group(1)))
+        first_token_match = _LLM_FIRST_TOKEN_RE.search(line)
+        if first_token_match:
+            metrics["llm_first_token"].append(float(first_token_match.group(1)))
         tts_match = _TTS_RE.search(line)
         if tts_match:
             metrics["tts"].append(float(tts_match.group(1)))
@@ -72,6 +80,7 @@ def format_report(metrics: dict[str, list[float]]) -> str:
         ("stt_recognition", "STT - распознавание"),
         ("stt_total", "STT - всего"),
         ("llm_answer", "LLM - ответ"),
+        ("llm_first_token", "LLM - первый токен"),
         ("tts", "TTS - синтез и воспроизведение"),
     )
     report = ["Замеры по выбранному логу Astra (секунды):"]

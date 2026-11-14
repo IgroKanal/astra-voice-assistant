@@ -114,6 +114,29 @@ class AIProfileTests(unittest.TestCase):
             result = AIClient(settings).ask("Вопрос для проверки")
         self.assertTrue(result.ok)
         self.assertFalse(chat.call_args.kwargs["think"])
+        self.assertTrue(callable(chat.call_args.kwargs["timing_callback"]))
+
+    def test_local_answer_records_only_first_token_duration(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+
+        def answer(*_args, **kwargs):
+            kwargs["timing_callback"]({"first_token_seconds": 0.25, "elapsed_seconds": 0.9})
+            return "Секретный текст ответа"
+
+        with patch.object(OllamaClient, "chat", side_effect=answer), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("Секретный вопрос")
+
+        self.assertTrue(result.ok)
+        timing_lines = [line for line in captured.output if "first-token timing" in line]
+        self.assertEqual(len(timing_lines), 1)
+        self.assertIn("elapsed=0.250s", timing_lines[0])
+        self.assertNotIn("Секретный", "\n".join(captured.output))
 
     def test_local_thinking_can_be_enabled_through_runtime_settings(self):
         settings = Settings(

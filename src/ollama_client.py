@@ -62,6 +62,8 @@ class OllamaClient:
                 return True
 
         async def exchange():
+            request_started = time.perf_counter()
+            first_token_seconds = None
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(hostname, port, limit=2_000_001),
                 timeout=self.timeout,
@@ -158,7 +160,7 @@ class OllamaClient:
                 saw_done = False
 
                 def parse_line(line):
-                    nonlocal done_reason, saw_done
+                    nonlocal done_reason, saw_done, first_token_seconds
                     if not line.strip():
                         return
                     try:
@@ -172,6 +174,8 @@ class OllamaClient:
                         part = message.get("content", "")
                         if isinstance(part, str):
                             content.append(part)
+                            if part and first_token_seconds is None:
+                                first_token_seconds = time.perf_counter() - request_started
                     if item.get("done") is True:
                         done_reason = item.get("done_reason")
                         saw_done = True
@@ -193,7 +197,14 @@ class OllamaClient:
                     parse_line(bytes(pending))
                 if not saw_done:
                     raise ValueError("Потоковый ответ Ollama завершился без маркера окончания")
-                return {"message": {"content": "".join(content)}, "done_reason": done_reason}
+                return {
+                    "message": {"content": "".join(content)},
+                    "done_reason": done_reason,
+                    "timing": {
+                        "first_token_seconds": first_token_seconds,
+                        "elapsed_seconds": time.perf_counter() - request_started,
+                    },
+                }
             finally:
                 writer.close()
                 try:
@@ -289,7 +300,7 @@ class OllamaClient:
         )
         return True
 
-    def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None, cancelled=None):
+    def chat(self, model, system, question, max_tokens=300, history=None, memory_context="", temperature=0.2, think=None, cancelled=None, timing_callback=None):
         if model not in self.models():
             raise ValueError("Модель не установлена в Ollama. Автоматическое скачивание отключено.")
         prior = []
@@ -315,16 +326,37 @@ class OllamaClient:
             raise ValueError("Некорректный режим рассуждений локальной модели")
         if cancelled is not None and not callable(cancelled):
             raise ValueError("Некорректная проверка отмены запроса к локальной модели")
+        if timing_callback is not None and not callable(timing_callback):
+            raise ValueError("Некорректный обработчик замеров локальной модели")
         metadata = self._model_info(model)
         # By default preserve each model's existing behavior. Fast request paths
         # may explicitly disable hidden reasoning and get the final answer sooner.
         thinking = ("thinking" in metadata.get("capabilities", [])) if think is None else think
-        payload = {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": cancelled is not None, "think": thinking, "options": {"temperature": temperature, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"}
-        result = (
-            self._streaming_request("/api/chat", payload, cancelled)
-            if cancelled is not None
-            else self._request("/api/chat", payload)
-        )
+        stream = cancelled is not None or timing_callback is not None
+        payload = {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": stream, "think": thinking, "options": {"temperature": temperature, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"}
+        if stream:
+            is_cancelled = cancelled if cancelled is not None else (lambda: False)
+            result = self._streaming_request("/api/chat", payload, is_cancelled)
+        else:
+            result = self._request("/api/chat", payload)
+        if timing_callback is not None:
+            timing = result.get("timing")
+            if isinstance(timing, dict):
+                first_token = timing.get("first_token_seconds")
+                elapsed = timing.get("elapsed_seconds")
+                safe_timing = {
+                    "first_token_seconds": first_token
+                    if type(first_token) in (int, float) and first_token >= 0
+                    else None,
+                    "elapsed_seconds": elapsed
+                    if type(elapsed) in (int, float) and elapsed >= 0
+                    else None,
+                }
+                try:
+                    timing_callback(safe_timing)
+                except Exception:
+                    # Diagnostics must never turn a valid local answer into a failure.
+                    pass
         if result.get("done_reason") == "length":
             raise ValueError("Локальная модель исчерпала лимит ответа")
         content = result.get("message", {}).get("content", "")

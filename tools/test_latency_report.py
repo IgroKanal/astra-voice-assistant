@@ -13,6 +13,7 @@ class LatencyReportTests(unittest.TestCase):
         lines = [
             "STT timing: capture=0.42s recognition=1.70s total=2.12s [ok] transcript=PRIVATE_COMMAND",
             "LLM timing: provider=ollama task=answer result=ok thinking=false elapsed=0.80s PRIVATE_QUESTION",
+            "LLM first-token timing: provider=ollama task=answer elapsed=0.21s PRIVATE_QUESTION",
             "LLM timing: provider=gemini task=answer model=x result=ok elapsed=1.20s PRIVATE_QUESTION",
             "TTS timing: 0.65s [direct] PRIVATE_QUESTION",
             "unrelated private contents PRIVATE_COMMAND",
@@ -23,10 +24,12 @@ class LatencyReportTests(unittest.TestCase):
 
         self.assertEqual(metrics["stt_total"], [2.12])
         self.assertEqual(metrics["llm_answer"], [0.8, 1.2])
+        self.assertEqual(metrics["llm_first_token"], [0.21])
         self.assertEqual(metrics["tts"], [0.65])
         self.assertNotIn("PRIVATE_COMMAND", report)
         self.assertNotIn("PRIVATE_QUESTION", report)
         self.assertIn("Wake -> первый слышимый звук", report)
+        self.assertIn("LLM - первый токен: n=1, p50=0.21, p95=0.21", report)
 
     def test_percentile_uses_nearest_rank_and_handles_empty_input(self):
         self.assertEqual(percentile([4, 1, 3, 2], 0.50), 2)

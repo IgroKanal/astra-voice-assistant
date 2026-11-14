@@ -136,6 +136,15 @@ class AIClient:
 
         if self.provider.is_local:
             started = time.perf_counter()
+            stream_timing: dict[str, float | None] = {}
+
+            def capture_stream_timing(values: dict[str, float | None]) -> None:
+                if not isinstance(values, dict):
+                    return
+                first_token = values.get("first_token_seconds")
+                if type(first_token) in (int, float) and first_token >= 0:
+                    stream_timing["first_token_seconds"] = float(first_token)
+
             try:
                 context = self._memory_context(question)
                 answer = self.provider.answer(
@@ -147,8 +156,15 @@ class AIClient:
                     history=self._dialogue,
                     memory_context=context,
                     think=self.settings.ollama_thinking_enabled,
+                    timing_callback=capture_stream_timing,
                 )
                 clean_answer = self._clean_llm_answer(answer)
+                first_token = stream_timing.get("first_token_seconds")
+                if first_token is not None:
+                    self.logger.info(
+                        "LLM first-token timing: provider=ollama task=answer elapsed=%.3fs",
+                        first_token,
+                    )
                 if not clean_answer:
                     self.logger.info(
                         "LLM timing: provider=ollama task=answer result=empty elapsed=%.3fs",

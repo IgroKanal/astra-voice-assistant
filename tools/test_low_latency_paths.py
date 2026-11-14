@@ -1,5 +1,7 @@
 from pathlib import Path
 import logging
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 import subprocess
 import sys
@@ -21,6 +23,109 @@ from main import run_voice_mode
 
 
 class LocalModelLatencyTests(unittest.TestCase):
+    def test_stream_records_time_to_first_content_fragment(self):
+        first = b'{"message":{"content":"first"},"done":false}\n'
+        final = b'{"message":{"content":" second"},"done":true,"done_reason":"stop"}\n'
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(first) + len(final)))
+                self.end_headers()
+                self.wfile.write(first)
+                self.wfile.flush()
+                time.sleep(0.08)
+                self.wfile.write(final)
+                self.wfile.flush()
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+            client = OllamaClient(
+                f"http://127.0.0.1:{server.server_address[1]}", timeout=3
+            )
+            result = client._streaming_request(
+                "/api/chat", {"stream": True}, lambda: False
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
+
+        self.assertEqual(result["message"]["content"], "first second")
+        self.assertGreaterEqual(result["timing"]["first_token_seconds"], 0)
+        self.assertGreater(result["timing"]["elapsed_seconds"], result["timing"]["first_token_seconds"])
+
+    def test_timing_callback_uses_stream_and_reports_only_durations(self):
+        client = OllamaClient()
+        callback = Mock()
+        with patch.object(client, "models", return_value=["installed-model"]), patch.object(
+            client, "_model_info", return_value={"capabilities": []}
+        ), patch.object(
+            client,
+            "_streaming_request",
+            return_value={
+                "message": {"content": "ответ"},
+                "done_reason": "stop",
+                "timing": {"first_token_seconds": 0.2, "elapsed_seconds": 0.8},
+            },
+        ) as stream, patch.object(client, "_request", side_effect=AssertionError("timed answer must stream")):
+            result = client.chat(
+                "installed-model",
+                "system",
+                "private question",
+                timing_callback=callback,
+            )
+
+        self.assertEqual(result, "ответ")
+        self.assertTrue(stream.call_args.args[1]["stream"])
+        callback.assert_called_once_with(
+            {"first_token_seconds": 0.2, "elapsed_seconds": 0.8}
+        )
+
+    def test_timing_callback_failure_does_not_fail_local_answer(self):
+        client = OllamaClient()
+        callback = Mock(side_effect=RuntimeError("diagnostic unavailable"))
+        with patch.object(client, "models", return_value=["installed-model"]), patch.object(
+            client, "_model_info", return_value={"capabilities": []}
+        ), patch.object(
+            client,
+            "_streaming_request",
+            return_value={
+                "message": {"content": "ответ"},
+                "done_reason": "stop",
+                "timing": {"first_token_seconds": 0.2, "elapsed_seconds": 0.8},
+            },
+        ):
+            self.assertEqual(
+                client.chat(
+                    "installed-model",
+                    "system",
+                    "question",
+                    timing_callback=callback,
+                ),
+                "ответ",
+            )
+
+    def test_invalid_timing_callback_is_rejected_before_inference(self):
+        client = OllamaClient()
+        with patch.object(client, "models", return_value=["installed-model"]), patch.object(
+            client, "_model_info", side_effect=AssertionError("validate first")
+        ):
+            with self.assertRaises(ValueError):
+                client.chat(
+                    "installed-model",
+                    "system",
+                    "question",
+                    timing_callback="not-callable",
+                )
+
     def test_installed_model_and_metadata_are_reused_between_turns(self):
         client = OllamaClient()
         requests = []

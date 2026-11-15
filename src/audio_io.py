@@ -33,6 +33,7 @@ class VoiceIO:
     """Распознавание речи и озвучка ответа."""
 
     _EDGE_TTS_FAILURE_COOLDOWN_SECONDS = 90.0
+    _STT_DIAGNOSTIC_MAX_BYTES = 1_000_000
 
     _RUSSIAN_VOICE_MARKERS = (
         "ru",
@@ -439,7 +440,7 @@ class VoiceIO:
             elapsed = time.perf_counter() - start
 
             if len(alternatives) > 1:
-                self.logger.info("STT варианты: %s", alternatives)
+                self.logger.info("STT alternatives count=%s", len(alternatives))
                 if text != alternatives[0].strip():
                     self._log_stt_diagnostic(
                         kind="alternative_selected",
@@ -596,7 +597,12 @@ class VoiceIO:
                 f"{kind} | elapsed={elapsed:.2f}s | "
                 f"selected={text!r} | alternatives={alternatives!r}\n"
             )
-            path.open("a", encoding="utf-8").write(line)
+            encoded_size = len(line.encode("utf-8"))
+            current_size = path.stat().st_size if path.exists() else 0
+            if current_size + encoded_size > self._STT_DIAGNOSTIC_MAX_BYTES:
+                return
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
         except Exception:
             self.logger.debug("Не удалось записать STT diagnostic log", exc_info=True)
 

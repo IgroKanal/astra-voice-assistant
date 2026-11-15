@@ -39,7 +39,7 @@ class Settings:
     router_cooldown_seconds: float = 2.0
 
     stt_command_aware_alternatives: bool = True
-    stt_mistake_log_enabled: bool = True
+    stt_mistake_log_enabled: bool = False
     stt_mistake_log_path: str = "logs/stt_mistakes.log"
 
     browser_preferred: str = ""
@@ -364,7 +364,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         ),
         stt_mistake_log_enabled=_bool_from_env(
             "STT_MISTAKE_LOG_ENABLED",
-            True,
+            False,
         ),
         stt_mistake_log_path=_str_from_env(
             "STT_MISTAKE_LOG_PATH",

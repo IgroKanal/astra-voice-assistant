@@ -24,6 +24,36 @@ from main import run_voice_mode
 
 
 class LocalModelLatencyTests(unittest.TestCase):
+    def test_stt_diagnostic_is_opt_in_and_stops_at_size_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "stt.log"
+            voice = object.__new__(VoiceIO)
+            voice.logger = Mock()
+            voice.settings = Settings(stt_mistake_log_enabled=False, stt_mistake_log_path=str(path))
+            voice._log_stt_diagnostic("unknown", "личный текст", [], 0.1)
+            self.assertFalse(path.exists())
+            voice.settings = Settings(stt_mistake_log_enabled=True, stt_mistake_log_path=str(path))
+            voice._STT_DIAGNOSTIC_MAX_BYTES = 256
+            voice._log_stt_diagnostic("unknown", "тест", [], 0.1)
+            self.assertTrue(path.exists())
+            path.write_bytes(b"x" * 256)
+            voice._log_stt_diagnostic("unknown", "ещё", [], 0.1)
+            self.assertEqual(path.read_bytes(), b"x" * 256)
+
+    def test_stt_alternative_text_is_not_written_to_normal_logs(self):
+        from unittest.mock import MagicMock
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(stt_mistake_log_enabled=False)
+        voice.microphone = MagicMock()
+        voice.recognizer = Mock()
+        voice.logger = Mock()
+        voice._recognize_google_alternatives = Mock(return_value=["private first", "private second"])
+        voice._select_best_stt_alternative = Mock(return_value="private first")
+        with patch("src.audio_io.emit_event"):
+            self.assertTrue(voice.listen_once(prompt="").ok)
+        self.assertNotIn("private first", repr(voice.logger.info.call_args_list))
+        self.assertNotIn("private second", repr(voice.logger.info.call_args_list))
+
     def test_thinking_only_qwen_does_not_send_reasoning_to_stream_observer(self):
         requests = []
         metadata = {

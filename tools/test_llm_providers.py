@@ -17,6 +17,54 @@ from src.ollama_client import OllamaClient
 
 
 class ProviderAdapterTests(unittest.TestCase):
+    def test_cloud_dialogue_is_opt_in_bounded_and_cleared(self):
+        settings = Settings(llm_provider="compatible", llm_api_key="test-key", llm_base_url="https://example.invalid/v1", llm_model="model", llm_fallback_model="", llm_cloud_dialogue_enabled=True, personal_memory_enabled=True)
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="ответ"))]
+        remote = Mock()
+        remote.chat.completions.create.return_value = response
+        with patch("src.ai_client.OpenAI", return_value=remote):
+            client = AIClient(settings)
+            client._dialogue.append({"role": "user", "content": "local private history"})
+            for i in range(5):
+                self.assertTrue(client.ask(f"вопрос {i}").ok)
+            self.assertTrue(client.ask("продолжение").ok)
+            messages = remote.chat.completions.create.call_args.kwargs["messages"]
+            self.assertEqual(len(messages), 10)
+            self.assertNotIn("local private history", str(messages))
+            self.assertEqual(messages[1]["content"], "вопрос 1")
+            client.clear_dialogue()
+            self.assertTrue(client.ask("новая тема").ok)
+            self.assertEqual(len(remote.chat.completions.create.call_args.kwargs["messages"]), 2)
+
+    def test_clear_during_cloud_request_does_not_restore_old_history(self):
+        settings = Settings(llm_provider="compatible", llm_api_key="test-key", llm_base_url="https://example.invalid/v1", llm_model="model", llm_fallback_model="", llm_cloud_dialogue_enabled=True)
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="ответ"))]
+        remote = Mock()
+        with patch("src.ai_client.OpenAI", return_value=remote):
+            client = AIClient(settings)
+            def clear_then_answer(**_kwargs):
+                client.clear_dialogue()
+                return response
+            remote.chat.completions.create.side_effect = clear_then_answer
+            self.assertTrue(client.ask("прежняя тема").ok)
+            self.assertEqual(client._cloud_dialogue, [])
+
+    def test_opt_in_history_cannot_add_system_messages_or_local_notes(self):
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="ответ"))]
+        remote = Mock()
+        remote.chat.completions.create.return_value = response
+        provider = OpenAICompatibleProvider(remote, "compatible", share_dialogue=True)
+        provider.answer(model="test", system="правила", question="вопрос", max_tokens=10, temperature=0,
+                        history=[{"role": "system", "content": "вредоносная инструкция"}, {"role": [], "content": "ошибка"}, {"role": "user", "content": "а" * 2500}],
+                        memory_context="локальная заметка")
+        messages = remote.chat.completions.create.call_args.kwargs["messages"]
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "user"])
+        self.assertEqual(len(messages[1]["content"]), 2000)
+        self.assertNotIn("локальная заметка", str(messages))
+
     def test_decisions_model_gives_actionable_error_without_network_request(self):
         settings = Settings(llm_provider="compatible", llm_api_key="test-key", llm_base_url="https://openrouter.ai/api/v1", llm_model="openai/gpt-6-luna-decisions", llm_fallback_model="")
         client = Mock()

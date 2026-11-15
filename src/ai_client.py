@@ -53,6 +53,9 @@ class AIClient:
             can_create_compatible=self._can_create_compatible_provider(),
         )
         self._dialogue: list[dict[str, str]] = []
+        self._cloud_dialogue: list[dict[str, str]] = []
+        self._cloud_dialogue_lock = threading.Lock()
+        self._cloud_dialogue_generation = 0
         self._memory_stamp = None
         self._warmup_lock = threading.Lock()
         self._warmup_thread: threading.Thread | None = None
@@ -76,8 +79,11 @@ class AIClient:
         return self.provider.available
 
     def clear_dialogue(self) -> None:
-        """Forget only the in-memory local conversation history for this session."""
+        """Forget in-memory conversation history for this session."""
         self._dialogue.clear()
+        with self._cloud_dialogue_lock:
+            self._cloud_dialogue.clear()
+            self._cloud_dialogue_generation += 1
 
     def prewarm_local_async(self):
         """Warm only an installed loopback Ollama model without blocking voice capture."""
@@ -252,6 +258,10 @@ class AIClient:
 
         system_prompt = self._build_answer_system_prompt()
         last_error_message = "Не удалось получить ответ от LLM."
+        share_dialogue = getattr(self.settings, "llm_cloud_dialogue_enabled", False) is True
+        with self._cloud_dialogue_lock:
+            cloud_generation = self._cloud_dialogue_generation
+            cloud_history = [entry.copy() for entry in self._cloud_dialogue] if share_dialogue else []
 
         for model in self._models_to_try():
             started = time.perf_counter()
@@ -297,12 +307,22 @@ class AIClient:
                     max_tokens=self.settings.llm_max_tokens,
                     temperature=self.settings.llm_temperature,
                 )
+                if share_dialogue:
+                    answer_options["history"] = cloud_history
                 if on_text_chunk is not None:
                     answer_options["on_chunk"] = forward_streamed_chunk
                     answer_options["timing_callback"] = capture_stream_timing
                 message = self.provider.answer(**answer_options)
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
+                    if share_dialogue:
+                        with self._cloud_dialogue_lock:
+                            if cloud_generation == self._cloud_dialogue_generation:
+                                self._cloud_dialogue.extend([
+                                    {"role": "user", "content": question[:2000]},
+                                    {"role": "assistant", "content": clean_message[:2000]},
+                                ])
+                                self._cloud_dialogue = self._cloud_dialogue[-8:]
                     result_kind = "ok"
                     return LLMResult(True, clean_message)
 

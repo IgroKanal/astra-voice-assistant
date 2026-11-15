@@ -137,9 +137,10 @@ class OpenAICompatibleProvider:
 
     is_local = False
 
-    def __init__(self, client: Any, name: str, base_url: str = ""):
+    def __init__(self, client: Any, name: str, base_url: str = "", *, share_dialogue: bool = False):
         self.client = client
         self.name = name
+        self.share_dialogue = share_dialogue is True
         try:
             endpoint = urlsplit(base_url)
             self._openrouter = (endpoint.scheme == "https" and endpoint.hostname == "openrouter.ai"
@@ -174,7 +175,8 @@ class OpenAICompatibleProvider:
         on_chunk: Callable[[str], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> str:
-        # Deliberately do not include local history or memory in this request.
+        # Personal memory is never forwarded. Dialogue is opt-in and comes
+        # from a separate, bounded cloud session maintained by AIClient.
         if on_chunk is not None and not callable(on_chunk):
             raise ValueError("Некорректный обработчик потокового ответа")
         if timing_callback is not None and not callable(timing_callback):
@@ -194,12 +196,18 @@ class OpenAICompatibleProvider:
             raise RuntimeError("Запрос отменён")
 
         streaming = on_chunk is not None or timing_callback is not None or cancelled is not None
+        messages = [{"role": "system", "content": system}]
+        if self.share_dialogue and history:
+            for item in history[-8:]:
+                if (isinstance(item, dict) and set(item) == {"role", "content"}
+                        and isinstance(item.get("role"), str)
+                        and item.get("role") in {"user", "assistant"}
+                        and isinstance(item.get("content"), str)):
+                    messages.append({"role": item["role"], "content": item["content"][:2000]})
+        messages.append({"role": "user", "content": question})
         arguments = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": question},
-            ],
+            "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -334,4 +342,4 @@ def create_provider(
         timeout=settings.llm_timeout_seconds,
         max_retries=0,
     )
-    return OpenAICompatibleProvider(client, settings.llm_provider, settings.llm_base_url or "")
+    return OpenAICompatibleProvider(client, settings.llm_provider, settings.llm_base_url or "", share_dialogue=getattr(settings, "llm_cloud_dialogue_enabled", False))

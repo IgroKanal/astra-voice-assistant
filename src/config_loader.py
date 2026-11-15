@@ -71,6 +71,8 @@ class Settings:
     llm_temperature: float = 0.2
     llm_max_tokens: int = 500
     llm_timeout_seconds: int = 30
+    # Explicit opt-in: recent cloud conversation turns are sent to the chosen provider.
+    llm_cloud_dialogue_enabled: bool = False
 
     llm_router_enabled: bool = True
     llm_router_min_confidence: float = 0.55
@@ -412,6 +414,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.2),
         llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 500),
         llm_timeout_seconds=_int_from_env("LLM_TIMEOUT_SECONDS", 30),
+        llm_cloud_dialogue_enabled=_bool_from_env("LLM_CLOUD_DIALOGUE_ENABLED", False),
         llm_router_enabled=_bool_from_env("LLM_ROUTER_ENABLED", True),
         llm_router_min_confidence=_float_from_env(
             "LLM_ROUTER_MIN_CONFIDENCE",

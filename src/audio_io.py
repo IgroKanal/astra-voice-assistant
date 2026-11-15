@@ -340,8 +340,6 @@ class VoiceIO:
         prompt: str = "Слушаю...",
     ) -> ListenResult:
         if self.microphone is None:
-            emit_event("error", "Микрофон недоступен. Переключись в текстовый режим.")
-            time.sleep(0.2)
             return ListenResult(False, error="Микрофон не доступен.", failure_kind="microphone")
 
         start = time.perf_counter()

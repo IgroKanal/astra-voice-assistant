@@ -933,6 +933,25 @@ class STTLatencyTests(unittest.TestCase):
         self.assertIsNone(voice.microphone)
         voice.recognizer.recognize_google.assert_not_called()
 
+    def test_unavailable_microphone_returns_typed_failure_without_duplicate_event(self):
+        voice = self._voice(Settings(stt_mistake_log_enabled=False))
+        voice.microphone = None
+        with patch("src.audio_io.emit_event") as events:
+            result = voice.listen_once(prompt="")
+        self.assertEqual(result.failure_kind, "microphone")
+        events.assert_not_called()
+
+    def test_recognition_exception_preserves_microphone(self):
+        voice = self._voice(Settings(stt_mistake_log_enabled=False))
+        microphone = voice.microphone
+        voice.recognizer.listen.return_value = object()
+        voice._recognize_google_alternatives = Mock(side_effect=ValueError("recognition failure"))
+        with patch("src.audio_io.emit_event", return_value=True):
+            result = voice.listen_once(prompt="")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_kind, "")
+        self.assertIs(voice.microphone, microphone)
+
     def test_audio_stream_close_error_is_not_mistaken_for_success(self):
         voice = self._voice(Settings(stt_mistake_log_enabled=False))
         voice.microphone = Mock()

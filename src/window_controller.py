@@ -115,7 +115,7 @@ class WindowController:
     def describe_open_windows(self, limit: int = 5) -> WindowActionResult:
         windows = self.list_windows()
         if not windows:
-            return WindowActionResult(True, "Открытых окон не нашёл.")
+            return WindowActionResult(True, "Открытых окон не найдено.")
 
         labels = [self._short_window_label(item) for item in windows[:limit]]
         more = "" if len(windows) <= limit else f" И ещё {len(windows) - limit}."
@@ -186,7 +186,7 @@ class WindowController:
 
         info = self.find_window(target)
         if info is None:
-            return WindowActionResult(False, "Не нашёл такое открытое окно.")
+            return WindowActionResult(False, "Такое открытое окно не найдено.")
 
         labels = {
             "minimize": f"Сворачиваю {self._short_window_label(info)}.",
@@ -250,7 +250,7 @@ class WindowController:
 
         info = self.find_window(target)
         if info is None:
-            return WindowActionResult(False, "Не нашёл такое открытое окно.")
+            return WindowActionResult(False, "Такое открытое окно не найдено.")
 
         foreground = int(self.user32.GetForegroundWindow() or 0)
         if self._activate_window(info.hwnd):
@@ -325,7 +325,7 @@ class WindowController:
         allowed.discard("")
         candidates = [window for window in self.list_windows(deduplicate=False) if window.process_name.lower().removesuffix(".exe") in allowed]
         if not candidates:
-            return WindowActionResult(False, "Не нашёл подходящее окно. Принудительное завершение отключено.", False)
+            return WindowActionResult(False, "Подходящее окно не найдено. Принудительное завершение отключено.", False)
         active = self.active_window()
         selected = next((window for window in candidates if active and window.hwnd == active.hwnd), None)
         if selected is None:

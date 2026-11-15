@@ -14,10 +14,10 @@ from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
 
 AVATAR_PROFILES = {
-    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "asset": "anime_female.png", "speaking_asset": "anime_female_speaking.png"},
-    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "asset": "anime_male.png", "speaking_asset": "anime_male_speaking.png"},
-    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "asset": "anime_female_saya.png", "speaking_asset": "anime_female_saya_speaking.png"},
-    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "asset": "anime_male_kai.png", "speaking_asset": "anime_male_kai_speaking.png"},
+    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "gender": "female", "asset": "anime_female.png", "speaking_asset": "anime_female_speaking.png"},
+    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "gender": "male", "asset": "anime_male.png", "speaking_asset": "anime_male_speaking.png"},
+    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "gender": "female", "asset": "anime_female_saya.png", "speaking_asset": "anime_female_saya_speaking.png"},
+    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "gender": "male", "asset": "anime_male_kai.png", "speaking_asset": "anime_male_kai_speaking.png"},
 }
 DEFAULT_AVATAR_ID = "female_miku"
 COMMAND_LIKE_NAMES = ("открой", "закрой", "сверни", "разверни", "покажи", "включи", "выключи", "напомни", "следующий", "предыдущий", "обнови", "найди", "поищи", "переключи", "нажми", "напиши", "громче", "тише", "стоп")
@@ -89,6 +89,8 @@ class AIProfile:
             url = urlsplit(self.base_url)
             if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError("Для облачного провайдера нужен HTTPS endpoint без credentials")
+            if url.hostname == "openrouter.ai" and self.model.strip() == "openai/gpt-6-luna-decisions":
+                raise ValueError("Luna Decisions не предназначена для диалога. Выбери openai/gpt-6-luna.")
         return self
 
 
@@ -123,7 +125,7 @@ class DesktopSettings:
         profile = self.load()
         name = profile.assistant_name or settings.assistant_name
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=profile.voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], wake_phrases=phrases, tts_engine="sapi", tts_voice_name=profile.voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

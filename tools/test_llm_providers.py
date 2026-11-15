@@ -17,6 +17,31 @@ from src.ollama_client import OllamaClient
 
 
 class ProviderAdapterTests(unittest.TestCase):
+    def test_decisions_model_gives_actionable_error_without_network_request(self):
+        settings = Settings(llm_provider="compatible", llm_api_key="test-key", llm_base_url="https://openrouter.ai/api/v1", llm_model="openai/gpt-6-luna-decisions", llm_fallback_model="")
+        client = Mock()
+        with patch("src.ai_client.OpenAI", return_value=client):
+            result = AIClient(settings).ask("Привет")
+        self.assertFalse(result.ok)
+        self.assertIn("openai/gpt-6-luna", result.message)
+        client.chat.completions.create.assert_not_called()
+
+    def test_openrouter_luna_uses_fast_reasoning_only_for_exact_endpoint_and_model(self):
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="Ответ"))]
+        for endpoint, model, expected in (
+            ("https://openrouter.ai/api/v1", "openai/gpt-6-luna", True),
+            ("https://openrouter.ai/api/v1", "other/model", False),
+            ("https://openrouter.ai.example/api/v1", "openai/gpt-6-luna", False),
+        ):
+            with self.subTest(endpoint=endpoint, model=model):
+                client = Mock()
+                client.chat.completions.create.return_value = response
+                provider = OpenAICompatibleProvider(client, "compatible", endpoint)
+                provider.answer(model=model, system="system", question="hello", max_tokens=30, temperature=0.2)
+                arguments = client.chat.completions.create.call_args.kwargs
+                self.assertEqual(arguments.get("extra_body"), {"reasoning": {"effort": "none"}} if expected else None)
+
     def test_local_provider_keeps_history_memory_and_inference_local(self):
         ollama = Mock()
         ollama.chat.return_value = "Локальный ответ"

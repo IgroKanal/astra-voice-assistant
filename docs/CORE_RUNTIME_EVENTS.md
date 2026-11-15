@@ -28,3 +28,11 @@ Voice web answers require the separate `web_research` permission, which is off b
 ## Compatibility
 
 Older clients continue receiving the source list as normal assistant text. New clients can use `parse_event_record` or `DesktopBridge.typed_events` to render structured citations without scraping that text.
+
+## Character and model integration
+
+The core's `Settings.assistant_name` and `Settings.assistant_gender` are separate: the latter is `female` or `male` and governs Russian self-reference, regardless of the custom name. The existing encrypted desktop profile selects gender via the active `avatar_id`: `female_miku` and `female_saya` map to `female`; `male_ren` and `male_kai` map to `male`. Profile settings are applied when the runtime starts; restart the runtime after a profile change. A client using another profile store must explicitly pass both settings to its core instance, or use `ASSISTANT_NAME` and `ASSISTANT_GENDER` with desktop profile loading deliberately disabled. Merely changing a picture does not update core settings.
+
+Current state events are human-readable strings, not a stable animation protocol. Listening, recognition, thinking and speech events may inform a provisional visual indicator, but exact timings, emotions, lip sync, avatar animation commands and background-window lifecycle are not implemented by this contract. Do not infer that a model has performed an action from its text. File and Windows actions remain subject to the core's typed action policy.
+
+OpenRouter conversation configuration uses the existing `compatible` provider, `https://openrouter.ai/api/v1` and `openai/gpt-6-luna`. The core requests `reasoning.effort=none` for this exact endpoint and model. `openai/gpt-6-luna-decisions` uses a different decision endpoint and is not a conversational model. No key is included here; cloud requests require an independently configured key and send the current user question and system prompt to the selected provider. Local notes and local dialogue history are not sent. This setup has only mock coverage until a real key and network test are available.

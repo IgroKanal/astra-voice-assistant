@@ -6,8 +6,13 @@ caller must still validate any structured output through Astra's action policy.
 from __future__ import annotations
 
 from typing import Any, Callable, Protocol
+from urllib.parse import urlsplit
 
 from src.ollama_client import OllamaClient
+
+
+class UnsupportedConversationModel(ValueError):
+    """The configured model has no chat-completions endpoint."""
 
 
 class TextProvider(Protocol):
@@ -132,9 +137,23 @@ class OpenAICompatibleProvider:
 
     is_local = False
 
-    def __init__(self, client: Any, name: str):
+    def __init__(self, client: Any, name: str, base_url: str = ""):
         self.client = client
         self.name = name
+        try:
+            endpoint = urlsplit(base_url)
+            self._openrouter = (endpoint.scheme == "https" and endpoint.hostname == "openrouter.ai"
+                                and endpoint.port in (None, 443) and endpoint.path.rstrip("/") == "/api/v1"
+                                and not endpoint.username and not endpoint.password and not endpoint.query and not endpoint.fragment)
+        except ValueError:
+            self._openrouter = False
+
+    def _model_options(self, model: str) -> dict:
+        if self._openrouter and model == "openai/gpt-6-luna-decisions":
+            raise UnsupportedConversationModel("Luna Decisions не предназначена для диалога. Выбери openai/gpt-6-luna.")
+        if self._openrouter and model == "openai/gpt-6-luna":
+            return {"extra_body": {"reasoning": {"effort": "none"}}}
+        return {}
 
     @property
     def available(self) -> bool:
@@ -184,6 +203,7 @@ class OpenAICompatibleProvider:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        arguments.update(self._model_options(model))
         if streaming:
             arguments["stream"] = True
 
@@ -262,6 +282,7 @@ class OpenAICompatibleProvider:
             "temperature": 0,
             "max_tokens": 500,
         }
+        arguments.update(self._model_options(model))
         if response_format:
             arguments["response_format"] = {"type": "json_object"}
         response = self.client.chat.completions.create(**arguments)
@@ -313,4 +334,4 @@ def create_provider(
         timeout=settings.llm_timeout_seconds,
         max_retries=0,
     )
-    return OpenAICompatibleProvider(client, settings.llm_provider)
+    return OpenAICompatibleProvider(client, settings.llm_provider, settings.llm_base_url or "")

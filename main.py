@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.ai_client import AIClient, LLMResult
+from src.assistant_persona import character_phrase
 from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
@@ -1286,9 +1287,11 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             count_text = "не менее 500" if count >= 500 else str(count)
             count_word = "совпадение" if count == 1 else "совпадения" if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14 else "совпадений"
             if files:
-                ctx.respond(f"Нашла {count_text} {count_word}: " + "; ".join(files) + ".")
+                found = character_phrase(ctx.settings, female="Нашла", male="Нашёл")
+                ctx.respond(f"{found} {count_text} {count_word}: " + "; ".join(files) + ".")
             else:
-                ctx.respond(f"Нашла {count_text} {count_word} по имени. Подробный список открой в окне «Файлы».")
+                found = character_phrase(ctx.settings, female="Нашла", male="Нашёл")
+                ctx.respond(f"{found} {count_text} {count_word} по имени. Подробный список открой в окне «Файлы».")
         return True
 
     if action.type == ActionType.FILE_OPEN:
@@ -1509,16 +1512,17 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 if title != note_text and len(title) == 100:
                     title = title[:-1].rstrip() + "…"
                 memory.add(title, note_text)
-                ctx.respond(f"Запомнила: {title}. Заметка сохранена локально.")
+                remembered = character_phrase(ctx.settings, female="Запомнила", male="Запомнил")
+                ctx.respond(f"{remembered}: {title}. Заметка сохранена локально.")
                 return True
 
             if action.target.startswith(MEMORY_SEARCH_PREFIX):
                 query = action.target[len(MEMORY_SEARCH_PREFIX):]
                 matches = memory.search(query)
                 if not matches:
-                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                    ctx.respond(character_phrase(ctx.settings, female="Не нашла заметку с таким фрагментом.", male="Не нашёл заметку с таким фрагментом."))
                 elif len(matches) > 1:
-                    ctx.respond("Нашла несколько заметок. Скажи более точный фрагмент.")
+                    ctx.respond(character_phrase(ctx.settings, female="Нашла несколько заметок. Скажи более точный фрагмент.", male="Нашёл несколько заметок. Скажи более точный фрагмент."))
                 else:
                     note = matches[0]
                     title = _safe_memory_voice_text(note.title, 100) or "без названия"
@@ -1531,9 +1535,9 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 query = action.target[len(MEMORY_FORGET_PREFIX):]
                 matches = memory.search(query)
                 if not matches:
-                    ctx.respond("Не нашла заметку с таким фрагментом.")
+                    ctx.respond(character_phrase(ctx.settings, female="Не нашла заметку с таким фрагментом.", male="Не нашёл заметку с таким фрагментом."))
                 elif len(matches) > 1:
-                    ctx.respond("Нашла несколько заметок. Скажи более точное название; ничего не удалено.")
+                    ctx.respond(character_phrase(ctx.settings, female="Нашла несколько заметок. Скажи более точное название; ничего не удалено.", male="Нашёл несколько заметок. Скажи более точное название; ничего не удалено."))
                 elif memory.forget(matches[0].id):
                     title = _safe_memory_voice_text(matches[0].title, 100) or "без названия"
                     ctx.respond(f"Заметка «{title}» забыта.")
@@ -1552,8 +1556,9 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         clear_context(ctx.state)
         ctx.state.last_recognized_text = ""
         emit_event("conversation_reset", "")
+        started_dialogue = character_phrase(ctx.settings, female="Начала", male="Начал")
         ctx.respond(
-            "Начала новый диалог. Контекст текущего разговора и незавершённое "
+            f"{started_dialogue} новый диалог. Контекст текущего разговора и незавершённое "
             "уточнение очищены; сохранённые заметки и напоминания не затронуты."
         )
         return True
@@ -1574,7 +1579,8 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                         safe_title = safe_title[:99].rstrip() + "…"
                     ctx.respond(f"Напоминание «{safe_title}» отменено.")
                 elif result == "ambiguous":
-                    ctx.respond("Нашла несколько таких напоминаний. Скажи более точное название или попроси показать список.")
+                    found = character_phrase(ctx.settings, female="Нашла", male="Нашёл")
+                    ctx.respond(f"{found} несколько таких напоминаний. Скажи более точное название или попроси показать список.")
                 else:
                     ctx.respond("Активное напоминание с таким названием не найдено.")
             except Exception:
@@ -1865,9 +1871,10 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
         if feedback_target == "last_heard":
             if ctx.state.last_recognized_text:
-                ctx.respond(f"Я услышала: {ctx.state.last_recognized_text}.")
+                heard = character_phrase(ctx.settings, female="услышала", male="услышал")
+                ctx.respond(f"Я {heard}: {ctx.state.last_recognized_text}.")
             else:
-                ctx.respond("Пока ничего не услышала.")
+                ctx.respond(character_phrase(ctx.settings, female="Пока ничего не услышала.", male="Пока ничего не услышал."))
             return True
 
         ctx.respond("Готово.")
@@ -1937,7 +1944,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             if action.source == "wake_required_guard":
                 ctx.respond("Назови меня перед этой командой.")
             else:
-                ctx.respond("Не понял команду.")
+                ctx.respond(character_phrase(ctx.settings, female="Не поняла команду.", male="Не понял команду."))
         return True
 
     return True
@@ -1952,7 +1959,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
     """
     raw_text = raw_text.strip()
     if not raw_text:
-        ctx.respond("Не расслышал, повтори.")
+        ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
     pending_action = resolve_pending_follow_up(raw_text, ctx)
@@ -1989,7 +1996,7 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         follow_up = ctx.get_follow_up().strip()
 
         if not follow_up:
-            ctx.respond("Не расслышал, повтори.")
+            ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
             return True
 
         parsed = parse_command_text(follow_up)
@@ -2174,7 +2181,7 @@ def _listen_pending_voice_follow_up(
     if not follow_up.ok:
         logger.info("Pending command session timeout/unknown: %s", follow_up.error)
         clear_pending(ctx.state)
-        ctx.respond("Не расслышал, повтори.")
+        ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
     logger.info("pending_command_session characters=%s", len(follow_up.text))
@@ -2213,7 +2220,7 @@ def run_voice_mode(
             logger,
         )
     )
-    voice.speak(f"{settings.assistant_name} запущена.")
+    voice.speak(f"{settings.assistant_name} на связи.")
 
     state = TurnState()
     early_speech = EarlySpeechCoordinator(
@@ -2354,7 +2361,7 @@ def run_voice_mode(
 
                 if not command_result.ok:
                     logger.info("Command session timeout/unknown: %s", command_result.error)
-                    respond("Не расслышал, повтори.")
+                    respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
                     continue
 
                 logger.info(
@@ -2390,7 +2397,7 @@ def run_voice_mode(
                 )
                 if not command_result.ok:
                     logger.info("Command session timeout/unknown: %s", command_result.error)
-                    respond("Не расслышал, повтори.")
+                    respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
                     continue
                 should_continue = process_turn(
                     _voice_command_text_with_wake(settings, command_result.text),

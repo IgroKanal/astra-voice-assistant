@@ -17,6 +17,8 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     assistant_name: str = "Астра"
+    # Grammatical gender of the active character, independent of their name.
+    assistant_gender: str = "female"
     wake_phrases: list[str] = field(
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
@@ -63,7 +65,7 @@ class Settings:
     llm_model: str = "gemma-4-31b-it"
     llm_fallback_model: str = "gemini-3.5-flash"
     llm_system_prompt: str = (
-        "Ты голосовой ассистент для ПК. Твоё имя Астра. "
+        "Ты голосовой ассистент для ПК. "
         "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
     )
     llm_temperature: float = 0.2
@@ -270,6 +272,9 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
 
     default_name = "Астра"
     assistant_name = os.getenv("ASSISTANT_NAME", default_name).strip() or default_name
+    assistant_gender = os.getenv("ASSISTANT_GENDER", "female").strip().lower()
+    if assistant_gender not in {"female", "male"}:
+        raise ConfigError("ASSISTANT_GENDER должен быть female или male.")
 
     default_wake_phrases = list(
         dict.fromkeys(
@@ -288,7 +293,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
     )
 
     default_system_prompt = (
-        f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. "
+        "Ты голосовой ассистент для ПК. "
         "Отвечай кратко, понятно и законченными фразами. "
         "Обычно 1–3 предложения. Не используй markdown и черновики."
     )
@@ -297,6 +302,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
 
     return Settings(
         assistant_name=assistant_name,
+        assistant_gender=assistant_gender,
         wake_phrases=_list_from_env("WAKE_PHRASES", default_wake_phrases),
         allow_commands_without_wake=_bool_from_env(
             "ALLOW_COMMANDS_WITHOUT_WAKE",

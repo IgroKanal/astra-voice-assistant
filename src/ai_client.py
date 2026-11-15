@@ -16,7 +16,7 @@ from openai import OpenAIError
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
 from src.ollama_client import OllamaClient, OllamaRequestCancelled, OllamaResponseTruncated
-from src.llm_providers import create_provider
+from src.llm_providers import UnsupportedConversationModel, create_provider
 
 
 @dataclass(frozen=True)
@@ -309,6 +309,8 @@ class AIClient:
                 self.logger.warning("LLM модель %s вернула пустой ответ", model)
                 result_kind = "empty"
                 last_error_message = "Модель вернула пустой ответ."
+            except UnsupportedConversationModel as exc:
+                return LLMResult(False, str(exc))
             except APITimeoutError:
                 self.logger.warning("LLM timeout для модели %s", model)
                 last_error_message = "Не удалось получить ответ: превышено время ожидания."
@@ -543,9 +545,12 @@ class AIClient:
         return models or ["gemini-3.5-flash"]
 
     def _build_answer_system_prompt(self) -> str:
+        from src.assistant_persona import character_instruction
+
         return (
-            f"Твоё имя ассистента — {getattr(self.settings, 'assistant_name', 'Астра')}.\n"
             f"{self.settings.llm_system_prompt}\n"
+            f"Твоё имя ассистента — {getattr(self.settings, 'assistant_name', 'Астра')}.\n"
+            f"{character_instruction(self.settings)}\n"
             "Отвечай только финальным ответом для пользователя.\n"
             "Запрещено выводить <thought>, <think>, Draft, Option, Analysis, "
             "черновики, внутренние рассуждения, проверки и служебные заметки.\n"

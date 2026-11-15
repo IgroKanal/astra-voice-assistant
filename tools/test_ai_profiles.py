@@ -60,6 +60,34 @@ class AIProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AIProfile(avatar_id="arbitrary-file.png").validate()
 
+    def test_openrouter_decision_model_is_rejected_before_saving(self):
+        profile = AIProfile(provider="compatible", base_url="https://openrouter.ai/api/v1", model="openai/gpt-6-luna-decisions")
+        with self.assertRaisesRegex(ValueError, "не предназначена для диалога"):
+            profile.validate()
+
+    def test_character_gender_follows_avatar_even_with_custom_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            for avatar, gender, custom_name in (
+                ("female_miku", "female", "Рэн"),
+                ("female_saya", "female", "Кай"),
+                ("male_ren", "male", "Мику"),
+                ("male_kai", "male", "Сая"),
+            ):
+                with self.subTest(avatar=avatar):
+                    store.save(AIProfile(provider="disabled", avatar_id=avatar, assistant_name=custom_name))
+                    settings = store.apply(Settings())
+                    self.assertEqual((settings.assistant_gender, settings.assistant_name), (gender, custom_name))
+                    prompt = AIClient(settings)._build_answer_system_prompt()
+                    self.assertIn("я понял" if gender == "male" else "я поняла", prompt)
+                    self.assertIn(custom_name, prompt)
+
+    def test_character_grammar_does_not_modify_quoted_user_text(self):
+        from src.assistant_persona import character_phrase
+        text = "Она сказала: я нашла"
+        phrase = character_phrase(Settings(assistant_gender="male"), female="Услышала", male="Услышал")
+        self.assertEqual(f"{phrase}: {text}", "Услышал: Она сказала: я нашла")
+
     def test_avatar_registry_has_two_original_profiles_per_gender(self):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual(len(AVATAR_PROFILES), 4)

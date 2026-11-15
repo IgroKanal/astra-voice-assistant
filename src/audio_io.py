@@ -424,7 +424,7 @@ class VoiceIO:
                 alternatives=[],
                 elapsed=elapsed,
             )
-            return ListenResult(False, error="Не услышал речь.")
+            return ListenResult(False, error="Речь не распознана.")
         except sr.UnknownValueError:
             elapsed = time.perf_counter() - start
             self._log_stt_timing(

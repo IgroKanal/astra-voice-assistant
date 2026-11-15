@@ -55,6 +55,7 @@ class VoiceIO:
         self.logger = logger or logging.getLogger(__name__)
         self.recognizer = sr.Recognizer()
         self.microphone: sr.Microphone | None = None
+        self._enable_microphone_recovery = True
 
         self.tts_engine: Any | None = None
         self.tts_has_russian_voice = False
@@ -333,6 +334,36 @@ class VoiceIO:
         return any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in text)
 
     def listen_once(
+        self,
+        *,
+        timeout_seconds: int | float | None = None,
+        phrase_time_limit_seconds: int | float | None = None,
+        prompt: str = "Слушаю...",
+    ) -> ListenResult:
+        options = dict(timeout_seconds=timeout_seconds, phrase_time_limit_seconds=phrase_time_limit_seconds, prompt=prompt)
+        result = self._listen_once(**options)
+        if result.failure_kind != "microphone" or not getattr(self, "_enable_microphone_recovery", False):
+            return result
+        from src.microphone_recovery import recover_microphone
+
+        def reinitialize_and_listen() -> bool:
+            nonlocal result
+            self._init_microphone()
+            if self.microphone is None:
+                return False
+            result = self._listen_once(**options)
+            return result.failure_kind != "microphone"
+
+        recovered = recover_microphone(
+            reinitialize_and_listen,
+            time.sleep,
+            lambda attempt: emit_event("state", f"Восстанавливаю микрофон · попытка {attempt} из 2"),
+        )
+        if recovered:
+            self.logger.info("Microphone capture recovered")
+        return result
+
+    def _listen_once(
         self,
         *,
         timeout_seconds: int | float | None = None,

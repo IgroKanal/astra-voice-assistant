@@ -11,6 +11,11 @@ from src.profile_backup import decrypt_profile, encrypt_profile, export_profile,
 
 
 class ProfileBackupTests(unittest.TestCase):
+    def test_cloud_dialogue_opt_in_survives_encrypted_backup(self):
+        profile = AIProfile(provider="compatible", model="model", base_url="https://example.invalid/v1", cloud_dialogue_enabled=True)
+        backup = encrypt_profile(profile, "correct horse battery staple")
+        self.assertEqual(decrypt_profile(backup, "correct horse battery staple"), profile)
+
     def setUp(self):
         self.profile = AIProfile(
             provider="compatible", model="assistant-model",

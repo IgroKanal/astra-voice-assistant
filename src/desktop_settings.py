@@ -30,6 +30,7 @@ class AIProfile:
     base_url: str = "http://127.0.0.1:11434"
     api_key: str = field(default="", repr=False)
     memory_enabled: bool = False
+    cloud_dialogue_enabled: bool = False
     local_command_router_enabled: bool = False
     allowed_scopes: tuple[str, ...] = DEFAULT_SCOPES
     assistant_name: str | None = None
@@ -47,6 +48,8 @@ class AIProfile:
             raise ValueError("Неизвестное разрешение навыка")
         if not isinstance(self.memory_enabled, bool) or (self.memory_enabled and self.provider != "ollama"):
             raise ValueError("Личная память разрешена только для локального Ollama")
+        if not isinstance(self.cloud_dialogue_enabled, bool) or (self.cloud_dialogue_enabled and self.provider not in {"gemini", "compatible"}):
+            raise ValueError("Контекст облачного диалога доступен только для выбранного облачного провайдера")
         if not isinstance(self.local_command_router_enabled, bool) or (self.local_command_router_enabled and self.provider != "ollama"):
             raise ValueError("Некорректная настройка локального распознавания команд")
         if not isinstance(self.model, str) or not self.model.strip() or len(self.model) > 200:
@@ -111,7 +114,11 @@ class DesktopSettings:
 
     def save(self, profile: AIProfile):
         profile.validate()
-        raw = json.dumps(dict(version=1, **asdict(profile)), ensure_ascii=False).encode("utf-8")
+        data = asdict(profile)
+        # Older clients can still read profiles that do not opt in.
+        if not profile.cloud_dialogue_enabled:
+            data.pop("cloud_dialogue_enabled")
+        raw = json.dumps(dict(version=1, **data), ensure_ascii=False).encode("utf-8")
         encrypted = win32crypt.CryptProtectData(raw, "Astra settings", None, None, None, 1)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8) + ".tmp")
@@ -133,4 +140,4 @@ class DesktopSettings:
         if profile.provider == "ollama":
             return replace(settings, llm_enabled=True, llm_provider="ollama", llm_base_url=profile.base_url.rstrip("/"), llm_model=profile.model, llm_fallback_model="", llm_api_key="", llm_timeout_seconds=120, llm_router_enabled=profile.local_command_router_enabled, personal_memory_enabled=profile.memory_enabled)
         endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/" if profile.provider == "gemini" else profile.base_url
-        return replace(settings, llm_enabled=True, llm_provider=profile.provider, llm_base_url=endpoint, llm_model=profile.model, llm_fallback_model="", llm_api_key=profile.api_key)
+        return replace(settings, llm_enabled=True, llm_provider=profile.provider, llm_base_url=endpoint, llm_model=profile.model, llm_fallback_model="", llm_api_key=profile.api_key, llm_cloud_dialogue_enabled=profile.cloud_dialogue_enabled)

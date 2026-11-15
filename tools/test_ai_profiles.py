@@ -40,6 +40,20 @@ class AIProfileTests(unittest.TestCase):
             store.save(AIProfile(provider="env", allowed_scopes=()))
             self.assertEqual(store.apply(Settings()).action_permissions, ())
 
+    def test_cloud_dialogue_preference_roundtrips_and_requires_cloud_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            profile = AIProfile(provider="compatible", base_url="https://example.invalid/v1", model="cloud", cloud_dialogue_enabled=True)
+            store.save(profile)
+            self.assertTrue(store.load().cloud_dialogue_enabled)
+            self.assertTrue(store.apply(Settings()).llm_cloud_dialogue_enabled)
+            store.save(AIProfile(provider="compatible", base_url="https://example.invalid/v1", model="cloud"))
+            self.assertFalse(store.apply(Settings(llm_cloud_dialogue_enabled=True)).llm_cloud_dialogue_enabled)
+            decoded = json.loads(win32crypt.CryptUnprotectData(store.path.read_bytes(), None, None, None, 1)[1].decode("utf-8"))
+            self.assertNotIn("cloud_dialogue_enabled", decoded)
+        with self.assertRaises(ValueError):
+            AIProfile(provider="ollama", cloud_dialogue_enabled=True).validate()
+
     def test_voice_profile_roundtrip_and_custom_wake_name(self):
         with tempfile.TemporaryDirectory() as temp:
             store = DesktopSettings(Path(temp) / "settings.dpapi")

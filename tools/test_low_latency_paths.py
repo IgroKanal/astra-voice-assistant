@@ -494,6 +494,40 @@ class AIClientWarmupTests(unittest.TestCase):
 
 
 class WakeWarmupTests(unittest.TestCase):
+    def test_capture_failure_stops_voice_loop_without_retries(self):
+        for wake_only in (True, False):
+            with self.subTest(wake_only=wake_only):
+                settings = Settings(voice_runtime_mode="wake_only" if wake_only else "continuous", wake_only_mode=wake_only, wake_response_enabled=False)
+                voice = Mock()
+                voice.microphone = object()
+                voice.listen_once.return_value = ListenResult(False, error="device error", failure_kind="microphone")
+                with patch("main.VoiceIO", return_value=voice), patch("main.emit_event", return_value=True) as events, patch("main.record_action"):
+                    run_voice_mode(settings, {}, Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), logging.getLogger("microphone-failure-test"))
+                voice.listen_once.assert_called_once()
+                self.assertTrue(any(c.args[0] == "error" and "Микрофон" in c.args[1] for c in events.call_args_list))
+
+    def test_capture_failure_during_command_stops_instead_of_asking_to_repeat(self):
+        settings = Settings(wake_response_enabled=False)
+        voice = Mock()
+        voice.microphone = object()
+        voice.listen_once.side_effect = [ListenResult(True, text="Астра"), ListenResult(False, error="device error", failure_kind="microphone")]
+        with patch("main.VoiceIO", return_value=voice), patch("main.emit_event", return_value=True) as events, patch("main.record_action"):
+            run_voice_mode(settings, {}, Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), logging.getLogger("command-microphone-failure-test"))
+        self.assertEqual(voice.listen_once.call_count, 2)
+        self.assertTrue(any(c.args[0] == "error" and "Микрофон" in c.args[1] for c in events.call_args_list))
+        self.assertFalse(any("расслыш" in str(c.args).lower() for c in voice.speak.call_args_list))
+
+    def test_capture_failure_in_continuous_wake_followup_stops_cleanly(self):
+        settings = Settings(voice_runtime_mode="continuous", wake_only_mode=False)
+        voice = Mock()
+        voice.microphone = object()
+        voice.listen_once.side_effect = [ListenResult(True, text="Астра"), ListenResult(False, error="device error", failure_kind="microphone")]
+        with patch("main.VoiceIO", return_value=voice), patch("main.emit_event", return_value=True) as events, patch("main.record_action"):
+            run_voice_mode(settings, {}, Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), Mock(), logging.getLogger("followup-microphone-failure-test"))
+        self.assertEqual(voice.listen_once.call_count, 2)
+        self.assertTrue(any(c.args[0] == "error" and "Микрофон" in c.args[1] for c in events.call_args_list))
+        self.assertFalse(any("расслыш" in str(c.args).lower() for c in voice.speak.call_args_list))
+
     def test_only_verified_wake_starts_local_warmup(self):
         settings = Settings(
             voice_runtime_mode="wake_only",
@@ -889,6 +923,27 @@ class STTLatencyTests(unittest.TestCase):
         )
         self.assertEqual(timing.args[-1], "timeout")
         self.assertEqual(timing.args[2], 0.0)
+
+    def test_capture_device_error_marks_microphone_unavailable(self):
+        voice = self._voice(Settings(stt_mistake_log_enabled=False))
+        voice.recognizer.listen.side_effect = OSError("audio stream closed")
+        with patch("src.audio_io.emit_event", return_value=True):
+            result = voice.listen_once(prompt="")
+        self.assertEqual(result.failure_kind, "microphone")
+        self.assertIsNone(voice.microphone)
+        voice.recognizer.recognize_google.assert_not_called()
+
+    def test_audio_stream_close_error_is_not_mistaken_for_success(self):
+        voice = self._voice(Settings(stt_mistake_log_enabled=False))
+        voice.microphone = Mock()
+        voice.microphone.__enter__ = Mock(return_value=object())
+        voice.microphone.__exit__ = Mock(side_effect=OSError("stream already closed"))
+        voice.recognizer.listen.return_value = object()
+        with patch("src.audio_io.emit_event", return_value=True):
+            result = voice.listen_once(prompt="")
+        self.assertEqual(result.failure_kind, "microphone")
+        self.assertIsNone(voice.microphone)
+        voice.recognizer.recognize_google.assert_not_called()
 
 
 if __name__ == "__main__":

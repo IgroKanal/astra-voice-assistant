@@ -26,6 +26,7 @@ class ListenResult:
     text: str = ""
     error: str = ""
     alternatives: list[str] = field(default_factory=list)
+    failure_kind: str = ""
 
 
 class VoiceIO:
@@ -341,7 +342,7 @@ class VoiceIO:
         if self.microphone is None:
             emit_event("error", "Микрофон недоступен. Переключись в текстовый режим.")
             time.sleep(0.2)
-            return ListenResult(False, error="Микрофон не доступен.")
+            return ListenResult(False, error="Микрофон не доступен.", failure_kind="microphone")
 
         start = time.perf_counter()
         capture_elapsed = 0.0
@@ -357,6 +358,7 @@ class VoiceIO:
             else phrase_time_limit_seconds
         )
 
+        capture_completed = False
         try:
             capture_start = time.perf_counter()
             capture_active = False
@@ -372,6 +374,7 @@ class VoiceIO:
                         timeout=timeout,
                         phrase_time_limit=phrase_time_limit,
                     )
+                capture_completed = True
             finally:
                 if capture_active:
                     emit_activity("listening", False)
@@ -460,7 +463,7 @@ class VoiceIO:
                 False,
                 error="Сервис распознавания речи недоступен. Проверь интернет.",
             )
-        except Exception:
+        except Exception as exc:
             elapsed = time.perf_counter() - start
             self._log_stt_timing(
                 start,
@@ -468,6 +471,10 @@ class VoiceIO:
                 recognition_elapsed,
                 "error",
             )
+            if not capture_completed:
+                self.microphone = None
+                self.logger.error("Ошибка захвата микрофона (%s); голосовой режим остановлен", type(exc).__name__)
+                return ListenResult(False, error="Микрофон недоступен. Проверь устройство и перезапусти голосовой режим.", failure_kind="microphone")
             self.logger.exception("Непредвиденная ошибка STT")
             return ListenResult(False, error="Произошла ошибка распознавания речи.")
 

@@ -19,7 +19,7 @@ from src.assistant_persona import character_phrase
 from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
-from src.audio_io import VoiceIO
+from src.audio_io import ListenResult, VoiceIO
 from src.command_parser import (
     CommandType,
     ParsedCommand,
@@ -142,6 +142,7 @@ class TurnState:
     last_router_call_at: float = 0.0
     last_recognized_text: str = ""
     last_assistant_response: str = ""
+    microphone_failed: bool = False
     pending_kind: str = ""
     pending_created_at: float = 0.0
     last_context_kind: str = ""
@@ -1999,6 +2000,8 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         follow_up = ctx.get_follow_up().strip()
 
         if not follow_up:
+            if ctx.state.microphone_failed:
+                return False
             ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
             return True
 
@@ -2053,6 +2056,8 @@ def run_stt_test_mode(
         result = voice.listen_once()
         if not result.ok:
             print(f"STT: {result.error}")
+            if result.failure_kind == "microphone":
+                return
             continue
 
         parsed, had_wake = _parsed_for_scoring(result.text, settings)
@@ -2160,6 +2165,14 @@ def _voice_command_text_with_wake(settings: Settings, command_text: str) -> str:
     return f"{settings.assistant_name}, {command_text.strip()}"
 
 
+def _stop_after_microphone_failure(result: ListenResult, logger: logging.Logger) -> bool:
+    if result.ok or getattr(result, "failure_kind", "") != "microphone":
+        return False
+    emit_event("error", "Микрофон недоступен. Проверь подключение и перезапусти голосовой режим.")
+    logger.error("Voice runtime stopped after microphone capture failure")
+    return True
+
+
 def _listen_pending_voice_follow_up(
     voice: VoiceIO,
     ctx: TurnContext,
@@ -2184,6 +2197,8 @@ def _listen_pending_voice_follow_up(
     if not follow_up.ok:
         logger.info("Pending command session timeout/unknown: %s", follow_up.error)
         clear_pending(ctx.state)
+        if _stop_after_microphone_failure(follow_up, logger):
+            return False
         ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
@@ -2278,6 +2293,8 @@ def run_voice_mode(
         )
         if not follow_up.ok:
             logger.info("STT follow-up: %s", follow_up.error)
+            if _stop_after_microphone_failure(follow_up, logger):
+                state.microphone_failed = True
             return ""
         return follow_up.text
 
@@ -2335,6 +2352,8 @@ def run_voice_mode(
 
             if not wake_result.ok:
                 logger.info("Wake STT: %s", wake_result.error)
+                if _stop_after_microphone_failure(wake_result, logger):
+                    return
                 continue
 
             parsed = extract_command_after_wake(
@@ -2364,6 +2383,8 @@ def run_voice_mode(
 
                 if not command_result.ok:
                     logger.info("Command session timeout/unknown: %s", command_result.error)
+                    if _stop_after_microphone_failure(command_result, logger):
+                        return
                     respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
                     continue
 
@@ -2400,6 +2421,8 @@ def run_voice_mode(
                 )
                 if not command_result.ok:
                     logger.info("Command session timeout/unknown: %s", command_result.error)
+                    if _stop_after_microphone_failure(command_result, logger):
+                        return
                     respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
                     continue
                 should_continue = process_turn(
@@ -2434,6 +2457,8 @@ def run_voice_mode(
         listen_result = voice.listen_once()
         if not listen_result.ok:
             logger.info("STT: %s", listen_result.error)
+            if _stop_after_microphone_failure(listen_result, logger):
+                return
             continue
 
         should_continue = process_turn(listen_result.text, ctx)

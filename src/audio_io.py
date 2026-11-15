@@ -17,7 +17,7 @@ import pyttsx3
 import speech_recognition as sr
 
 from src.config_loader import Settings
-from src.runtime_events import emit_event
+from src.runtime_events import emit_activity, emit_event
 
 
 @dataclass(frozen=True)
@@ -359,9 +359,12 @@ class VoiceIO:
 
         try:
             capture_start = time.perf_counter()
+            capture_active = False
             try:
                 with self.microphone as source:
                     emit_event("state", "Слушаю · микрофон включён")
+                    emit_activity("listening", True)
+                    capture_active = True
                     if prompt:
                         print(prompt)
                     audio = self.recognizer.listen(
@@ -370,13 +373,17 @@ class VoiceIO:
                         phrase_time_limit=phrase_time_limit,
                     )
             finally:
+                if capture_active:
+                    emit_activity("listening", False)
                 capture_elapsed = time.perf_counter() - capture_start
 
             emit_event("state", "Распознаю речь…")
             recognition_start = time.perf_counter()
+            emit_activity("recognizing", True)
             try:
                 alternatives = self._recognize_google_alternatives(audio)
             finally:
+                emit_activity("recognizing", False)
                 recognition_elapsed = time.perf_counter() - recognition_start
             if not alternatives:
                 self._log_stt_timing(
@@ -581,9 +588,11 @@ class VoiceIO:
             return False
         if manage_state:
             emit_event("state", "Говорю…")
+        emit_activity("speaking", True)
         try:
             return self._speak_edge(text) if self.settings.tts_engine == "edge" else self._speak_sapi(text)
         finally:
+            emit_activity("speaking", False)
             if manage_state:
                 emit_event("state", "Голосовой режим · микрофон включён")
 
@@ -600,6 +609,7 @@ class VoiceIO:
         if self._has_cyrillic(excerpt) and not self.tts_has_russian_voice:
             return False
         emit_event("state", "Читаю выбранный документ локально…")
+        emit_activity("speaking", True)
         started = time.perf_counter()
         try:
             self._run_sapi(excerpt)
@@ -610,6 +620,7 @@ class VoiceIO:
             self.logger.error("Приватная локальная SAPI-озвучка завершилась ошибкой (%s)", type(exc).__name__)
             return False
         finally:
+            emit_activity("speaking", False)
             self._log_tts_timing(started, "sapi_private")
             emit_event("state", "Голосовой режим · микрофон включён")
 

@@ -54,7 +54,7 @@ from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config
 from src.folder_controller import FolderController
 from src.keyboard_controller import KeyboardController
 from src.media_controller import MediaController
-from src.runtime_events import emit_event
+from src.runtime_events import emit_activity, emit_event
 from src.routine_controller import RoutineConfigError, RoutineController, RoutineDefinition
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
@@ -1897,6 +1897,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     if action.type == ActionType.ASK_LLM:
         question = action.query or action.text
         emit_event("state", "Думаю · локальная модель" if ctx.settings.llm_provider == "ollama" else "Думаю · выбранный ИИ")
+        emit_activity("thinking", True)
         spoken_parts = []
         can_stream_speech = (
             (ctx.settings.llm_provider != "ollama" or not ctx.settings.ollama_thinking_enabled)
@@ -1926,6 +1927,8 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             # log the exception message: it may contain the user's question.
             ctx.logger.warning("AI answer failed unexpectedly (%s)", type(exc).__name__)
             result = LLMResult(False, "Не удалось получить ответ от ИИ. Попробуй ещё раз.")
+        finally:
+            emit_activity("thinking", False)
         if spoken_parts and callable(ctx.respond_streamed):
             # An incomplete answer must never be treated as the prefix of an
             # error message, but its audio still needs to finish first.

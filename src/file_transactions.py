@@ -49,10 +49,12 @@ class FilePreview:
     source_hash: str
     destination_hash: str
     text: str
+    binary_data: bytes | None = None
 
 
 class FileTransactions:
     MAX_BYTES = 16_000_000
+    MAX_PENDING_BINARY_BYTES = 32_000_000
     HISTORY = ".astra-history"
 
     def __init__(self, workspace: FileWorkspace, audit=None):
@@ -89,6 +91,49 @@ class FileTransactions:
         with self._lock:
             self._pending.pop(token, None)
 
+    def inspect_preview(self, token: str) -> FilePreview:
+        """Return a live preview so callers can bind it to an exact typed action."""
+        with self._lock:
+            if not isinstance(token, str):
+                raise WorkspaceDenied("Неверный токен предварительного просмотра")
+            pending = self._pending.get(token)
+            if pending is None or time.monotonic() - pending[1] > 120:
+                self._pending.pop(token, None)
+                raise WorkspaceDenied("Предварительный просмотр устарел или уже использован")
+            preview = pending[0]
+            if preview.operation == "trash":
+                if not self.trash_enabled:
+                    raise WorkspaceDenied("Разрешение Корзины Windows отозвано")
+                target = self.workspace.checked(preview.source)
+                if not target.is_file():
+                    raise WorkspaceDenied("Файл изменился после предварительного просмотра")
+                info = target.stat()
+                identity = f"{info.st_dev}:{info.st_ino}:{info.st_size}:{info.st_mtime_ns}".encode("ascii")
+                if self.digest(identity) != preview.source_hash:
+                    raise WorkspaceDenied("Файл изменился после предварительного просмотра")
+            elif not self.writable:
+                raise WorkspaceDenied("Разрешение записи отозвано")
+            elif preview.operation == "mkdir":
+                if self._destination(preview.destination).exists():
+                    raise WorkspaceDenied("Папка назначения появилась после предварительного просмотра")
+            elif preview.operation in {"create", "copy", "move", "replace"}:
+                target = self._destination(preview.destination)
+                if preview.binary_data is not None and len(preview.binary_data) != preview.size:
+                    raise WorkspaceDenied("Бинарный payload предварительного просмотра повреждён")
+                if preview.operation in {"copy", "move"}:
+                    source = self._bytes(preview.source)
+                    if self.digest(source) != preview.source_hash:
+                        raise WorkspaceDenied("Исходный файл изменился после предварительного просмотра")
+                if preview.operation == "replace":
+                    current = self._bytes(preview.destination)
+                    if self.digest(current) != preview.destination_hash:
+                        raise WorkspaceDenied("Файл назначения изменился после предварительного просмотра")
+                elif target.exists():
+                    raise WorkspaceDenied("Назначение появилось после предварительного просмотра")
+            else:
+                raise WorkspaceDenied("Неверный тип файлового предварительного просмотра")
+            return preview
+
     def _destination(self, relative: str) -> Path:
         rel = Path(relative)
         if not relative or rel.is_absolute() or rel.drive or ".." in rel.parts or any(c in relative for c in ':<>"|?*'):
@@ -124,6 +169,10 @@ class FileTransactions:
 
     def preview(self, operation: str, source: str = "", destination: str = "", text: str = "") -> FilePreview:
         with self._lock:
+            if not isinstance(operation, str) or any(
+                not isinstance(value, str) for value in (source, destination, text)
+            ):
+                raise WorkspaceDenied("Тип файловой операции или её аргументы неверны")
             if operation == "trash":
                 if not self.trash_enabled:
                     raise WorkspaceDenied("Сначала отдельно разреши перемещение файлов в Корзину Windows")
@@ -171,6 +220,31 @@ class FileTransactions:
             result = FilePreview(secrets.token_hex(24), operation, source, destination, len(data), self.digest(source_data) if source else "", destination_hash, text)
             self._pending[result.token] = (result, time.monotonic())
             return result
+
+    def _preview_bytes(self, destination: str, data: bytes) -> FilePreview:
+        """Prepare atomic creation from bounded binary data copied from another grant."""
+        with self._lock:
+            if not isinstance(destination, str) or not isinstance(data, bytes):
+                raise WorkspaceDenied("Нужны путь назначения и бинарные данные")
+            if not self.writable:
+                raise WorkspaceDenied("Сначала явно разреши запись в эту папку")
+            if len(data) > self.MAX_BYTES:
+                raise WorkspaceDenied("Операция ограничена 16 МБ")
+            if len(self._pending) >= 32:
+                self._pending.clear()
+            pending_bytes = sum(
+                len(item[0].binary_data or b"") for item in self._pending.values()
+            )
+            if pending_bytes + len(data) > self.MAX_PENDING_BINARY_BYTES:
+                raise WorkspaceDenied("Слишком много ожидающих бинарных копий; подтверди или отмени preview")
+            target = self._destination(destination)
+            if target.exists():
+                raise WorkspaceDenied("Файл назначения уже существует")
+            preview = FilePreview(
+                secrets.token_hex(24), "create", "", destination, len(data), "", "", "", data
+            )
+            self._pending[preview.token] = (preview, time.monotonic())
+            return preview
 
     @audited_file_call
     def execute_trash(self, token: str) -> str:
@@ -225,7 +299,11 @@ class FileTransactions:
                 raise WorkspaceDenied("Файл назначения изменился после просмотра")
             if preview.operation != "replace" and target.exists():
                 raise WorkspaceDenied("Назначение появилось после просмотра")
-            data = source_data if preview.source else preview.text.encode("utf-8")
+            data = (
+                source_data if preview.source else
+                preview.binary_data if preview.binary_data is not None else
+                preview.text.encode("utf-8")
+            )
             history = self._history()
             operation_id = secrets.token_hex(16)
             record = {"id": operation_id, "operation": preview.operation, "source": preview.source, "destination": preview.destination, "before_hash": self.digest(old), "after_hash": self.digest(data), "status": "prepared"}

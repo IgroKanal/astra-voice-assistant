@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import logging
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,77 @@ from main import run_voice_mode
 
 
 class LocalModelLatencyTests(unittest.TestCase):
+    def test_thinking_only_qwen_does_not_send_reasoning_to_stream_observer(self):
+        requests = []
+        metadata = {
+            "capabilities": ["completion", "thinking"],
+            "details": {"family": "qwen3"},
+            "template": (
+                '{{- if and (ne .Role "assistant") $last }}'
+                '<|im_start|>assistant\n<think>\n{{ end }}\n{{- end }}'
+            ),
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"models": [{"name": "qwen3:4b"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length))
+                if self.path == "/api/show":
+                    body = json.dumps(metadata).encode()
+                else:
+                    requests.append(payload)
+                    body = (
+                        b'{"message":{"thinking":"private thought","content":""},"done":false}\n'
+                        b'{"message":{"content":"4"},"done":true,"done_reason":"stop"}\n'
+                    )
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        chunks = []
+        try:
+            client = OllamaClient(f"http://127.0.0.1:{server.server_address[1]}", timeout=3)
+            with self.assertLogs("src.ollama_client", level="WARNING") as captured:
+                answer = client.chat("qwen3:4b", "system", "2+2", think=False, on_chunk=chunks.append)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(answer, "4")
+        self.assertEqual(chunks, ["4"])
+        self.assertTrue(requests[0]["think"])
+        self.assertNotIn("private thought", "\n".join(captured.output))
+
+    def test_regular_qwen_template_keeps_requested_no_thinking_mode(self):
+        client = OllamaClient()
+        metadata = {
+            "capabilities": ["thinking"],
+            "details": {"family": "qwen3"},
+            "template": '<|im_start|>assistant\n{{ if .Think }}<think>{{ end }}',
+        }
+        with patch.object(client, "models", return_value=["model"]), patch.object(
+            client, "_model_info", return_value=metadata
+        ), patch.object(
+            client, "_request", return_value={"message": {"content": "4"}, "done_reason": "stop"}
+        ) as request:
+            self.assertEqual(client.chat("model", "system", "2+2", think=False), "4")
+        self.assertFalse(request.call_args.args[1]["think"])
+
     def test_stream_records_time_to_first_content_fragment(self):
         first = b'{"message":{"content":"first"},"done":false}\n'
         final = b'{"message":{"content":" second"},"done":true,"done_reason":"stop"}\n'

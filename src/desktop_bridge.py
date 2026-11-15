@@ -6,7 +6,7 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
-from src.runtime_events import parse_event
+from src.runtime_events import RuntimeEvent, parse_event_record
 from src.desktop_file_search import encode_file_result
 
 _UNSET_PROCESS = object()
@@ -16,6 +16,7 @@ class DesktopBridge:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.events: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=2000)
+        self.typed_events: queue.Queue[RuntimeEvent] = queue.Queue(maxsize=64)
         self.process: subprocess.Popen | None = None
         self.mode = "text"
         self._lock = threading.RLock()
@@ -72,9 +73,15 @@ class DesktopBridge:
         try:
             assert process.stdout is not None
             for line in process.stdout:
-                event = parse_event(line.rstrip())
+                event = parse_event_record(line.rstrip())
                 if event:
-                    self.emit(*event)
+                    self.emit(event.kind, event.text)
+                    if event.data is not None:
+                        try:
+                            self.typed_events.put_nowait(event)
+                        except queue.Full:
+                            # The legacy text event remains available if a new client falls behind.
+                            pass
                 else:
                     self.emit("output", line.rstrip())
         finally:

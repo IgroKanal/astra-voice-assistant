@@ -13,6 +13,7 @@ class ActionType(str, Enum):
     OPEN_URL = "open_url"
     OPEN_FOLDER = "open_folder"
     WEB_SEARCH = "web_search"
+    WEB_ANSWER = "web_answer"
     GET_TIME = "get_time"
     GET_DATE = "get_date"
     KEYBOARD_SHORTCUT = "keyboard_shortcut"
@@ -299,6 +300,8 @@ def short_confirmation(action: AssistantAction) -> str:
         return "Открываю папку."
     if action.type == ActionType.WEB_SEARCH:
         return "Ищу."
+    if action.type == ActionType.WEB_ANSWER:
+        return "Проверяю источники."
     if action.type == ActionType.KEYBOARD_SHORTCUT:
         return "Готово."
     if action.type == ActionType.TYPE_TEXT:

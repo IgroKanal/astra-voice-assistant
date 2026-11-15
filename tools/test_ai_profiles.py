@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile, AVATAR_PROFILES, DesktopSettings
 from src.action_policy import ActionPolicy
-from src.ollama_client import OllamaClient
+from src.ollama_client import OllamaClient, OllamaResponseTruncated
 from src.ai_client import AIClient
 
 
@@ -292,6 +292,20 @@ class AIProfileTests(unittest.TestCase):
         with patch.object(client, "models", return_value=["test"]), patch.object(client, "_request", side_effect=responses):
             with self.assertRaises(ValueError):
                 client.chat("test", "system", "question")
+
+    def test_thinking_only_truncation_explains_the_model_limit(self):
+        settings = Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        with patch.object(
+            OllamaClient, "chat",
+            side_effect=OllamaResponseTruncated(thinking_channel_required=True),
+        ):
+            result = AIClient(settings).ask("Вопрос")
+        self.assertFalse(result.ok)
+        self.assertIn("рассуждения не удалось отключить", result.message)
+        self.assertIn("быструю модель", result.message)
 
 
 if __name__ == "__main__":

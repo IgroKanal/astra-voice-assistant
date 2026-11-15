@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.desktop_settings import AIProfile
 from src.file_rag import FileQuestionSession
-from src.file_workspace import FileWorkspace, WorkspaceDenied
+from src.file_workspace import FileWorkspace, FileWorkspaceGrant, FileWorkspaceGroup, WorkspaceDenied
 from src.ollama_client import OllamaClient, OllamaRequestCancelled
 
 
@@ -69,6 +69,26 @@ class FileQuestionTests(unittest.TestCase):
         self.assertEqual(chat.call_count, 1)
         self.assertEqual({item["file"] for item in observed["items"]}, {"alpha.txt", "beta.txt"})
         self.assertEqual({item.file for item in result.passages}, {"alpha.txt", "beta.txt"})
+
+    def test_local_retrieval_reads_only_explicit_files_across_selected_roots(self):
+        documents = self.root / "Documents"
+        projects = self.root / "Projects"
+        documents.mkdir()
+        projects.mkdir()
+        (documents / "plan.txt").write_text("Код проекта Альфа: 42.\n", encoding="utf-8")
+        (projects / "plan.txt").write_text("Код проекта Бета: 17.\n", encoding="utf-8")
+        group = FileWorkspaceGroup((
+            FileWorkspaceGrant.from_selection("Documents", documents, {"ask"}),
+            FileWorkspaceGrant.from_selection("Projects", projects, {"ask"}),
+        ))
+        session = FileQuestionSession(group, ("Documents/plan.txt", "Projects/plan.txt"))
+
+        passages, digest = session.retrieve("Сравни код проекта Альфа и Бета")
+
+        self.assertEqual({passage.file for passage in passages}, {
+            "Documents/plan.txt", "Projects/plan.txt",
+        })
+        self.assertEqual(len(digest), 64)
 
     def test_answer_returns_only_passages_actually_cited_by_the_model(self):
         alpha = self.root / "alpha.txt"

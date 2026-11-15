@@ -97,6 +97,124 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertTrue(provider.available)
         self.assertFalse(provider.is_local)
 
+    def test_compatible_provider_streams_answer_chunks_and_reports_first_token(self):
+        events = [
+            Mock(choices=[Mock(delta=Mock(content="Первая фраза."))]),
+            Mock(choices=[Mock(delta=Mock(content=" Вторая часть."))]),
+            Mock(choices=[]),
+        ]
+        client = Mock()
+        client.chat.completions.create.return_value = iter(events)
+        provider = OpenAICompatibleProvider(client, "compatible")
+        chunks = []
+        timings = []
+
+        answer = provider.answer(
+            model="remote-model",
+            system="system",
+            question="вопрос",
+            max_tokens=90,
+            temperature=0.5,
+            history=[{"role": "user", "content": "private history"}],
+            memory_context="private notes",
+            on_chunk=chunks.append,
+            timing_callback=timings.append,
+        )
+
+        self.assertEqual(answer, "Первая фраза. Вторая часть.")
+        self.assertEqual(chunks, ["Первая фраза.", " Вторая часть."])
+        self.assertEqual(len(timings), 1)
+        self.assertGreaterEqual(timings[0]["first_token_seconds"], 0)
+        self.assertGreaterEqual(timings[0]["elapsed_seconds"], timings[0]["first_token_seconds"])
+        call = client.chat.completions.create.call_args.kwargs
+        self.assertTrue(call["stream"])
+        self.assertNotIn("private history", str(call["messages"]))
+        self.assertNotIn("private notes", str(call["messages"]))
+
+    def test_compatible_stream_callback_failure_does_not_break_completion(self):
+        client = Mock()
+        client.chat.completions.create.return_value = iter([
+            Mock(choices=[Mock(delta=Mock(content="Ответ завершён."))]),
+        ])
+        provider = OpenAICompatibleProvider(client, "compatible")
+
+        def broken_callback(_part):
+            raise RuntimeError("playback callback failed")
+
+        answer = provider.answer(
+            model="remote-model",
+            system="system",
+            question="вопрос",
+            max_tokens=30,
+            temperature=0.2,
+            on_chunk=broken_callback,
+        )
+
+        self.assertEqual(answer, "Ответ завершён.")
+
+    def test_compatible_stream_rejects_truncation_at_token_limit(self):
+        client = Mock()
+        client.chat.completions.create.return_value = iter([
+            Mock(choices=[Mock(delta=Mock(content="Неполный ответ"), finish_reason="length")]),
+        ])
+        provider = OpenAICompatibleProvider(client, "compatible")
+
+        with self.assertRaisesRegex(ValueError, "исчерпала лимит"):
+            provider.answer(
+                model="remote-model",
+                system="system",
+                question="вопрос",
+                max_tokens=10,
+                temperature=0.2,
+                on_chunk=lambda _part: None,
+            )
+
+    def test_compatible_stream_checks_cancellation_and_closes_stream(self):
+        cancelled = [False]
+
+        class CloseableStream:
+            def __init__(self):
+                self.events = [
+                    Mock(choices=[Mock(delta=Mock(content="Первый токен"))]),
+                    Mock(choices=[Mock(delta=Mock(content=" лишний токен"))]),
+                ]
+                self.read_count = 0
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.read_count += 1
+                if not self.events:
+                    raise StopIteration
+                return self.events.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        stream = CloseableStream()
+        client = Mock()
+        client.chat.completions.create.return_value = stream
+        provider = OpenAICompatibleProvider(client, "compatible")
+
+        def on_chunk(_part):
+            cancelled[0] = True
+
+        with self.assertRaisesRegex(RuntimeError, "отменён"):
+            provider.answer(
+                model="remote-model",
+                system="system",
+                question="вопрос",
+                max_tokens=30,
+                temperature=0.2,
+                on_chunk=on_chunk,
+                cancelled=lambda: cancelled[0],
+            )
+
+        self.assertTrue(stream.closed)
+        self.assertEqual(stream.read_count, 1)
+
     def test_compatible_classifier_supports_optional_json_mode(self):
         response = Mock()
         response.choices = [Mock(message=Mock(content='{"action":"get_time"}'))]
@@ -171,6 +289,136 @@ class ProviderAdapterTests(unittest.TestCase):
 
         self.assertIsInstance(client.provider, OpenAICompatibleProvider)
         self.assertEqual(result.message, "Проверочный ответ")
+
+    def test_ai_client_streams_cloud_chunks_and_logs_first_token_without_content(self):
+        fake_client = Mock()
+        fake_client.chat.completions.create.return_value = iter([
+            Mock(choices=[Mock(delta=Mock(content="Потоковый ответ."))]),
+        ])
+        settings = Settings(
+            llm_provider="compatible",
+            llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="test-model",
+            llm_fallback_model="",
+        )
+        chunks = []
+
+        with patch("src.ai_client.OpenAI", return_value=fake_client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            client = AIClient(settings)
+            result = client.ask("личный вопрос", on_text_chunk=chunks.append)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "Потоковый ответ.")
+        self.assertEqual(chunks, ["Потоковый ответ."])
+        self.assertTrue(fake_client.chat.completions.create.call_args.kwargs["stream"])
+        log_text = "\n".join(captured.output)
+        self.assertIn("LLM first-token timing: provider=compatible", log_text)
+        self.assertNotIn("личный вопрос", log_text)
+        self.assertNotIn("Потоковый ответ", log_text)
+
+    def test_cloud_stream_failure_after_output_does_not_mix_in_fallback_model(self):
+        secret = "private-stream-error-content"
+
+        def broken_stream():
+            yield Mock(choices=[Mock(delta=Mock(content="Начало ответа. "))])
+            raise RuntimeError(secret)
+
+        fake_client = Mock()
+        fake_client.chat.completions.create.side_effect = [
+            broken_stream(),
+            iter([Mock(choices=[Mock(delta=Mock(content="Другой ответ."))])]),
+        ]
+        settings = Settings(
+            llm_provider="compatible", llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary", llm_fallback_model="fallback",
+        )
+        chunks = []
+
+        with patch("src.ai_client.OpenAI", return_value=fake_client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("вопрос", on_text_chunk=chunks.append)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(chunks, ["Начало ответа. "])
+        self.assertEqual(fake_client.chat.completions.create.call_count, 1)
+        logs = "\n".join(captured.output)
+        self.assertIn("fallback skipped", logs)
+        self.assertNotIn(secret, logs)
+
+    def test_cloud_stream_failure_before_output_still_uses_fallback_model(self):
+        def broken_stream():
+            raise RuntimeError("stream disconnected")
+            yield  # pragma: no cover
+
+        fake_client = Mock()
+        fake_client.chat.completions.create.side_effect = [
+            broken_stream(),
+            iter([Mock(choices=[Mock(delta=Mock(content="Резервный ответ."))])]),
+        ]
+        settings = Settings(
+            llm_provider="compatible", llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary", llm_fallback_model="fallback",
+        )
+        chunks = []
+
+        with patch("src.ai_client.OpenAI", return_value=fake_client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ):
+            result = AIClient(settings).ask("вопрос", on_text_chunk=chunks.append)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "Резервный ответ.")
+        self.assertEqual(chunks, ["Резервный ответ."])
+        self.assertEqual(fake_client.chat.completions.create.call_count, 2)
+
+    def test_cloud_answer_does_not_log_exception_payload(self):
+        secret = "private-question-and-provider-token"
+        fake_client = Mock()
+        fake_client.chat.completions.create.side_effect = RuntimeError(secret)
+        settings = Settings(
+            llm_provider="compatible", llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary", llm_fallback_model="",
+        )
+
+        with patch("src.ai_client.OpenAI", return_value=fake_client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("вопрос")
+
+        self.assertFalse(result.ok)
+        logs = "\n".join(captured.output)
+        self.assertIn("type=RuntimeError", logs)
+        self.assertNotIn(secret, logs)
+
+    def test_cloud_router_does_not_log_exception_payload(self):
+        secret = "private-command-and-provider-token"
+        settings = Settings(
+            llm_provider="compatible", llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary", llm_fallback_model="",
+        )
+        for exceptions in (
+            [RuntimeError(secret)],
+            [TypeError(secret), RuntimeError(secret)],
+        ):
+            with self.subTest(attempts=len(exceptions)):
+                fake_client = Mock()
+                fake_client.chat.completions.create.side_effect = exceptions
+                with patch("src.ai_client.OpenAI", return_value=fake_client), self.assertLogs(
+                    "src.ai_client", level="INFO"
+                ) as captured:
+                    result = AIClient(settings).route_command("команда", {})
+                self.assertFalse(result.ok)
+                logs = "\n".join(captured.output)
+                self.assertIn("type=RuntimeError", logs)
+                self.assertNotIn(secret, logs)
 
     def test_compatible_router_retries_without_json_mode_when_endpoint_rejects_it(self):
         response = Mock()

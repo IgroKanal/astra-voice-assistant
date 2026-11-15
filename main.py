@@ -7,7 +7,6 @@ import os
 import platform
 import re
 import sys
-import threading
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -15,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from src.ai_client import AIClient
+from src.ai_client import AIClient, LLMResult
 from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
@@ -39,6 +38,7 @@ from src.command_parser import (
     FILE_READ_NEXT_TARGET,
     FILE_QUESTION_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
+    WEB_ANSWER_HELP_TARGET,
     BACKGROUND_TASK_HELP_TARGET,
     MIXED_COMMAND_TARGET,
     UNRESOLVED_CONTEXT_TARGET,
@@ -58,7 +58,7 @@ from src.routine_controller import RoutineConfigError, RoutineController, Routin
 from src.system_controller import SystemController
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
-from src.streaming_speech import FirstSentenceBuffer
+from src.streaming_speech import EarlySpeechCoordinator, FirstSentenceBuffer
 from src.logger_setup import setup_logging
 from src.task_router import (
     ActionType,
@@ -100,6 +100,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.FILE_OPEN,
     CommandType.FILE_READ,
     CommandType.FILE_QUESTION,
+    CommandType.WEB_ANSWER,
     CommandType.BACKGROUND_ASK,
     CommandType.BACKGROUND_LIST,
     CommandType.BACKGROUND_CANCEL,
@@ -123,6 +124,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.FILE_OPEN,
     ActionType.FILE_READ,
     ActionType.FILE_QUESTION,
+    ActionType.WEB_ANSWER,
     ActionType.BACKGROUND_ASK,
     ActionType.BACKGROUND_LIST,
     ActionType.BACKGROUND_CANCEL,
@@ -184,6 +186,8 @@ class TurnContext:
     speak_partial: Callable[[str], bool] | None = None
     respond_streamed: Callable[[str, str], None] | None = None
     background_tasks: BackgroundTaskManager | None = None
+    web_answer: Callable[[str], object] | None = None
+    web_sources: Callable[[tuple], None] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -659,6 +663,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.OPEN_URL: ActionType.OPEN_URL,
         CommandType.OPEN_FOLDER: ActionType.OPEN_FOLDER,
         CommandType.WEB_SEARCH: ActionType.WEB_SEARCH,
+        CommandType.WEB_ANSWER: ActionType.WEB_ANSWER,
         CommandType.GET_TIME: ActionType.GET_TIME,
         CommandType.GET_DATE: ActionType.GET_DATE,
         CommandType.KEYBOARD_SHORTCUT: ActionType.KEYBOARD_SHORTCUT,
@@ -702,6 +707,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         query = parsed.target
     elif parsed.type == CommandType.FILE_QUESTION:
         query = parsed.query
+    elif parsed.type == CommandType.WEB_ANSWER:
+        query = parsed.target if parsed.target != WEB_ANSWER_HELP_TARGET else ""
     elif parsed.type == CommandType.BACKGROUND_ASK:
         query = parsed.query
 
@@ -866,6 +873,8 @@ def build_help_text(topic: str = "general") -> str:
             "или напомни завтра в 9 позвонить. "
             "С локальным Ollama можно запустить вопрос в фоне фразой «спроси в фоне …», "
             "узнать состояние и забрать ответ позже. "
+            "Веб-ответ с источниками доступен только при включённом «Веб-исследовании» "
+            "и выбранном локальном Ollama. "
             "В приложении открой «Команды», чтобы найти пример и вставить его в чат. "
             "Для новой темы скажи: имя ассистента, начни новый диалог."
         ),
@@ -1140,6 +1149,29 @@ def _format_personal_memory_list(notes) -> str:
     return response
 
 
+def _voice_web_answer(settings: Settings, query: str):
+    from src.web_voice import VoiceWebResearch
+
+    return VoiceWebResearch(settings).answer(query)
+
+
+def _publish_web_sources(citations: tuple) -> None:
+    rows = []
+    source_rows = []
+    for citation in citations[:3]:
+        title = _safe_memory_voice_text(getattr(citation, "title", ""), 160)
+        url = _safe_memory_voice_text(getattr(citation, "url", ""), 1000)
+        if title and url:
+            index = len(source_rows) + 1
+            source_rows.append({"index": index, "title": title, "url": url})
+            rows.append(f"[{index}] {title} — {url}")
+    if not rows:
+        return
+    message = "Источники: " + "; ".join(rows)
+    if not emit_event("assistant", message, data={"kind": "web_sources", "sources": source_rows}):
+        print(f"Астра: {message}")
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -1152,6 +1184,55 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.WEB_ANSWER:
+        if action.target == WEB_ANSWER_HELP_TARGET or not action.query:
+            ctx.respond(
+                "Скажи: «Астра, найди ответ в интернете и назови вопрос». "
+                "Нужно отдельно включить «Веб-исследование» и выбрать локальную Ollama."
+            )
+            return True
+        if not ctx.settings.llm_enabled or ctx.settings.llm_provider != "ollama":
+            ctx.respond("Ответы по веб-источникам используют только выбранную локальную Ollama.")
+            return True
+        if not callable(ctx.web_answer):
+            ctx.respond("Веб-исследование сейчас недоступно. Проверь разрешения Astra.")
+            return True
+        from src.web_answer import WebAnswer, WebAnswerDenied
+        try:
+            result = ctx.web_answer(action.query)
+        except WebAnswerDenied as exc:
+            if callable(ctx.audit):
+                ctx.audit("web_answer", "failed")
+            ctx.respond(str(exc))
+            return True
+        except Exception as exc:
+            ctx.logger.warning("Web research failed: error=%s", type(exc).__name__)
+            if callable(ctx.audit):
+                ctx.audit("web_answer", "failed")
+            ctx.respond("Не удалось проверить открытые веб-источники. Попробуй позже.")
+            return True
+        if (
+            not isinstance(result, WebAnswer)
+            or not isinstance(result.text, str)
+            or not result.text.strip()
+            or len(result.text) > 8000
+            or not isinstance(result.citations, tuple)
+            or not 1 <= len(result.citations) <= 3
+        ):
+            if callable(ctx.audit):
+                ctx.audit("web_answer", "failed")
+            ctx.respond("Получен некорректный ответ веб-исследования; он не был показан.")
+            return True
+        if callable(ctx.web_sources):
+            try:
+                ctx.web_sources(result.citations)
+            except Exception:
+                ctx.logger.warning("Web source display failed")
+        if callable(ctx.audit):
+            ctx.audit("web_answer", "succeeded")
+        ctx.respond(result.text.strip())
         return True
 
     if action.type in {
@@ -1811,30 +1892,38 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         emit_event("state", "Думаю · локальная модель" if ctx.settings.llm_provider == "ollama" else "Думаю · выбранный ИИ")
         spoken_parts = []
         can_stream_speech = (
-            ctx.settings.llm_provider == "ollama"
-            and not ctx.settings.ollama_thinking_enabled
+            (ctx.settings.llm_provider != "ollama" or not ctx.settings.ollama_thinking_enabled)
             and callable(ctx.speak_partial)
             and callable(ctx.respond_streamed)
         )
-        if can_stream_speech:
-            cleaner = getattr(ctx.ai_client, "_clean_llm_answer", None)
-            first_sentence = FirstSentenceBuffer(cleaner if callable(cleaner) else None)
+        try:
+            if can_stream_speech:
+                cleaner = getattr(ctx.ai_client, "_clean_llm_answer", None)
+                first_sentence = FirstSentenceBuffer(cleaner if callable(cleaner) else None)
 
-            def speak_first_sentence(chunk: str) -> None:
-                sentence = first_sentence.feed(chunk)
-                if not sentence:
-                    return
-                try:
-                    if ctx.speak_partial(sentence):
-                        spoken_parts.append(sentence)
-                except Exception:
-                    ctx.logger.warning("Early local speech failed; final answer will use regular TTS")
+                def speak_first_sentence(chunk: str) -> None:
+                    sentence = first_sentence.feed(chunk)
+                    if not sentence:
+                        return
+                    try:
+                        if ctx.speak_partial(sentence):
+                            spoken_parts.append(sentence)
+                    except Exception:
+                        ctx.logger.warning("Early speech failed; final answer will use regular TTS")
 
-            result = ctx.ai_client.ask(question, on_text_chunk=speak_first_sentence)
-        else:
-            result = ctx.ai_client.ask(question)
+                result = ctx.ai_client.ask(question, on_text_chunk=speak_first_sentence)
+            else:
+                result = ctx.ai_client.ask(question)
+        except Exception as exc:
+            # A provider can fail after early audio has already started. Do not
+            # log the exception message: it may contain the user's question.
+            ctx.logger.warning("AI answer failed unexpectedly (%s)", type(exc).__name__)
+            result = LLMResult(False, "Не удалось получить ответ от ИИ. Попробуй ещё раз.")
         if spoken_parts and callable(ctx.respond_streamed):
-            ctx.respond_streamed(result.message, " ".join(spoken_parts))
+            # An incomplete answer must never be treated as the prefix of an
+            # error message, but its audio still needs to finish first.
+            prefix = " ".join(spoken_parts) if result.ok else ""
+            ctx.respond_streamed(result.message, prefix)
         else:
             ctx.respond(result.message)
         return True
@@ -2036,6 +2125,8 @@ def run_text_mode(
         routines=routines,
         media=media,
         background_tasks=background_tasks,
+        web_answer=lambda query: _voice_web_answer(settings, query),
+        web_sources=_publish_web_sources,
     )
 
     while True:
@@ -2125,61 +2216,48 @@ def run_voice_mode(
     voice.speak(f"{settings.assistant_name} запущена.")
 
     state = TurnState()
-    partial_audio: dict[str, object] = {"event": None, "text": "", "ok": False}
+    early_speech = EarlySpeechCoordinator(
+        lambda sentence: voice.speak_audio_only(sentence, manage_state=False),
+        on_error=lambda: logger.warning("Early TTS playback failed"),
+    )
+    speech_wait_budget = min(60.0, max(1.0, settings.tts_playback_timeout_seconds)) + 2.0
 
     def respond(message: str) -> None:
         shortened = shorten_voice_response(message, settings)
         if shortened != message:
             logger.info("Voice response shortened. full_characters=%s shortened_characters=%s", len(message), len(shortened))
         state.last_assistant_response = shortened
-        voice.speak(shortened)
+        if early_speech.wait(speech_wait_budget).finished:
+            voice.speak(shortened)
+        else:
+            # Preserve the text response while an earlier, stalled TTS call is
+            # still alive; playing another answer would overlap the old audio.
+            voice.publish_response(shortened)
+            logger.error("Early TTS is still running; skipping overlapping response audio")
+            emit_event("state", "Голосовой режим · микрофон включён")
 
     def speak_partial(sentence: str) -> bool:
-        if partial_audio["event"] is not None:
-            return False
-        completed = threading.Event()
-        partial_audio.update({"event": completed, "text": sentence, "ok": False})
-
-        def speak_in_background() -> None:
-            try:
-                partial_audio["ok"] = voice.speak_audio_only(sentence, manage_state=False)
-            except Exception:
-                logger.warning("Early Edge TTS playback failed")
-            finally:
-                completed.set()
-
-        emit_event("state", "Говорю · ответ ещё формируется")
-        try:
-            threading.Thread(
-                target=speak_in_background,
-                name="AstraEarlySpeech",
-                daemon=True,
-            ).start()
-        except Exception:
-            partial_audio.update({"event": None, "text": "", "ok": False})
-            emit_event("state", "Думаю · локальная модель")
-            return False
-        return True
+        started = early_speech.start(sentence)
+        if started:
+            emit_event("state", "Говорю · ответ ещё формируется")
+        return started
 
     def respond_streamed(message: str, spoken_prefix: str) -> None:
         shortened = shorten_voice_response(message, settings)
         state.last_assistant_response = shortened
         voice.publish_response(shortened)
-        completed = partial_audio.get("event")
-        budget = min(60.0, max(1.0, settings.tts_playback_timeout_seconds))
-        finished = not isinstance(completed, threading.Event) or completed.wait(budget + 2.0)
-        partial_ok = finished and bool(partial_audio.get("ok"))
-        if partial_ok and shortened.startswith(spoken_prefix):
+        outcome = early_speech.wait(speech_wait_budget)
+        partial_ok = outcome.finished and outcome.succeeded
+        if partial_ok and spoken_prefix and outcome.text == spoken_prefix and shortened.startswith(spoken_prefix):
             remainder = shortened[len(spoken_prefix):].strip()
             if remainder:
                 voice.speak_audio_only(remainder, manage_state=False)
-        elif finished:
-            if completed is not None and partial_ok:
+        elif outcome.finished:
+            if partial_ok and spoken_prefix:
                 logger.warning("Streamed speech prefix did not match final response; replaying complete answer")
             voice.speak_audio_only(shortened, manage_state=False)
         else:
             logger.error("Early TTS exceeded its playback budget; skipping overlapping final audio")
-        partial_audio.update({"event": None, "text": "", "ok": False})
         emit_event("state", "Голосовой режим · микрофон включён")
 
     def get_follow_up() -> str:
@@ -2224,6 +2302,8 @@ def run_voice_mode(
         ),
         respond_streamed=respond_streamed,
         background_tasks=background_tasks,
+        web_answer=lambda query: _voice_web_answer(settings, query),
+        web_sources=_publish_web_sources,
     )
 
     if _wake_only_voice_enabled(settings):

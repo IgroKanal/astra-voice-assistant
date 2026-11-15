@@ -279,6 +279,54 @@ class DesktopUITests(unittest.TestCase):
                 panel.astra_close()
                 window.destroy()
 
+    def test_ai_plan_trash_requires_separate_grant_exact_preview_and_confirmation(self):
+        from src.file_transactions import FileTransactions
+        from src.file_workspace import FileWorkspace
+        from src.plan_ui import open_plan_ui
+        with tempfile.TemporaryDirectory(prefix="astra-plan-trash-ui-", dir=ROOT) as temp:
+            root = Path(temp)
+            target = root / "old.txt"
+            target.write_text("preserve until confirmation", encoding="utf-8")
+            workspace = FileWorkspace(root)
+            transactions = FileTransactions(workspace)
+            transactions.grant_trash(True)
+            window = tk.Tk()
+            window.withdraw()
+            button = lambda parent, text, command: tk.Button(parent, text=text, command=command)
+            panel = open_plan_ui(window, workspace, button, transactions=transactions)
+            try:
+                panel.astra_skill_selector.set("Перемещение файла в Корзину")
+                panel.astra_skill_selector.event_generate("<<ComboboxSelected>>")
+                window.update()
+                panel.astra_argument_entry.insert(0, "old.txt")
+                panel.astra_add_step()
+                panel.astra_simulate_plan()
+                window.update()
+                self.assertTrue(target.exists())
+                self.assertIn("отдельный trash scope", panel.astra_plan_output.get("1.0", "end"))
+
+                with patch("src.plan_ui.messagebox.askyesno", return_value=False):
+                    with patch("src.file_transactions.send2trash") as send:
+                        panel.astra_execute_plan()
+                        self.assertTrue(target.exists())
+                        send.assert_not_called()
+
+                with patch("src.plan_ui.messagebox.askyesno", return_value=True) as confirm:
+                    with patch("src.file_transactions.send2trash", side_effect=lambda path: Path(path).unlink()) as send:
+                        panel.astra_execute_plan()
+                        confirmation = confirm.call_args.args[1]
+                        self.assertIn("Файл: old.txt", confirmation)
+                        self.assertIn("Размер: 27 байт", confirmation)
+                        self.assertIn("не удалён навсегда", confirmation)
+                        self.pump(window, lambda: panel.astra_status.get() == "План завершён · проверь результат")
+                send.assert_called_once_with(str(target))
+                self.assertFalse(target.exists())
+                self.assertFalse(transactions.writable)
+            finally:
+                transactions.grant_trash(False)
+                panel.astra_close()
+                window.destroy()
+
     def test_ai_plan_can_create_folder_and_rename_with_exact_confirmation(self):
         from src.file_transactions import FileTransactions
         from src.file_workspace import FileWorkspace

@@ -8,7 +8,7 @@ import json
 import re
 import threading
 
-from src.file_workspace import FileWorkspace, WorkspaceDenied
+from src.file_workspace import FileWorkspace, FileWorkspaceGroup, WorkspaceDenied
 from src.ollama_client import OllamaClient
 
 
@@ -33,7 +33,7 @@ class FileQuestionSession:
     MAX_FILES = 5
     STOP_WORDS = frozenset("какой какая какие какое где когда почему чтобы который это как что для или про мне файл файле документ документе расскажи пожалуйста".split())
 
-    def __init__(self, workspace: FileWorkspace, relative: str | tuple[str, ...] | list[str]):
+    def __init__(self, workspace: FileWorkspace | FileWorkspaceGroup, relative: str | tuple[str, ...] | list[str]):
         if isinstance(relative, str):
             relatives = (relative,)
         elif isinstance(relative, (tuple, list)):
@@ -46,6 +46,9 @@ class FileQuestionSession:
             raise ValueError("Список выбранных файлов пуст или содержит неверный путь")
         if len(set(relatives)) != len(relatives):
             raise ValueError("Один и тот же файл выбран несколько раз")
+        if isinstance(workspace, FileWorkspaceGroup):
+            for relative_path in relatives:
+                workspace.authorize_question(relative_path)
         self.workspace, self.relatives = workspace, relatives
         self.relative = relatives[0]
         self.revoked = threading.Event()
@@ -59,6 +62,12 @@ class FileQuestionSession:
     def check(self, cancelled=None):
         if self._is_cancelled(cancelled):
             raise WorkspaceDenied("Запрос отменён или разрешение на файл отозвано")
+
+    def _read_selected(self, relative, cancelled=None):
+        options = {"is_cancelled": lambda: self._is_cancelled(cancelled)}
+        if isinstance(self.workspace, FileWorkspaceGroup):
+            options["operation"] = "ask"
+        return self.workspace.read_text(relative, **options)
 
     @staticmethod
     def fingerprint(text):
@@ -77,10 +86,7 @@ class FileQuestionSession:
         total_characters = 0
         for relative in self.relatives:
             self.check(cancelled)
-            text = self.workspace.read_text(
-                relative,
-                is_cancelled=lambda: self._is_cancelled(cancelled),
-            )
+            text = self._read_selected(relative, cancelled)
             total_characters += len(text)
             if total_characters > self.MAX_CHARACTERS:
                 raise ValueError("Общий текст выбранных файлов превышает 200000 символов")
@@ -162,10 +168,7 @@ class FileQuestionSession:
         current = []
         for relative in self.relatives:
             self.check(cancelled)
-            current.append((relative, self.workspace.read_text(
-                relative,
-                is_cancelled=lambda: self._is_cancelled(cancelled),
-            )))
+            current.append((relative, self._read_selected(relative, cancelled)))
         if self.collection_fingerprint(current) != digest:
             raise WorkspaceDenied("Один из выбранных файлов изменился во время ответа. Повтори вопрос по актуальному содержимому.")
         citation_matches = [

@@ -10,6 +10,9 @@ import posixpath
 import re
 import stat
 import time
+import unicodedata
+import math
+import threading
 from typing import Callable
 from urllib.parse import unquote
 import zipfile
@@ -1147,3 +1150,317 @@ class FileWorkspace:
         if not text:
             raise WorkspaceDenied("В PDF нет извлекаемого текста; сканы требуют отдельного OCR")
         return text
+
+
+class FileWorkspaceGrant:
+    """An explicit, expiring grant for one user-selected file root."""
+
+    OPERATIONS = frozenset({"search", "read", "open", "ask", "write", "trash"})
+    MAX_TTL_SECONDS = 24 * 60 * 60
+
+    def __init__(
+        self,
+        alias: str,
+        workspace: FileWorkspace,
+        operations: set[str] | frozenset[str] | tuple[str, ...] | list[str],
+        *,
+        ttl_seconds: int | float = 60 * 60,
+    ):
+        if not isinstance(alias, str) or not alias.strip():
+            raise WorkspaceDenied("Для разрешённой папки нужно короткое имя")
+        if not isinstance(workspace, FileWorkspace):
+            raise WorkspaceDenied("Нужно разрешение на конкретную выбранную папку")
+        if not isinstance(operations, (set, frozenset, tuple, list)):
+            raise WorkspaceDenied("Операции разрешения должны быть перечислены явно")
+        try:
+            clean_operations = frozenset(operations)
+        except TypeError:
+            raise WorkspaceDenied("Операции разрешения должны быть простыми именами") from None
+        if (
+            not clean_operations
+            or any(not isinstance(operation, str) for operation in clean_operations)
+            or not clean_operations.issubset(self.OPERATIONS)
+        ):
+            raise WorkspaceDenied(
+                "Разрешены только поиск, чтение, открытие и вопросы по файлам; "
+                "запись и Корзина требуют отдельного разрешения"
+            )
+        if (
+            isinstance(ttl_seconds, bool)
+            or not isinstance(ttl_seconds, (int, float))
+            or not 1 <= ttl_seconds <= self.MAX_TTL_SECONDS
+            or not math.isfinite(ttl_seconds)
+        ):
+            raise WorkspaceDenied("Срок разрешения должен быть от 1 секунды до 24 часов")
+
+        # Recheck the selected root at grant creation. Every later operation
+        # still revalidates its target through FileWorkspace.
+        workspace.checked(".")
+        self._alias = alias.strip()
+        self._workspace = workspace
+        self._operations = clean_operations
+        self._expires_at = time.monotonic() + float(ttl_seconds)
+        self._revoked = False
+        self._lock = threading.RLock()
+
+    @property
+    def alias(self) -> str:
+        return self._alias
+
+    @property
+    def workspace(self) -> FileWorkspace:
+        return self._workspace
+
+    @property
+    def operations(self) -> frozenset[str]:
+        return self._operations
+
+    @classmethod
+    def from_selection(
+        cls,
+        alias: str,
+        root: Path,
+        operations: set[str] | frozenset[str] | tuple[str, ...] | list[str],
+        *,
+        ttl_seconds: int | float = 60 * 60,
+    ) -> "FileWorkspaceGrant":
+        """Create a grant after the UI has obtained an explicit folder selection."""
+        return cls(alias, FileWorkspace(root), operations, ttl_seconds=ttl_seconds)
+
+    def require_active(self) -> None:
+        with self._lock:
+            if self._revoked:
+                raise WorkspaceDenied(f"Разрешение папки «{self.alias}» отозвано")
+            if time.monotonic() >= self._expires_at:
+                raise WorkspaceDenied(f"Срок разрешения папки «{self.alias}» истёк")
+
+    def require(self, operation: str) -> None:
+        with self._lock:
+            if self._revoked:
+                raise WorkspaceDenied(f"Разрешение папки «{self.alias}» отозвано")
+            if time.monotonic() >= self._expires_at:
+                raise WorkspaceDenied(f"Срок разрешения папки «{self.alias}» истёк")
+            if operation not in self.operations:
+                raise WorkspaceDenied(
+                    f"Операция «{operation}» запрещена для папки «{self.alias}»"
+                )
+
+    def revoke(self) -> None:
+        with self._lock:
+            self._revoked = True
+
+
+class FileWorkspaceGroup:
+    """Read-only view over several separately selected FileWorkspace roots.
+
+    Returned paths are virtual and start with a user-visible alias, for example
+    ``Documents/reports/plan.pdf``. Every operation is routed back through the
+    selected root's normal path, reparse-point, and file-type checks.
+    """
+
+    MAX_ROOTS = 16
+    MAX_RESULTS = FileWorkspace.MAX_RESULTS
+
+    def __init__(
+        self,
+        roots: list[FileWorkspaceGrant] | tuple[FileWorkspaceGrant, ...],
+    ):
+        if not isinstance(roots, (tuple, list)) or not 1 <= len(roots) <= self.MAX_ROOTS:
+            raise WorkspaceDenied(f"Выбери от 1 до {self.MAX_ROOTS} разрешённых папок")
+        self._roots: dict[str, FileWorkspaceGrant] = {}
+        aliases: set[str] = set()
+        root_paths: set[str] = set()
+        for grant in roots:
+            if (
+                not isinstance(grant, FileWorkspaceGrant)
+                or not 1 <= len(grant.alias) <= 64
+                or grant.alias in {".", ".."}
+                or any(
+                    not char.isprintable()
+                    or char in "/\\:"
+                    or unicodedata.category(char) in {"Cf", "Cs"}
+                    or unicodedata.bidirectional(char) in {"LRE", "RLE", "PDF", "LRO", "RLO", "LRI", "RLI", "FSI", "PDI"}
+                    for char in grant.alias
+                )
+            ):
+                raise WorkspaceDenied("Неверное имя или разрешение папки")
+            grant.require_active()
+            alias = grant.alias
+            normalized = alias.casefold()
+            if normalized in aliases:
+                raise WorkspaceDenied("Имена разрешённых папок должны различаться")
+            aliases.add(normalized)
+            # Revalidate each root when the group is assembled. Subsequent I/O
+            # still goes through FileWorkspace.checked immediately before use.
+            workspace = grant.workspace
+            workspace.checked(".")
+            root_identity = os.path.normcase(str(workspace.root))
+            if root_identity in root_paths:
+                raise WorkspaceDenied("Одна папка не может быть добавлена под разными именами")
+            root_paths.add(root_identity)
+            self._roots[alias] = grant
+
+    @property
+    def root_aliases(self) -> tuple[str, ...]:
+        return tuple(self._roots)
+
+    def revoke(self, alias: str | None = None) -> None:
+        """Revoke one selected root or every root in this in-memory grant set."""
+        if alias is None:
+            grants = tuple(self._roots.values())
+        elif isinstance(alias, str) and alias in self._roots:
+            grants = (self._roots[alias],)
+        else:
+            raise WorkspaceDenied("Неизвестное разрешение папки")
+        for grant in grants:
+            grant.revoke()
+
+    def _route(self, relative: str) -> tuple[str, FileWorkspaceGrant, str]:
+        """Resolve a virtual path without exposing the root through public API."""
+        if not isinstance(relative, str) or not relative or len(relative) > 4096:
+            raise WorkspaceDenied("Нужен путь внутри разрешённой папки")
+        normalized = relative.replace("\\", "/")
+        alias, separator, inner = normalized.partition("/")
+        if not separator or not inner or alias not in self._roots:
+            raise WorkspaceDenied("Укажи папку из активного разрешения и путь внутри неё")
+        if inner.startswith("/"):
+            raise WorkspaceDenied("Нужен относительный путь внутри разрешённой папки")
+        grant = self._roots[alias]
+        grant.require_active()
+        return alias, grant, inner
+
+    def _route_for_operation(
+        self,
+        relative: str,
+        operation: str,
+    ) -> tuple[str, FileWorkspaceGrant, str]:
+        alias, grant, inner = self._route(relative)
+        grant = self._roots[alias]
+        grant.require(operation)
+        return alias, grant, inner
+
+    def checked(self, relative: str) -> Path:
+        _alias, grant, inner = self._route_for_operation(relative, "read")
+        return grant.workspace.checked(inner)
+
+    def checked_openable_file(self, relative: str) -> Path:
+        _alias, grant, inner = self._route_for_operation(relative, "open")
+        return grant.workspace.checked_openable_file(inner)
+
+    def checked_readable_file(self, relative: str) -> Path:
+        _alias, grant, inner = self._route_for_operation(relative, "read")
+        return grant.workspace.checked_readable_file(inner)
+
+    def read_text(
+        self,
+        relative: str,
+        *,
+        operation: str = "read",
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> str:
+        if operation not in {"read", "ask"}:
+            raise WorkspaceDenied("Чтение файла допускается только для разрешённых сценариев")
+        _alias, grant, inner = self._route_for_operation(relative, operation)
+
+        def cancelled_or_revoked() -> bool:
+            if is_cancelled is not None and is_cancelled():
+                return True
+            try:
+                grant.require(operation)
+            except WorkspaceDenied:
+                return True
+            return False
+
+        text = grant.workspace.read_text(
+            inner,
+            is_cancelled=cancelled_or_revoked,
+            deadline=deadline,
+        )
+        grant.require(operation)
+        return text
+
+    def preview_image(self, relative: str) -> ImagePreview:
+        _alias, grant, inner = self._route_for_operation(relative, "read")
+        return grant.workspace.preview_image(inner)
+
+    @staticmethod
+    def _virtual_path(alias: str, relative: str) -> str:
+        return alias + "/" + relative.replace("\\", "/")
+
+    def search(
+        self,
+        query: str = "",
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> list[FileEntry]:
+        results: list[FileEntry] = []
+        for alias, grant in self._roots.items():
+            grant.require("search")
+            if is_cancelled is not None and is_cancelled():
+                raise WorkspaceDenied("Поиск отменён пользователем")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise WorkspaceDenied("Истёк лимит времени поиска")
+            matches = grant.workspace.search(
+                query,
+                is_cancelled=lambda: (
+                    (is_cancelled is not None and is_cancelled())
+                    or self._grant_cancelled(grant, "search")
+                ),
+                deadline=deadline,
+            )
+            for entry in matches:
+                results.append(FileEntry(self._virtual_path(alias, entry.path), entry.size))
+                if len(results) >= self.MAX_RESULTS:
+                    grant.require("search")
+                    return results
+        for grant in self._roots.values():
+            grant.require("search")
+        return results
+
+    def find_exact_name(
+        self,
+        filename: str,
+        *,
+        operation: str = "search",
+        is_cancelled: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+    ) -> list[FileEntry]:
+        if operation not in {"search", "open", "read"}:
+            raise WorkspaceDenied("Недопустимая операция точного поиска")
+        matches: list[FileEntry] = []
+        for alias, grant in self._roots.items():
+            grant.require(operation)
+            if is_cancelled is not None and is_cancelled():
+                raise WorkspaceDenied("Поиск отменён пользователем")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise WorkspaceDenied("Истёк лимит времени поиска")
+            for entry in grant.workspace.find_exact_name(
+                filename,
+                is_cancelled=lambda: (
+                    (is_cancelled is not None and is_cancelled())
+                    or self._grant_cancelled(grant, operation)
+                ),
+                deadline=deadline,
+            ):
+                matches.append(FileEntry(self._virtual_path(alias, entry.path), entry.size))
+                if len(matches) >= 2:
+                    for checked_grant in self._roots.values():
+                        checked_grant.require(operation)
+                    return matches
+        for grant in self._roots.values():
+            grant.require(operation)
+        return matches
+
+    @staticmethod
+    def _grant_cancelled(grant: FileWorkspaceGrant, operation: str) -> bool:
+        try:
+            grant.require(operation)
+        except WorkspaceDenied:
+            return True
+        return False
+
+    def authorize_question(self, relative: str) -> None:
+        """Check the separate root-level permission before local document Q&A."""
+        self._route_for_operation(relative, "ask")

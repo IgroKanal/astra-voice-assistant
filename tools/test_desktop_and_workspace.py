@@ -9,16 +9,18 @@ import time
 import unittest
 import zipfile
 from unittest.mock import Mock, patch
-from io import BytesIO
+from io import BytesIO, StringIO
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.desktop_bridge import DesktopBridge
-from src.file_workspace import FileWorkspace, WorkspaceDenied
-from src.runtime_events import parse_event
+from src.file_workspace import FileWorkspace, FileWorkspaceGrant, FileWorkspaceGroup, WorkspaceDenied
+from src.runtime_events import emit_event, parse_event, parse_event_record
 
 
 class WorkspaceTests(unittest.TestCase):
+    DEFAULT_ROOT_OPERATIONS = {"search", "read", "open", "ask"}
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="astra-workspace-test-", dir=ROOT)
         self.root = Path(self.temp.name)
@@ -29,9 +31,132 @@ class WorkspaceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def _grant(self, alias, root, operations=None, *, ttl_seconds=3600):
+        return FileWorkspaceGrant.from_selection(
+            alias,
+            root,
+            self.DEFAULT_ROOT_OPERATIONS if operations is None else operations,
+            ttl_seconds=ttl_seconds,
+        )
+
     def test_read_and_search(self):
         self.assertEqual(self.workspace.read_text("notes.txt"), "Привет, Астра")
         self.assertEqual([item.path for item in self.workspace.search()], ["notes.txt"])
+
+    def test_explicit_workspace_group_searches_and_reads_each_selected_root(self):
+        documents = self.root / "Documents"
+        projects = self.root / "Projects"
+        documents.mkdir()
+        projects.mkdir()
+        (documents / "budget.txt").write_text("Личный бюджет", encoding="utf-8")
+        (projects / "budget.txt").write_text("Бюджет проекта", encoding="utf-8")
+        (projects / "roadmap.md").write_text("План проекта", encoding="utf-8")
+        group = FileWorkspaceGroup((
+            self._grant("Documents", documents),
+            self._grant("Projects", projects),
+        ))
+
+        results = group.search("budget")
+        self.assertEqual(
+            [entry.path for entry in results],
+            ["Documents/budget.txt", "Projects/budget.txt"],
+        )
+        self.assertEqual(group.find_exact_name("roadmap.md")[0].path, "Projects/roadmap.md")
+        self.assertEqual(group.read_text("Documents/budget.txt"), "Личный бюджет")
+        self.assertEqual(group.read_text("Projects/roadmap.md"), "План проекта")
+        self.assertEqual(group.checked_readable_file("Projects/roadmap.md"), projects / "roadmap.md")
+        self.assertEqual(group.root_aliases, ("Documents", "Projects"))
+
+    def test_workspace_group_returns_qualified_duplicate_names_for_disambiguation(self):
+        documents = self.root / "Documents"
+        projects = self.root / "Projects"
+        documents.mkdir()
+        projects.mkdir()
+        (documents / "shared.txt").write_text("Первый документ", encoding="utf-8")
+        (projects / "shared.txt").write_text("Второй документ", encoding="utf-8")
+        group = FileWorkspaceGroup((
+            self._grant("Documents", documents),
+            self._grant("Projects", projects),
+        ))
+
+        matches = group.find_exact_name("shared.txt")
+        self.assertEqual([item.path for item in matches], ["Documents/shared.txt", "Projects/shared.txt"])
+        self.assertEqual(group.read_text(matches[1].path), "Второй документ")
+
+    def test_workspace_group_keeps_path_checks_within_the_selected_root(self):
+        documents = self.root / "Documents"
+        projects = self.root / "Projects"
+        documents.mkdir()
+        projects.mkdir()
+        outside = self.root / "outside.txt"
+        outside.write_text("outside", encoding="utf-8")
+        group = FileWorkspaceGroup((
+            self._grant("Documents", documents),
+            self._grant("Projects", projects),
+        ))
+
+        for path in ("Unknown/outside.txt", "Documents/../outside.txt", "Documents", "Projects/"):
+            with self.subTest(path=path), self.assertRaises(WorkspaceDenied):
+                group.checked(path)
+
+    def test_workspace_group_rejects_duplicate_aliases_and_roots(self):
+        documents = self.root / "Documents"
+        documents.mkdir()
+        workspace = FileWorkspace(documents)
+        with self.assertRaisesRegex(WorkspaceDenied, "различаться"):
+            FileWorkspaceGroup((
+                FileWorkspaceGrant("Documents", workspace, self.DEFAULT_ROOT_OPERATIONS),
+                FileWorkspaceGrant("documents", FileWorkspace(self.root / "Documents"), self.DEFAULT_ROOT_OPERATIONS),
+            ))
+        with self.assertRaisesRegex(WorkspaceDenied, "разными именами"):
+            FileWorkspaceGroup((
+                FileWorkspaceGrant("Documents", workspace, self.DEFAULT_ROOT_OPERATIONS),
+                FileWorkspaceGrant("Backup", workspace, self.DEFAULT_ROOT_OPERATIONS),
+            ))
+
+    def test_workspace_group_enforces_per_root_operations_and_question_consent(self):
+        readable = self.root / "Readable"
+        question_only = self.root / "QuestionOnly"
+        readable.mkdir()
+        question_only.mkdir()
+        (readable / "note.txt").write_text("текст", encoding="utf-8")
+        (question_only / "note.txt").write_text("секретный фрагмент", encoding="utf-8")
+        group = FileWorkspaceGroup((
+            self._grant("Readable", readable, {"read", "search"}),
+            self._grant("QuestionOnly", question_only, {"ask"}),
+        ))
+
+        self.assertEqual(group.read_text("Readable/note.txt"), "текст")
+        with self.assertRaisesRegex(WorkspaceDenied, "запрещена"):
+            group.read_text("QuestionOnly/note.txt")
+        with self.assertRaisesRegex(WorkspaceDenied, "запрещена"):
+            group.search("note")
+        group.authorize_question("QuestionOnly/note.txt")
+        with self.assertRaisesRegex(WorkspaceDenied, "разрешённых сценариев"):
+            group.read_text("QuestionOnly/note.txt", operation="open")
+
+    def test_workspace_group_grants_expire_and_can_be_revoked_immediately(self):
+        folder = self.root / "Temporary"
+        folder.mkdir()
+        (folder / "note.txt").write_text("текст", encoding="utf-8")
+        grant = self._grant("Temporary", folder, {"read"})
+        group = FileWorkspaceGroup((grant,))
+
+        self.assertEqual(group.read_text("Temporary/note.txt"), "текст")
+        group.revoke("Temporary")
+        with self.assertRaisesRegex(WorkspaceDenied, "отозвано"):
+            group.read_text("Temporary/note.txt")
+
+        expired = self._grant("Expired", folder, {"read"})
+        expired._expires_at = time.monotonic() - 1
+        with self.assertRaisesRegex(WorkspaceDenied, "истёк"):
+            FileWorkspaceGroup((expired,))
+
+    def test_workspace_grant_rejects_unknown_operations_and_unbounded_lifetime(self):
+        with self.assertRaisesRegex(WorkspaceDenied, "только поиск"):
+            self._grant("Documents", self.root, {"read", "shell"})
+        with self.assertRaisesRegex(WorkspaceDenied, "24 часов"):
+            self._grant("Documents", self.root, {"read"}, ttl_seconds=86_401)
 
     def test_readable_text_formats_support_utf8_utf16_bom_and_cp1251(self):
         (self.root / "report.csv").write_text("month,amount\nМай,1200", encoding="utf-8")
@@ -541,6 +666,54 @@ class WorkspaceTests(unittest.TestCase):
 
 
 class DesktopIntegrationTests(unittest.TestCase):
+    def test_web_source_metadata_is_structured_and_keeps_legacy_text_events(self):
+        import json
+        from src.runtime_events import PREFIX
+
+        message = "Источники: [1] Документация — https://docs.example/page"
+        data = {
+            "kind": "web_sources",
+            "sources": [{"index": 1, "title": "Документация", "url": "https://docs.example/page"}],
+        }
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1"}):
+            with patch("builtins.print") as output:
+                self.assertTrue(emit_event("assistant", message, data=data))
+        line = output.call_args.args[0]
+        self.assertEqual(parse_event(line), ("assistant", message))
+        record = parse_event_record(line)
+        self.assertIsNotNone(record)
+        self.assertEqual(record.data, data)
+
+        invalid = PREFIX + json.dumps({
+            "version": 1,
+            "type": "assistant",
+            "text": message,
+            "data": {"kind": "web_sources", "sources": [
+                {"index": 1, "title": "Документация", "url": "http://docs.example/page"},
+            ]},
+        }, ensure_ascii=False)
+        self.assertIsNone(parse_event_record(invalid))
+        self.assertIsNone(parse_event(invalid))
+
+    def test_structured_event_rejects_unknown_payloads_and_private_url_forms(self):
+        for data in (
+            {"kind": "other", "sources": []},
+            {"kind": "web_sources", "sources": [
+                {"index": 1, "title": "Local", "url": "https://user:pass@example.com/"},
+            ]},
+            {"kind": "web_sources", "sources": [
+                {"index": 2, "title": "Wrong index", "url": "https://example.com/"},
+            ]},
+            {"kind": "web_sources", "sources": [
+                {"index": 1, "title": "Loopback", "url": "https://127.0.0.1/"},
+            ]},
+            {"kind": "web_sources", "sources": [
+                {"index": 1, "title": "Local host", "url": "https://localhost/"},
+            ]},
+        ):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                emit_event("assistant", "Источники", data=data)
+
     def test_real_runtime_roundtrip_and_stop(self):
         bridge = DesktopBridge(ROOT)
         try:
@@ -570,6 +743,28 @@ class DesktopIntegrationTests(unittest.TestCase):
         self.assertEqual(parse_event('Ты: @ASTRA_EVENT {"version":1,"type":"assistant","text":"Привет"}'), ("assistant", "Привет"))
         for line in ('@ASTRA_EVENT []', '@ASTRA_EVENT {"version":2,"type":"assistant","text":"x"}', '@ASTRA_EVENT nope', '@ASTRA_EVENT {"version":1,"type":"shell","text":"x"}'):
             self.assertIsNone(parse_event(line))
+
+    def test_desktop_bridge_keeps_typed_data_for_new_shells_and_legacy_text_for_existing_ui(self):
+        message = "Источники: [1] Документация — https://docs.example/page"
+        data = {
+            "kind": "web_sources",
+            "sources": [{"index": 1, "title": "Документация", "url": "https://docs.example/page"}],
+        }
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1"}):
+            with patch("builtins.print") as output:
+                emit_event("assistant", message, data=data)
+        process = Mock()
+        process.stdout = StringIO(output.call_args.args[0] + "\n")
+        process.wait.return_value = 0
+        bridge = DesktopBridge(ROOT)
+        bridge._read(process)
+
+        self.assertEqual(bridge.events.get_nowait(), ("assistant", message))
+        event = bridge.typed_events.get_nowait()
+        self.assertEqual(event.kind, "assistant")
+        self.assertEqual(event.text, message)
+        self.assertEqual(event.data, data)
+        self.assertEqual(bridge.events.get_nowait(), ("exit", "0"))
 
 
 if __name__ == "__main__":

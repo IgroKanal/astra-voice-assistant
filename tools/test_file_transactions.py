@@ -130,6 +130,17 @@ class FileTransactionTests(unittest.TestCase):
         with self.assertRaises(WorkspaceDenied):
             self.files.execute(preview.token)
 
+    def test_preview_inspection_revalidates_sources_and_destinations_without_mutating(self):
+        self.files.grant_write(True)
+        source = self.root / "source.txt"
+        source.write_text("before", encoding="utf-8")
+        preview = self.files.preview("copy", source="source.txt", destination="copy.txt")
+        source.write_text("changed", encoding="utf-8")
+        with self.assertRaises(WorkspaceDenied):
+            self.files.inspect_preview(preview.token)
+        self.assertTrue(source.exists())
+        self.assertFalse((self.root / "copy.txt").exists())
+
     def test_another_process_cannot_overwrite_a_concurrently_created_destination(self):
         import os
         import subprocess

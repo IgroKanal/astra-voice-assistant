@@ -15,7 +15,7 @@ from openai import OpenAIError
 
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
-from src.ollama_client import OllamaClient, OllamaRequestCancelled
+from src.ollama_client import OllamaClient, OllamaRequestCancelled, OllamaResponseTruncated
 from src.llm_providers import create_provider
 
 
@@ -200,7 +200,7 @@ class AIClient:
                 self._dialogue.extend([{"role": "user", "content": question}, {"role": "assistant", "content": clean_answer}])
                 self._dialogue = self._dialogue[-8:]
                 self.logger.info(
-                    "LLM timing: provider=ollama task=answer result=ok thinking=%s elapsed=%.3fs",
+                    "LLM timing: provider=ollama task=answer result=ok thinking_requested=%s elapsed=%.3fs",
                     self.settings.ollama_thinking_enabled,
                     time.perf_counter() - started,
                 )
@@ -211,6 +211,22 @@ class AIClient:
                     time.perf_counter() - started,
                 )
                 return LLMResult(False, "Запрос отменён.")
+            except OllamaResponseTruncated as exc:
+                self.logger.info(
+                    "Local model response reached its token limit; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                if exc.thinking_channel_required:
+                    return LLMResult(
+                        False,
+                        "Локальная модель не завершила ответ: её рассуждения не удалось отключить. "
+                        "Выбери более быструю модель без обязательных рассуждений.",
+                    )
+                return LLMResult(
+                    False,
+                    "Локальная модель не завершила ответ в пределах лимита. "
+                    "Попробуй более короткий запрос.",
+                )
             except Exception:
                 self.logger.warning(
                     "Local model request failed; no cloud fallback; elapsed=%.3fs",
@@ -240,19 +256,51 @@ class AIClient:
         for model in self._models_to_try():
             started = time.perf_counter()
             result_kind = "error"
+            stream_timing: dict[str, float | None] = {}
+            streamed_to_observer = False
+
+            def forward_streamed_chunk(chunk: str) -> None:
+                nonlocal streamed_to_observer
+                # Once output reaches a caller, a retry with another model
+                # would splice together two unrelated partial answers.
+                if chunk:
+                    streamed_to_observer = True
+                if on_text_chunk is not None:
+                    on_text_chunk(chunk)
+
+            def capture_stream_timing(values: dict[str, float | None]) -> None:
+                if not isinstance(values, dict):
+                    return
+                first_token = values.get("first_token_seconds")
+                elapsed = values.get("elapsed_seconds")
+                stream_timing["first_token_seconds"] = (
+                    float(first_token)
+                    if type(first_token) in (int, float) and first_token >= 0
+                    else None
+                )
+                stream_timing["elapsed_seconds"] = (
+                    float(elapsed)
+                    if type(elapsed) in (int, float) and elapsed >= 0
+                    else None
+                )
+
             try:
                 self.logger.info(
                     "LLM-запрос: provider=%s model=%s",
                     self.settings.llm_provider,
                     model,
                 )
-                message = self.provider.answer(
+                answer_options = dict(
                     model=model,
                     system=system_prompt,
                     question=question,
                     max_tokens=self.settings.llm_max_tokens,
                     temperature=self.settings.llm_temperature,
                 )
+                if on_text_chunk is not None:
+                    answer_options["on_chunk"] = forward_streamed_chunk
+                    answer_options["timing_callback"] = capture_stream_timing
+                message = self.provider.answer(**answer_options)
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
                     result_kind = "ok"
@@ -262,34 +310,41 @@ class AIClient:
                 result_kind = "empty"
                 last_error_message = "Модель вернула пустой ответ."
             except APITimeoutError:
-                self.logger.warning("LLM timeout для модели %s", model, exc_info=True)
+                self.logger.warning("LLM timeout для модели %s", model)
                 last_error_message = "Не удалось получить ответ: превышено время ожидания."
             except APIConnectionError:
-                self.logger.warning("LLM connection error для модели %s", model, exc_info=True)
+                self.logger.warning("LLM connection error для модели %s", model)
                 last_error_message = "Не удалось подключиться к LLM. Проверь интернет."
             except APIStatusError as exc:
                 self.logger.warning(
                     "LLM ошибка модели %s: status=%s",
                     model,
                     exc.status_code,
-                    exc_info=True,
                 )
                 last_error_message = f"LLM вернула ошибку API: {exc.status_code}."
-            except OpenAIError:
+            except OpenAIError as exc:
                 self.logger.warning(
-                    "LLM OpenAI-compatible error для модели %s",
+                    "LLM OpenAI-compatible error для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 last_error_message = "Не удалось получить ответ от LLM."
-            except Exception:
+            except Exception as exc:
                 self.logger.warning(
-                    "Unexpected LLM error для модели %s",
+                    "Unexpected LLM error для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 last_error_message = "Произошла непредвиденная ошибка LLM."
             finally:
+                first_token = stream_timing.get("first_token_seconds")
+                if first_token is not None:
+                    self.logger.info(
+                        "LLM first-token timing: provider=%s task=answer model=%s elapsed=%.3fs",
+                        self.settings.llm_provider,
+                        model,
+                        first_token,
+                    )
                 self.logger.info(
                     "LLM timing: provider=%s task=answer model=%s result=%s elapsed=%.3fs",
                     self.settings.llm_provider,
@@ -297,6 +352,10 @@ class AIClient:
                     result_kind,
                     time.perf_counter() - started,
                 )
+
+            if streamed_to_observer:
+                self.logger.info("LLM fallback skipped after partial response was delivered")
+                break
 
         return LLMResult(False, last_error_message)
 
@@ -413,11 +472,11 @@ class AIClient:
                 if result.ok:
                     return result
                 last_raw_message = result.raw_message
-            except Exception:
+            except Exception as exc:
                 self.logger.warning(
-                    "Ошибка LLM-router для модели %s",
+                    "Ошибка LLM-router для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
         return RouteResult(
@@ -455,11 +514,11 @@ class AIClient:
             data = self._parse_json_object(raw_message)
             action = self._action_from_router_json(data, user_text)
             return RouteResult(ok=True, action=action, raw_message=raw_message)
-        except Exception:
+        except Exception as exc:
             self.logger.warning(
-                "Ошибка LLM-router без response_format для модели %s",
+                "Ошибка LLM-router без response_format для модели %s: type=%s",
                 model,
-                exc_info=True,
+                type(exc).__name__,
             )
             return RouteResult(
                 ok=False,

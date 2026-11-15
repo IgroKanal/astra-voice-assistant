@@ -151,18 +151,99 @@ class OpenAICompatibleProvider:
         history: list[dict[str, str]] | None = None,
         memory_context: str = "",
         think: bool | None = None,
+        timing_callback: Callable[[dict[str, float | None]], None] | None = None,
+        on_chunk: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> str:
         # Deliberately do not include local history or memory in this request.
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[
+        if on_chunk is not None and not callable(on_chunk):
+            raise ValueError("Некорректный обработчик потокового ответа")
+        if timing_callback is not None and not callable(timing_callback):
+            raise ValueError("Некорректный обработчик замеров ответа")
+        if cancelled is not None and not callable(cancelled):
+            raise ValueError("Некорректный обработчик отмены запроса")
+
+        def is_cancelled() -> bool:
+            if cancelled is None:
+                return False
+            try:
+                return bool(cancelled())
+            except Exception:
+                return True
+
+        if is_cancelled():
+            raise RuntimeError("Запрос отменён")
+
+        streaming = on_chunk is not None or timing_callback is not None or cancelled is not None
+        arguments = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": question},
             ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return _message_content(response)
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if streaming:
+            arguments["stream"] = True
+
+        import time
+        started = time.perf_counter()
+        first_token_seconds = None
+        stream = None
+        try:
+            response = self.client.chat.completions.create(**arguments)
+            if not streaming:
+                return _message_content(response)
+
+            stream = response
+            content: list[str] = []
+            iterator = iter(response)
+            truncated = False
+            while True:
+                if is_cancelled():
+                    raise RuntimeError("Запрос отменён")
+                try:
+                    event = next(iterator)
+                except StopIteration:
+                    break
+                choices = getattr(event, "choices", None) or []
+                if not choices:
+                    continue
+                if getattr(choices[0], "finish_reason", None) == "length":
+                    truncated = True
+                delta = getattr(choices[0], "delta", None)
+                part = getattr(delta, "content", "")
+                if not isinstance(part, str) or not part:
+                    continue
+                content.append(part)
+                if first_token_seconds is None:
+                    first_token_seconds = time.perf_counter() - started
+                if on_chunk is not None:
+                    try:
+                        on_chunk(part)
+                    except Exception:
+                        # A playback/UI observer must not abort a valid model response.
+                        pass
+            if truncated:
+                raise ValueError("Облачная модель исчерпала лимит ответа")
+            return "".join(content)
+        finally:
+            if stream is not None and streaming:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            if timing_callback is not None:
+                try:
+                    timing_callback({
+                        "first_token_seconds": first_token_seconds,
+                        "elapsed_seconds": time.perf_counter() - started,
+                    })
+                except Exception:
+                    pass
 
     def classify(
         self,

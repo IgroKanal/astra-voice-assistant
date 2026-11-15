@@ -17,6 +17,7 @@ class CommandType(str, Enum):
     OPEN_URL = "open_url"
     OPEN_FOLDER = "open_folder"
     WEB_SEARCH = "web_search"
+    WEB_ANSWER = "web_answer"
     GET_TIME = "get_time"
     GET_DATE = "get_date"
     KEYBOARD_SHORTCUT = "keyboard_shortcut"
@@ -77,6 +78,7 @@ FILE_OPEN_HELP_TARGET = "__file_open_help__"
 FILE_READ_HELP_TARGET = "__file_read_help__"
 FILE_READ_NEXT_TARGET = "__file_read_next__"
 FILE_QUESTION_HELP_TARGET = "__file_question_help__"
+WEB_ANSWER_HELP_TARGET = "__web_answer_help__"
 BACKGROUND_TASK_HELP_TARGET = "__background_task_help__"
 LIST_REMINDER_PHRASES = frozenset({
     "покажи напоминания",
@@ -171,6 +173,14 @@ SEARCH_PREFIXES = (
     "загуглить",
     "найди в интернете",
     "поиск",
+)
+
+WEB_ANSWER_PREFIXES = (
+    "найди ответ в интернете",
+    "найди в интернете ответ",
+    "проверь факт в интернете",
+    "проверь в интернете",
+    "узнай в интернете",
 )
 
 TYPE_TEXT_PREFIXES = (
@@ -2038,6 +2048,15 @@ def parse_command_text(text: str) -> ParsedCommand:
     youtube_search = _parse_youtube_search(text, normalized)
     if youtube_search is not None:
         return youtube_search
+
+    for prefix in WEB_ANSWER_PREFIXES:
+        if normalized == prefix:
+            return ParsedCommand(CommandType.WEB_ANSWER, text=normalized, target=WEB_ANSWER_HELP_TARGET)
+        if normalized.startswith(prefix + " "):
+            query = _raw_target_after_prefix(text, prefix) or normalized.removeprefix(prefix).strip()
+            if query:
+                return ParsedCommand(CommandType.WEB_ANSWER, text=normalized, target=query)
+            return ParsedCommand(CommandType.WEB_ANSWER, text=normalized, target=WEB_ANSWER_HELP_TARGET)
 
     for prefix in SEARCH_PREFIXES:
         if normalized == prefix:

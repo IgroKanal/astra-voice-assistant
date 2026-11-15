@@ -1,6 +1,8 @@
 """Loopback-only Ollama chat. No model pulls and no cloud fallback."""
 import asyncio
 import json
+import logging
+import re
 import threading
 import time
 from urllib.error import HTTPError
@@ -15,6 +17,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 class OllamaRequestCancelled(RuntimeError):
     """A caller cancelled a local streamed Ollama response."""
+
+
+class OllamaResponseTruncated(ValueError):
+    """The model reached its response budget before producing a complete answer."""
+
+    def __init__(self, *, thinking_channel_required=False):
+        super().__init__("Локальная модель исчерпала лимит ответа")
+        self.thinking_channel_required = thinking_channel_required
 
 
 class OllamaClient:
@@ -285,6 +295,36 @@ class OllamaClient:
             )
             return metadata
 
+    @staticmethod
+    def _requires_thinking_channel(metadata):
+        """Recognize Qwen3 templates that always open a thinking block.
+
+        Some installed Qwen3 revisions unconditionally end the assistant
+        prompt with ``<think>`` even for ``think: false``. With that flag,
+        affected Ollama versions can expose the resulting reasoning as normal
+        content. Asking Ollama to separate its thinking channel avoids sending
+        those tokens to speech; it does not make the model faster.
+        """
+        if not isinstance(metadata, dict):
+            return False
+        details = metadata.get("details")
+        capabilities = metadata.get("capabilities")
+        template = metadata.get("template")
+        if (
+            not isinstance(details, dict)
+            or str(details.get("family", "")).casefold() != "qwen3"
+            or not isinstance(capabilities, list)
+            or "thinking" not in capabilities
+            or not isinstance(template, str)
+            or len(template) > 200_000
+        ):
+            return False
+        return bool(re.search(
+            r"<\|im_start\|>assistant\s*<think>\s*"
+            r"(?:\{\{\s*-?\s*end\s*-?\s*\}\}\s*)+$",
+            template,
+        ))
+
     def warmup(self, model):
         """Load an already-installed model with a bounded local-only request."""
         if not isinstance(model, str) or model not in self.models():
@@ -366,6 +406,13 @@ class OllamaClient:
         # By default preserve each model's existing behavior. Fast request paths
         # may explicitly disable hidden reasoning and get the final answer sooner.
         thinking = ("thinking" in metadata.get("capabilities", [])) if think is None else think
+        thinking_channel_required = think is False and self._requires_thinking_channel(metadata)
+        if thinking_channel_required:
+            thinking = True
+            logging.getLogger(__name__).warning(
+                "Installed Qwen3 template requires a separate thinking channel; "
+                "fast no-thinking mode is unavailable"
+            )
         stream = cancelled is not None or timing_callback is not None or on_chunk is not None
         payload = {"model": model, "messages": [{"role": "system", "content": system}] + reference + prior + [{"role": "user", "content": question}], "stream": stream, "think": thinking, "options": {"temperature": temperature, "num_predict": max(1, min(500, max_tokens)), "num_ctx": 2048}, "keep_alive": "5m"}
         if stream:
@@ -394,7 +441,7 @@ class OllamaClient:
                     # Diagnostics must never turn a valid local answer into a failure.
                     pass
         if result.get("done_reason") == "length":
-            raise ValueError("Локальная модель исчерпала лимит ответа")
+            raise OllamaResponseTruncated(thinking_channel_required=thinking_channel_required)
         content = result.get("message", {}).get("content", "")
         if not isinstance(content, str) or not content.strip():
             raise ValueError("Локальная модель вернула пустой ответ")

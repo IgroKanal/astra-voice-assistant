@@ -32,6 +32,22 @@ class RouteResult:
     raw_message: str = ""
 
 
+def _cloud_api_error_message(status: int) -> str:
+    """Explain common provider errors without exposing the response payload."""
+    messages = {
+        401: "Провайдер не принял ключ ИИ. Проверь ключ в настройках.",
+        402: "Провайдер отклонил платёж. Проверь баланс и платёжные настройки.",
+        403: "Нет доступа к выбранной модели или провайдеру. Проверь права и настройки.",
+        404: "Модель или адрес провайдера не найдены. Проверь настройки подключения.",
+        429: "Провайдер ограничил запросы. Попробуй позже и проверь доступные лимиты.",
+        500: "У провайдера произошла ошибка. Попробуй ещё раз позже.",
+        502: "Провайдер временно недоступен. Попробуй ещё раз позже.",
+        503: "Провайдер временно недоступен. Попробуй ещё раз позже.",
+        504: "Провайдер не успел ответить. Попробуй ещё раз позже.",
+    }
+    return messages.get(status, f"Провайдер ИИ вернул ошибку API: {status}.")
+
+
 class AIClient:
     """LLM-клиент через OpenAI-compatible Chat Completions API."""
 
@@ -343,7 +359,7 @@ class AIClient:
                     model,
                     exc.status_code,
                 )
-                last_error_message = f"LLM вернула ошибку API: {exc.status_code}."
+                last_error_message = _cloud_api_error_message(exc.status_code)
             except OpenAIError as exc:
                 self.logger.warning(
                     "LLM OpenAI-compatible error для модели %s: type=%s",

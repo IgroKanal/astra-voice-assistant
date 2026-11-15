@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.build_paths import resolve_build_paths
+from src.runtime_events import parse_event_record
 
 
 def run(
@@ -109,7 +110,7 @@ def validate(installer: Path) -> None:
         if (
             launch.returncode != 0
             or "Сейчас" not in launch.stdout
-            or '"type": "conversation_reset"' not in launch.stdout
+            or not any(event and event.kind == "conversation_reset" for line in launch.stdout.splitlines() if (event := parse_event_record(line)))
             or "Начала новый диалог" not in launch.stdout
             or "Traceback" in launch.stderr
         ):

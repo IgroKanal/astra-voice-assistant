@@ -7,6 +7,11 @@ import tempfile
 import sqlite3
 from contextlib import closing
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from src.runtime_events import parse_event_record
+
 def main():
     root = Path(sys.argv[1]).resolve()
     runtime = root / "runtime" / "AstraRuntime" / "AstraRuntime.exe"
@@ -45,7 +50,7 @@ def main():
         print("PACKAGED_ACTION_AUDIT_PASS: frozen runtime persisted metadata in an isolated user profile")
     assert result.returncode == 0, result.stderr
     assert "Сейчас" in result.stdout, result.stdout + result.stderr
-    assert '"type": "conversation_reset"' in result.stdout, "Frozen runtime did not confirm the new-dialogue reset"
+    assert any(event and event.kind == "conversation_reset" for line in result.stdout.splitlines() if (event := parse_event_record(line))), "Frozen runtime did not confirm the new-dialogue reset"
     assert "Начала новый диалог" in result.stdout, "Frozen runtime did not acknowledge the new dialogue"
     assert "Traceback" not in result.stderr, result.stderr
     assert "@ASTRA_EVENT" in result.stdout, "Structured desktop protocol is missing"

@@ -326,6 +326,11 @@ class WorkspaceTests(unittest.TestCase):
             ensure_ascii=False,
         )
         self.assertEqual(parse_event(line), ("conversation_reset", ""))
+        compact = PREFIX + json.dumps(
+            {"version": 1, "type": "conversation_reset", "text": ""},
+            separators=(",", ":"),
+        )
+        self.assertEqual(parse_event(compact), ("conversation_reset", ""))
         unsupported = PREFIX + json.dumps(
             {"version": 1, "type": "clear_all_user_data", "text": ""},
         )

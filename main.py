@@ -1892,7 +1892,8 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.GET_DATE:
         now = datetime.now()
-        ctx.respond(f"Сегодня {now.day:02d}.{now.month:02d}.{now.year}.")
+        weekday = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")[now.weekday()]
+        ctx.respond(f"Сегодня {weekday}, {now.day:02d}.{now.month:02d}.{now.year}.")
         return True
 
     if action.type == ActionType.ASK_LLM:

@@ -2,8 +2,6 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import Mock, patch
-import httpx
-from openai import APIStatusError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,13 +18,23 @@ from src.ollama_client import OllamaClient
 
 class ProviderAdapterTests(unittest.TestCase):
     def test_cloud_errors_are_actionable_without_exposing_provider_payload(self):
+        class FakeStatusError(Exception):
+            def __init__(self, status):
+                super().__init__("secret provider payload")
+                self.status_code = status
+
+        class FakeTimeoutError(Exception):
+            pass
+
+        class FakeConnectionError(Exception):
+            pass
+
         settings = Settings(llm_provider="compatible", llm_api_key="test-key", llm_base_url="https://example.invalid/v1", llm_model="model", llm_fallback_model="")
         for status, expected in ((401, "ключ"), (402, "баланс"), (403, "доступ"), (404, "адрес"), (429, "лимиты"), (503, "недоступен"), (418, "418")):
             with self.subTest(status=status):
-                response = httpx.Response(status, request=httpx.Request("POST", "https://example.invalid/v1/chat/completions"))
                 remote = Mock()
-                remote.chat.completions.create.side_effect = APIStatusError("secret provider payload", response=response, body={"detail": "secret provider payload"})
-                with patch("src.ai_client.OpenAI", return_value=remote), self.assertLogs("src.ai_client", level="WARNING") as logs:
+                remote.chat.completions.create.side_effect = FakeStatusError(status)
+                with patch("src.ai_client.OpenAI", return_value=remote), patch("src.ai_client.APIStatusError", FakeStatusError), patch("src.ai_client.APITimeoutError", FakeTimeoutError), patch("src.ai_client.APIConnectionError", FakeConnectionError), self.assertLogs("src.ai_client", level="WARNING") as logs:
                     result = AIClient(settings).ask("Вопрос")
                 self.assertFalse(result.ok)
                 self.assertIn(expected, result.message.lower())

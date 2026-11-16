@@ -142,7 +142,7 @@ class BackgroundTaskTests(unittest.TestCase):
         finally:
             manager.shutdown()
 
-    def test_ai_client_forwards_cancellation_only_to_local_ollama(self):
+    def test_local_background_request_forwards_cancellation_to_ollama(self):
         with patch("src.ai_client.OpenAI", side_effect=AssertionError("cloud fallback forbidden")), patch(
             "src.ai_client.OllamaClient.chat",
             side_effect=OllamaRequestCancelled("cancelled"),

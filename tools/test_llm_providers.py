@@ -11,6 +11,7 @@ from src.llm_providers import (
     DisabledProvider,
     OllamaProvider,
     OpenAICompatibleProvider,
+    ProviderRequestCancelled,
     create_provider,
 )
 from src.ollama_client import OllamaClient
@@ -298,7 +299,7 @@ class ProviderAdapterTests(unittest.TestCase):
         def on_chunk(_part):
             cancelled[0] = True
 
-        with self.assertRaisesRegex(RuntimeError, "отменён"):
+        with self.assertRaisesRegex(ProviderRequestCancelled, "отменён"):
             provider.answer(
                 model="remote-model",
                 system="system",
@@ -311,6 +312,46 @@ class ProviderAdapterTests(unittest.TestCase):
 
         self.assertTrue(stream.closed)
         self.assertEqual(stream.read_count, 1)
+
+    def test_compatible_stream_does_not_deliver_event_after_cancel_during_read(self):
+        cancelled = [False]
+
+        class DelayedStream:
+            def __init__(self):
+                self.closed = False
+                self.read = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.read:
+                    raise StopIteration
+                self.read = True
+                cancelled[0] = True
+                return Mock(choices=[Mock(delta=Mock(content="не выдавать"))])
+
+            def close(self):
+                self.closed = True
+
+        stream = DelayedStream()
+        client = Mock()
+        client.chat.completions.create.return_value = stream
+        chunks = []
+
+        with self.assertRaises(ProviderRequestCancelled):
+            OpenAICompatibleProvider(client, "compatible").answer(
+                model="remote-model",
+                system="system",
+                question="вопрос",
+                max_tokens=30,
+                temperature=0.2,
+                on_chunk=chunks.append,
+                cancelled=lambda: cancelled[0],
+            )
+
+        self.assertEqual(chunks, [])
+        self.assertTrue(stream.closed)
 
     def test_compatible_classifier_supports_optional_json_mode(self):
         response = Mock()

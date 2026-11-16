@@ -15,6 +15,10 @@ class UnsupportedConversationModel(ValueError):
     """The configured model has no chat-completions endpoint."""
 
 
+class ProviderRequestCancelled(RuntimeError):
+    """A caller cancelled an in-flight provider response stream."""
+
+
 class TextProvider(Protocol):
     """The common boundary used by answers and typed command classification."""
 
@@ -193,7 +197,7 @@ class OpenAICompatibleProvider:
                 return True
 
         if is_cancelled():
-            raise RuntimeError("Запрос отменён")
+            raise ProviderRequestCancelled("Запрос отменён")
 
         streaming = on_chunk is not None or timing_callback is not None or cancelled is not None
         messages = [{"role": "system", "content": system}]
@@ -230,11 +234,17 @@ class OpenAICompatibleProvider:
             truncated = False
             while True:
                 if is_cancelled():
-                    raise RuntimeError("Запрос отменён")
+                    raise ProviderRequestCancelled("Запрос отменён")
                 try:
                     event = next(iterator)
                 except StopIteration:
+                    if is_cancelled():
+                        raise ProviderRequestCancelled("Запрос отменён")
                     break
+                # Cancellation may arrive while the iterator waits for a
+                # network event. Do not expose a token received after that.
+                if is_cancelled():
+                    raise ProviderRequestCancelled("Запрос отменён")
                 choices = getattr(event, "choices", None) or []
                 if not choices:
                     continue

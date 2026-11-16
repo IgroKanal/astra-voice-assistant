@@ -16,7 +16,11 @@ from openai import OpenAIError
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
 from src.ollama_client import OllamaClient, OllamaRequestCancelled, OllamaResponseTruncated
-from src.llm_providers import UnsupportedConversationModel, create_provider
+from src.llm_providers import (
+    ProviderRequestCancelled,
+    UnsupportedConversationModel,
+    create_provider,
+)
 
 
 @dataclass(frozen=True)
@@ -263,12 +267,6 @@ class AIClient:
                 "но не могу отвечать на вопросы.",
             )
 
-        if cancelled is not None:
-            return LLMResult(
-                False,
-                "Отмена фонового запроса доступна только для локального Ollama.",
-            )
-
         # Personal notes never enter the cloud branch, even if a caller passes
         # an inconsistent Settings object with the memory flag enabled.
 
@@ -328,6 +326,8 @@ class AIClient:
                 if on_text_chunk is not None:
                     answer_options["on_chunk"] = forward_streamed_chunk
                     answer_options["timing_callback"] = capture_stream_timing
+                if cancelled is not None:
+                    answer_options["cancelled"] = is_cancelled
                 message = self.provider.answer(**answer_options)
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
@@ -345,6 +345,9 @@ class AIClient:
                 self.logger.warning("LLM модель %s вернула пустой ответ", model)
                 result_kind = "empty"
                 last_error_message = "Модель вернула пустой ответ."
+            except ProviderRequestCancelled:
+                result_kind = "cancelled"
+                return LLMResult(False, "Запрос отменён.")
             except UnsupportedConversationModel as exc:
                 return LLMResult(False, str(exc))
             except APITimeoutError:

@@ -246,6 +246,55 @@ class AIProfileTests(unittest.TestCase):
         self.assertIn("task=answer model=fast-model result=ok", log_text)
         self.assertNotIn("уникальный текст вопроса", log_text)
 
+    def test_cloud_answer_cancellation_closes_stream_and_skips_fallback(self):
+        settings = Settings(
+            llm_provider="compatible",
+            llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary-model",
+            llm_fallback_model="fallback-model",
+            llm_cloud_dialogue_enabled=True,
+        )
+        cancelled = [False]
+
+        class CloseableStream:
+            def __init__(self):
+                self.events = [Mock(choices=[Mock(delta=Mock(content="Первый токен"))])]
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if not self.events:
+                    raise StopIteration
+                return self.events.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        stream = CloseableStream()
+        remote = Mock()
+        remote.chat.completions.create.return_value = stream
+
+        with patch("src.ai_client.OpenAI", return_value=remote):
+            client = AIClient(settings)
+            result = client.ask(
+                "Вопрос для отменяемого ответа.",
+                on_text_chunk=lambda _part: cancelled.__setitem__(0, True),
+                cancelled=lambda: cancelled[0],
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "Запрос отменён.")
+        self.assertTrue(stream.closed)
+        remote.chat.completions.create.assert_called_once()
+        self.assertEqual(
+            remote.chat.completions.create.call_args.kwargs["model"],
+            "primary-model",
+        )
+        self.assertEqual(client._cloud_dialogue, [])
+
     def test_local_command_router_requires_opt_in_and_never_falls_back_to_cloud(self):
         disabled = AIClient(Settings(
             llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",

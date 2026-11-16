@@ -15,6 +15,10 @@ internal architecture boundary, not a promise of automatic model failover.
 - `OpenAICompatibleProvider` serves the configured compatible endpoint. It
   receives the current question and system prompt only; local conversation
   history and personal memory are not passed to it.
+- A caller may cancel a streamed compatible-provider answer. Cancellation is
+  checked between received events, closes the response stream, and prevents a
+  partial answer from being added to cloud dialogue. The configured HTTP timeout
+  still bounds time spent waiting for the provider to start the stream.
 - `DisabledProvider` makes disabled or unconfigured AI explicit and does not
   create a network client.
 

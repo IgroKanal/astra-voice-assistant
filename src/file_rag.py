@@ -78,6 +78,28 @@ class FileQuestionSession:
         identity = [{"file": path, "sha256": cls.fingerprint(text)} for path, text in contents]
         return cls.fingerprint(json.dumps(identity, ensure_ascii=False, separators=(",", ":")))
 
+    @staticmethod
+    def _query_terms(question):
+        return {
+            word
+            for word in re.findall(r"\w{3,}", question.casefold())
+            if word not in FileQuestionSession.STOP_WORDS
+        }
+
+    @staticmethod
+    def _tokens_match(query_word, passage_word):
+        """Match a token at its start, allowing inflection endings but no substrings."""
+        prefix_length = min(4, len(query_word), len(passage_word))
+        return query_word[:prefix_length] == passage_word[:prefix_length]
+
+    @classmethod
+    def _passage_score(cls, query_terms, text):
+        passage_terms = set(re.findall(r"\w{3,}", text.casefold()))
+        return sum(
+            any(cls._tokens_match(query, candidate) for candidate in passage_terms)
+            for query in query_terms
+        )
+
     def retrieve(self, question, cancelled=None):
         self.check(cancelled)
         if not isinstance(question, str) or not 1 <= len(question.strip()) <= 1000:
@@ -91,8 +113,7 @@ class FileQuestionSession:
             if total_characters > self.MAX_CHARACTERS:
                 raise ValueError("Общий текст выбранных файлов превышает 200000 символов")
             contents.append((relative, text))
-        words = {word for word in re.findall(r"\w{3,}", question.casefold()) if word not in self.STOP_WORDS}
-        words = {word[:5] if len(word) > 5 else word for word in words}
+        words = self._query_terms(question)
         passages = []
         for relative, text in contents:
             lines = text.splitlines()
@@ -106,7 +127,7 @@ class FileQuestionSession:
                     if buffer and (size + len(part) > 900 or number - start >= 12):
                         chunk = "\n".join(buffer)
                         passages.append(Passage(start, end, chunk,
-                                                sum(word in chunk.casefold() for word in words), relative))
+                                                self._passage_score(words, chunk), relative))
                         buffer, size = [], 0
                     if not buffer:
                         start = number
@@ -116,7 +137,7 @@ class FileQuestionSession:
             if buffer:
                 chunk = "\n".join(buffer)
                 passages.append(Passage(start, end, chunk,
-                                        sum(word in chunk.casefold() for word in words), relative))
+                                        self._passage_score(words, chunk), relative))
         summary = bool(re.search(r"кратк|перескаж|содержани|резюме|о ч[её]м", question.casefold()))
         ranked = sorted(passages, key=lambda item: (-item.score, self.relatives.index(item.file), item.start_line))
         selected = tuple(item for item in ranked[:min(2 * len(self.relatives), 10)] if item.score or summary)

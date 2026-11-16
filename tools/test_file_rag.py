@@ -41,6 +41,34 @@ class FileQuestionTests(unittest.TestCase):
         self.assertTrue(any(item["lines"][0] <= 31 <= item["lines"][1] for item in observed))
         self.assertIn("ОРБИТА", result.passages[0].text)
 
+    def test_retrieval_does_not_match_query_inside_an_unrelated_word(self):
+        (self.root / "planned.txt").write_text(
+            "Задача уже запланирована на следующую неделю.\n", encoding="utf-8"
+        )
+        (self.root / "plan.txt").write_text(
+            "План: сначала проверить резервные копии.\n", encoding="utf-8"
+        )
+        session = FileQuestionSession(
+            FileWorkspace(self.root), ("planned.txt", "plan.txt")
+        )
+
+        passages, _digest = session.retrieve("план")
+
+        self.assertEqual([passage.file for passage in passages], ["plan.txt"])
+
+    def test_retrieval_matches_common_russian_inflection_prefixes(self):
+        (self.root / "schedule.txt").write_text(
+            "Сроки проекта: команда сообщит результат после проверки.\n",
+            encoding="utf-8",
+        )
+        session = FileQuestionSession(FileWorkspace(self.root), "schedule.txt")
+
+        passages, _digest = session.retrieve("Какие сроки проекта обсуждали?")
+
+        self.assertTrue(passages)
+        self.assertEqual(passages[0].file, "schedule.txt")
+        self.assertIn("Сроки проекта", passages[0].text)
+
     def test_voice_query_uses_the_requested_finite_local_model_timeout(self):
         with patch("src.file_rag.OllamaClient") as client_type:
             client_type.return_value.chat.return_value = "ОРБИТА [1]"

@@ -87,16 +87,21 @@ class FileQuestionSession:
         }
 
     @staticmethod
-    def _tokens_match(query_word, passage_word):
-        """Match a token at its start, allowing inflection endings but no substrings."""
+    def _token_match_score(query_word, passage_word):
+        """Score exact tokens above inflection prefixes; never match inner substrings."""
+        if query_word == passage_word:
+            return 2
         prefix_length = min(4, len(query_word), len(passage_word))
-        return query_word[:prefix_length] == passage_word[:prefix_length]
+        return int(query_word[:prefix_length] == passage_word[:prefix_length])
 
     @classmethod
     def _passage_score(cls, query_terms, text):
         passage_terms = set(re.findall(r"\w{3,}", text.casefold()))
         return sum(
-            any(cls._tokens_match(query, candidate) for candidate in passage_terms)
+            max(
+                (cls._token_match_score(query, candidate) for candidate in passage_terms),
+                default=0,
+            )
             for query in query_terms
         )
 

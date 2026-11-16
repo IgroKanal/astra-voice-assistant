@@ -69,6 +69,21 @@ class FileQuestionTests(unittest.TestCase):
         self.assertEqual(passages[0].file, "schedule.txt")
         self.assertIn("Сроки проекта", passages[0].text)
 
+    def test_exact_token_ranks_above_a_shared_four_character_prefix(self):
+        (self.root / "planet.txt").write_text(
+            "Планетарный проект исследует орбиты.\n", encoding="utf-8"
+        )
+        (self.root / "plan.txt").write_text(
+            "План действий утверждён.\n", encoding="utf-8"
+        )
+        session = FileQuestionSession(
+            FileWorkspace(self.root), ("planet.txt", "plan.txt")
+        )
+
+        passages, _digest = session.retrieve("план")
+
+        self.assertEqual(passages[0].file, "plan.txt")
+
     def test_voice_query_uses_the_requested_finite_local_model_timeout(self):
         with patch("src.file_rag.OllamaClient") as client_type:
             client_type.return_value.chat.return_value = "ОРБИТА [1]"

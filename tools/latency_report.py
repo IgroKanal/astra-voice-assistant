@@ -21,7 +21,7 @@ _LLM_RE = re.compile(
     r"\bresult=[A-Za-z0-9_-]+\b.*?\belapsed=(\d+(?:\.\d+)?)s"
 )
 _LLM_FIRST_TOKEN_RE = re.compile(
-    r"LLM first-token timing: provider=ollama task=answer\b.*?"
+    r"LLM first-token timing: provider=[A-Za-z0-9_.-]+ task=answer\b.*?"
     r"\belapsed=(\d+(?:\.\d+)?)s"
 )
 _TTS_RE = re.compile(r"TTS timing: (\d+(?:\.\d+)?)s \[[^\]\r\n]{1,32}\]")

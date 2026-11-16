@@ -32,6 +32,9 @@ class ListenResult:
 class VoiceIO:
     """Распознавание речи и озвучка ответа."""
 
+    _EDGE_DEFAULT_FEMALE_VOICE = "ru-RU-SvetlanaNeural"
+    _EDGE_DEFAULT_MALE_VOICE = "ru-RU-DmitryNeural"
+
     _EDGE_TTS_FAILURE_COOLDOWN_SECONDS = 90.0
     _STT_DIAGNOSTIC_MAX_BYTES = 1_000_000
 
@@ -163,11 +166,12 @@ class VoiceIO:
         if self.settings.tts_cache_enabled:
             self.tts_cache_dir.mkdir(parents=True, exist_ok=True)
 
+        primary_voice, fallback_voice = self._edge_voice_pair()
         self.logger.info(
             "Edge TTS инициализирован. voice=%s, fallback=%s, rate=%s, "
             "volume=%s, pitch=%s, cache=%s, cache_dir=%s",
-            self.settings.tts_edge_voice,
-            self.settings.tts_edge_fallback_voice,
+            primary_voice,
+            fallback_voice,
             self.settings.tts_edge_rate,
             self.settings.tts_edge_volume,
             self.settings.tts_edge_pitch,
@@ -221,16 +225,14 @@ class VoiceIO:
         attempted = 0
         skipped_missing = 0
         max_new = max(0, self.settings.tts_cache_prewarm_max_new_phrases)
+        primary_voice, _fallback_voice = self._edge_voice_pair()
 
         for phrase in self.settings.tts_cache_prewarm_phrases:
             phrase = phrase.strip()
             if not phrase:
                 continue
 
-            cache_path = self._edge_cache_path(
-                text=phrase,
-                voice=self.settings.tts_edge_voice,
-            )
+            cache_path = self._edge_cache_path(text=phrase, voice=primary_voice)
             if cache_path.exists():
                 self.logger.info("TTS cache hit: %s", cache_path.name)
                 ready += 1
@@ -246,7 +248,7 @@ class VoiceIO:
             attempted += 1
             cached = self._ensure_edge_cached_audio(
                 text=phrase,
-                voice=self.settings.tts_edge_voice,
+                voice=primary_voice,
             )
             if cached is not None and cached.exists():
                 ready += 1
@@ -337,6 +339,27 @@ class VoiceIO:
             return russian_voices[0]
 
         return voices[0]
+
+    def _edge_voice_pair(self) -> tuple[str, str]:
+        """Resolve the built-in Edge pair to the active character's gender.
+
+        Custom voice IDs are preserved. The two stock Russian voices used by
+        the default configuration are treated as a pair so the character's
+        primary voice does not silently stay female for a male profile.
+        """
+        primary = str(getattr(self.settings, "tts_edge_voice", "") or "").strip()
+        fallback = str(
+            getattr(self.settings, "tts_edge_fallback_voice", "") or ""
+        ).strip()
+        defaults = {
+            (self._EDGE_DEFAULT_FEMALE_VOICE, self._EDGE_DEFAULT_MALE_VOICE),
+            (self._EDGE_DEFAULT_MALE_VOICE, self._EDGE_DEFAULT_FEMALE_VOICE),
+        }
+        if (primary, fallback) in defaults:
+            if getattr(self.settings, "assistant_gender", "female") == "male":
+                return self._EDGE_DEFAULT_MALE_VOICE, self._EDGE_DEFAULT_FEMALE_VOICE
+            return self._EDGE_DEFAULT_FEMALE_VOICE, self._EDGE_DEFAULT_MALE_VOICE
+        return primary, fallback
 
     def _sapi_voice_gender(self, voice: Any) -> str:
         """Return SAPI gender metadata, with conservative name hints as fallback."""
@@ -699,6 +722,7 @@ class VoiceIO:
 
     def _speak_edge(self, text: str) -> bool:
         start = time.perf_counter()
+        primary_voice, fallback_voice = self._edge_voice_pair()
 
         if self.edge_playback_command is None:
             self.logger.error("Edge TTS недоступен: edge-playback не найден.")
@@ -710,7 +734,7 @@ class VoiceIO:
             # only the explicitly bounded startup prewarm writes new phrases.
             cached = self._edge_cache_path(
                 text=text,
-                voice=self.settings.tts_edge_voice,
+                voice=primary_voice,
             )
             if cached.is_file() and self._play_cached_audio(cached):
                 self._log_tts_timing(start, "cache")
@@ -733,15 +757,14 @@ class VoiceIO:
         primary_budget = deadline - time.monotonic()
         if primary_budget > 0 and self._speak_edge_direct(
             text,
-            self.settings.tts_edge_voice,
+            primary_voice,
             timeout_seconds=primary_budget,
         ):
             self._edge_tts_retry_after = 0.0
             self._log_tts_timing(start, "direct")
             return True
 
-        fallback_voice = self.settings.tts_edge_fallback_voice.strip()
-        if fallback_voice and fallback_voice != self.settings.tts_edge_voice:
+        if fallback_voice and fallback_voice != primary_voice:
             self.logger.warning(
                 "Edge TTS primary voice failed. Пробую fallback voice: %s",
                 fallback_voice,

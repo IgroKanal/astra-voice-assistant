@@ -538,6 +538,35 @@ class SapiVoiceSelectionTests(unittest.TestCase):
         self.assertIs(voice._select_sapi_voice([russian, english_male]), russian)
 
 
+class EdgeVoiceSelectionTests(unittest.TestCase):
+    def test_default_pair_follows_active_character_gender(self):
+        for gender, expected in (
+            ("female", ("ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural")),
+            ("male", ("ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural")),
+        ):
+            with self.subTest(gender=gender):
+                voice = object.__new__(VoiceIO)
+                voice.settings = Settings(
+                    assistant_gender=gender,
+                    tts_edge_voice="ru-RU-SvetlanaNeural",
+                    tts_edge_fallback_voice="ru-RU-DmitryNeural",
+                )
+                self.assertEqual(voice._edge_voice_pair(), expected)
+
+    def test_custom_edge_voices_are_preserved(self):
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(
+            assistant_gender="male",
+            tts_edge_voice="ru-RU-CustomVoice",
+            tts_edge_fallback_voice="ru-RU-CustomFallback",
+        )
+
+        self.assertEqual(
+            voice._edge_voice_pair(),
+            ("ru-RU-CustomVoice", "ru-RU-CustomFallback"),
+        )
+
+
 class AIClientWarmupTests(unittest.TestCase):
     def test_local_model_warmup_runs_in_background(self):
         client = AIClient(
@@ -663,9 +692,10 @@ class WakeWarmupTests(unittest.TestCase):
 
 
 class TTSLatencyTests(unittest.TestCase):
-    def _voice(self, cache_dir: Path) -> VoiceIO:
+    def _voice(self, cache_dir: Path, *, gender: str = "female") -> VoiceIO:
         voice = object.__new__(VoiceIO)
         voice.settings = Settings(
+            assistant_gender=gender,
             tts_cache_enabled=True,
             tts_cache_dir=str(cache_dir),
             tts_edge_voice="ru-RU-SvetlanaNeural",
@@ -759,6 +789,24 @@ class TTSLatencyTests(unittest.TestCase):
             self.assertEqual(direct_call.args, ("Новый ответ модели", "ru-RU-SvetlanaNeural"))
             self.assertAlmostEqual(direct_call.kwargs["timeout_seconds"], 25.0, places=6)
             voice._log_tts_timing.assert_called_once()
+
+    def test_male_character_uses_male_default_edge_voice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            voice = self._voice(Path(temp), gender="male")
+            voice._edge_cache_path = Mock(return_value=Path(temp) / "missing.mp3")
+            voice._play_cached_audio = Mock(return_value=False)
+            voice._speak_edge_direct = Mock(return_value=True)
+
+            voice._speak_edge("Короткий ответ мужского персонажа")
+
+            self.assertEqual(
+                voice._speak_edge_direct.call_args.args,
+                ("Короткий ответ мужского персонажа", "ru-RU-DmitryNeural"),
+            )
+            self.assertEqual(
+                voice._edge_cache_path.call_args.kwargs["voice"],
+                "ru-RU-DmitryNeural",
+            )
 
     def test_existing_cache_is_used_without_network_synthesis(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -1638,6 +1638,20 @@ def _parse_file_mutation_command(raw_text: str, normalized: str) -> ParsedComman
                 return None
         return "/".join(components)
 
+    for prefix in ("создай пустую папку", "создай папку", "создай каталог"):
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized == prefix or tail is not None:
+            path = relative_workspace_path(tail) if tail is not None else None
+            if path is None:
+                return ParsedCommand(CommandType.FILE_MUTATION, text=normalized, target=FILE_MUTATION_HELP_TARGET)
+            payload = {"source": "", "destination": path, "destination_is_folder": False}
+            return ParsedCommand(
+                CommandType.FILE_MUTATION,
+                text=normalized,
+                target="mkdir",
+                query=json.dumps(payload, ensure_ascii=False),
+            )
+
     for prefix, operation in prefixes:
         tail = _memory_match_tail(raw_text, prefix)
         if normalized != prefix and tail is None:

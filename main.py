@@ -1197,7 +1197,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.FILE_MUTATION:
         if action.target == FILE_MUTATION_HELP_TARGET:
-            ctx.respond("Назови точный относительный путь к файлу внутри выбранной папки. Для копирования или перемещения укажи файл назначения или папку.")
+            ctx.respond("Назови точный относительный путь внутри выбранной папки. Для новой пустой папки скажи: «создай папку путь». Для копирования или перемещения укажи исходный файл и назначение.")
             return True
         if ctx.file_mutation is None:
             ctx.respond("Изменение файлов голосом пока не подключено в этом приложении.")
@@ -1208,7 +1208,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             if (not isinstance(payload, dict)
                     or set(payload) != {"source", "destination", "destination_is_folder"}
                     or type(payload["destination_is_folder"]) is not bool
-                    or action.target not in {"trash", "copy", "move"}):
+                    or action.target not in {"trash", "copy", "move", "mkdir"}):
                 raise ValueError("Некорректный запрос")
             prompt = ctx.file_mutation.prepare(
                 action.target,

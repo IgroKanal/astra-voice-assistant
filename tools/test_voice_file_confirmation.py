@@ -39,6 +39,43 @@ class VoiceFileConfirmationTests(unittest.TestCase):
         with self.assertRaises(WorkspaceDenied):
             self.confirmation.confirm("подтверждаю")
 
+    def test_create_folder_requires_write_grant_preview_confirmation_and_supports_undo(self):
+        (self.root / "Проекты").mkdir()
+        target = self.root / "Проекты" / "Новая папка"
+        with self.assertRaises(WorkspaceDenied):
+            self.confirmation.prepare("mkdir", source="", destination="Проекты/Новая папка")
+        self.transactions.grant_write(True)
+
+        prompt = self.confirmation.prepare("mkdir", source="", destination="Проекты/Новая папка")
+
+        self.assertIn("Создать пустую папку", prompt)
+        self.assertIn("подтверждаю", prompt)
+        self.assertFalse(target.exists())
+        result = self.confirmation.confirm("подтверждаю")
+        self.assertTrue(target.is_dir())
+        self.assertIn("Папка создана", result.message)
+        self.assertTrue(result.operation_id)
+        self.transactions.undo(result.operation_id)
+        self.assertFalse(target.exists())
+
+    def test_create_folder_uses_expiring_group_root_and_root_qualified_undo(self):
+        documents = self.root / "Documents"
+        documents.mkdir()
+        group = FileWorkspaceGroup((
+            FileWorkspaceGrant("Documents", FileWorkspace(documents), {"write"}, ttl_seconds=60),
+        ))
+        transactions = FileWorkspaceGroupTransactions(group)
+        transactions.grant_write("Documents", True)
+        confirmation = VoiceFileConfirmation(transactions, clock=lambda: self.time)
+
+        confirmation.prepare("mkdir", source="", destination="Documents/Новая")
+        result = confirmation.confirm("подтверждаю")
+
+        self.assertTrue((documents / "Новая").is_dir())
+        self.assertTrue(result.operation_id.startswith("Documents:"))
+        transactions.undo(result.operation_id)
+        self.assertFalse((documents / "Новая").exists())
+
     def test_nested_paths_are_bound_to_selected_workspace_and_folder_is_resolved(self):
         inbox = self.root / "Входящие"
         archive = self.root / "Архив"

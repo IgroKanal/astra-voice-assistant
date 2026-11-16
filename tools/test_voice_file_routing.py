@@ -78,6 +78,7 @@ class VoiceFileRoutingTests(unittest.TestCase):
         for text in (
             "удали файл ../secret",
             "удали файл C:\\Windows\\win.ini",
+            "создай папку ../secret",
             "перемести файл a.txt в b.txt в c.txt",
             "скопируй файл",
         ):
@@ -94,6 +95,40 @@ class VoiceFileRoutingTests(unittest.TestCase):
             json.loads(parsed.query),
             {"source": "входящие/отчет.pdf", "destination": "архив/2026", "destination_is_folder": True},
         )
+        folder = parse_command_text("создай пустую папку Проекты\\Новый")
+        self.assertEqual(folder.type, CommandType.FILE_MUTATION)
+        self.assertEqual(folder.target, "mkdir")
+        self.assertEqual(
+            json.loads(folder.query),
+            {"source": "", "destination": "Проекты/Новый", "destination_is_folder": False},
+        )
+
+    def test_voice_folder_creation_requires_scope_preview_and_confirmation(self):
+        with workspace_tempdir("astra-voice-route-", ROOT) as temp:
+            root = Path(temp)
+            (root / "Projects").mkdir()
+            target = root / "Projects" / "New"
+            transactions = FileTransactions(FileWorkspace(root))
+            transactions.grant_write(True)
+            ctx, responses, ai, *_ = make_context()
+            ctx = replace(
+                ctx,
+                settings=replace(
+                    ctx.settings,
+                    action_permissions=(*ctx.settings.action_permissions, "modify_files"),
+                ),
+                file_mutation=VoiceFileConfirmation(transactions),
+            )
+
+            process_turn("Астра, создай пустую папку Projects/New", ctx)
+            self.assertFalse(target.exists())
+            self.assertIn("подтверждаю", responses[-1])
+            process_turn("подтверждаю", ctx)
+
+            self.assertTrue(target.is_dir())
+            self.assertIn("Папка создана", responses[-1])
+            self.assertEqual(ai.ask_calls, 0)
+            self.assertEqual(ai.route_calls, 0)
 
     def test_revoking_scope_before_confirmation_cancels_preview(self):
         with workspace_tempdir("astra-voice-route-", ROOT) as temp:

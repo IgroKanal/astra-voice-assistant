@@ -48,10 +48,14 @@ class VoiceFileConfirmation:
     ) -> str:
         with self._lock:
             self.cancel()
-            if operation not in {"trash", "move", "copy"}:
+            if operation not in {"trash", "move", "copy", "mkdir"}:
                 raise WorkspaceDenied("Эта голосовая файловая операция не поддерживается")
-            if type(destination_is_folder) is not bool or (operation == "trash" and destination_is_folder):
+            if type(destination_is_folder) is not bool or (operation in {"trash", "mkdir"} and destination_is_folder):
                 raise WorkspaceDenied("Некорректная папка назначения")
+            if ((operation == "trash" and (not source or destination))
+                    or (operation == "mkdir" and (source or not destination))
+                    or (operation in {"move", "copy"} and (not source or not destination))):
+                raise WorkspaceDenied("Укажи точный путь для файловой операции")
             for path in (source, destination):
                 if (not isinstance(path, str) or len(path) > 400 or any(
                     unicodedata.category(char).startswith("C") or char in "«»" for char in path
@@ -71,6 +75,8 @@ class VoiceFileConfirmation:
             self._pending = (preview, self._clock())
             if operation == "trash":
                 return f"Переместить файл «{preview.source}» в Корзину Windows? Скажи: подтверждаю или отмени."
+            if operation == "mkdir":
+                return f"Создать пустую папку «{preview.destination}»? Скажи: подтверждаю или отмени."
             verb = "Переместить" if operation == "move" else "Скопировать"
             return f"{verb} файл «{preview.source}» в «{preview.destination}»? Скажи: подтверждаю или отмени."
 
@@ -93,5 +99,7 @@ class VoiceFileConfirmation:
             except Exception:
                 self._transactions.discard_preview(preview.token)
                 raise
+            if preview.operation == "mkdir":
+                return VoiceFileResult(f"Папка создана: {preview.destination}.", operation_id)
             verb = "перемещён" if preview.operation == "move" else "скопирован"
             return VoiceFileResult(f"Файл {verb}: {preview.destination}.", operation_id)

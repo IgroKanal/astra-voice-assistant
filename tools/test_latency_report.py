@@ -26,11 +26,16 @@ class LatencyReportTests(unittest.TestCase):
         self.assertEqual(metrics["stt_total"], [2.12])
         self.assertEqual(metrics["llm_answer"], [0.8, 1.2])
         self.assertEqual(metrics["llm_first_token"], [0.21, 0.45])
+        self.assertEqual(metrics["llm_first_token_provider_ollama"], [0.21])
+        self.assertEqual(metrics["llm_first_token_provider_compatible"], [0.45])
         self.assertEqual(metrics["tts"], [0.65])
         self.assertNotIn("PRIVATE_COMMAND", report)
         self.assertNotIn("PRIVATE_QUESTION", report)
+        self.assertNotIn("gpt-6-luna", report)
         self.assertIn("Wake -> первый слышимый звук", report)
-        self.assertIn("LLM - первый токен: n=2, p50=0.21, p95=0.45", report)
+        self.assertIn("LLM - первый токен (все провайдеры): n=2, p50=0.21, p95=0.45", report)
+        self.assertIn("LLM - первый токен (compatible): n=1, p50=0.45, p95=0.45", report)
+        self.assertIn("LLM - первый токен (ollama): n=1, p50=0.21, p95=0.21", report)
 
     def test_percentile_uses_nearest_rank_and_handles_empty_input(self):
         self.assertEqual(percentile([4, 1, 3, 2], 0.50), 2)

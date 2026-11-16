@@ -21,7 +21,7 @@ _LLM_RE = re.compile(
     r"\bresult=[A-Za-z0-9_-]+\b.*?\belapsed=(\d+(?:\.\d+)?)s"
 )
 _LLM_FIRST_TOKEN_RE = re.compile(
-    r"LLM first-token timing: provider=[A-Za-z0-9_.-]+ task=answer\b.*?"
+    r"LLM first-token timing: provider=([A-Za-z0-9_.-]+) task=answer\b.*?"
     r"\belapsed=(\d+(?:\.\d+)?)s"
 )
 _TTS_RE = re.compile(r"TTS timing: (\d+(?:\.\d+)?)s \[[^\]\r\n]{1,32}\]")
@@ -56,7 +56,10 @@ def collect_metrics(lines: Iterable[str]) -> dict[str, list[float]]:
             metrics["llm_answer"].append(float(llm_match.group(1)))
         first_token_match = _LLM_FIRST_TOKEN_RE.search(line)
         if first_token_match:
-            metrics["llm_first_token"].append(float(first_token_match.group(1)))
+            provider, elapsed = first_token_match.groups()
+            duration = float(elapsed)
+            metrics["llm_first_token"].append(duration)
+            metrics.setdefault(f"llm_first_token_provider_{provider}", []).append(duration)
         tts_match = _TTS_RE.search(line)
         if tts_match:
             metrics["tts"].append(float(tts_match.group(1)))
@@ -80,7 +83,7 @@ def format_report(metrics: dict[str, list[float]]) -> str:
         ("stt_recognition", "STT - распознавание"),
         ("stt_total", "STT - всего"),
         ("llm_answer", "LLM - ответ"),
-        ("llm_first_token", "LLM - первый токен"),
+        ("llm_first_token", "LLM - первый токен (все провайдеры)"),
         ("tts", "TTS - синтез и воспроизведение"),
     )
     report = ["Замеры по выбранному логу Astra (секунды):"]
@@ -94,6 +97,19 @@ def format_report(metrics: dict[str, list[float]]) -> str:
         p95 = percentile(values, 0.95)
         assert p50 is not None and p95 is not None
         report.append(f"{label}: n={len(values)}, p50={p50:.2f}, p95={p95:.2f}")
+    provider_prefix = "llm_first_token_provider_"
+    provider_rows = sorted(
+        (key[len(provider_prefix):], values)
+        for key, values in metrics.items()
+        if key.startswith(provider_prefix)
+    )
+    for provider, values in provider_rows:
+        p50 = percentile(values, 0.50)
+        p95 = percentile(values, 0.95)
+        assert p50 is not None and p95 is not None
+        report.append(
+            f"LLM - первый токен ({provider}): n={len(values)}, p50={p50:.2f}, p95={p95:.2f}"
+        )
     if not found:
         report.append("В логе нет известных timing-записей.")
     report.append("Wake -> первый слышимый звук текущие логи не измеряют; эту проверку нужно делать отдельно.")

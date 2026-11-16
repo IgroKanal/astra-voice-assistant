@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import speech_recognition as sr
@@ -499,6 +500,42 @@ class LocalModelLatencyTests(unittest.TestCase):
 
         self.assertEqual(settings.stt_recognition_timeout_seconds, 9.5)
         self.assertEqual(settings.tts_playback_timeout_seconds, 31.0)
+
+
+class SapiVoiceSelectionTests(unittest.TestCase):
+    @staticmethod
+    def _voice(name, gender, *, language="ru-RU", identity=None):
+        return SimpleNamespace(
+            name=name,
+            id=identity or name.casefold().replace(" ", "-"),
+            languages=[language],
+            gender=gender,
+        )
+
+    def test_default_voice_follows_active_character_gender(self):
+        female = self._voice("Microsoft Irina", "Female")
+        male = self._voice("Microsoft Pavel", "Male")
+        for gender, expected in (("female", female), ("male", male)):
+            with self.subTest(gender=gender):
+                voice = object.__new__(VoiceIO)
+                voice.settings = Settings(assistant_gender=gender)
+                self.assertIs(voice._select_sapi_voice([female, male]), expected)
+
+    def test_explicit_sapi_choice_overrides_character_gender(self):
+        female = self._voice("Microsoft Irina", "Female")
+        male = self._voice("Microsoft Pavel", "Male", identity="ru-RU-Pavel")
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(assistant_gender="female", tts_voice_name="pavel")
+
+        self.assertIs(voice._select_sapi_voice([female, male]), male)
+
+    def test_unknown_gender_keeps_russian_fallback_ahead_of_other_languages(self):
+        russian = self._voice("Russian voice A", None)
+        english_male = self._voice("English voice", "Male", language="en-US")
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(assistant_gender="male")
+
+        self.assertIs(voice._select_sapi_voice([russian, english_male]), russian)
 
 
 class AIClientWarmupTests(unittest.TestCase):

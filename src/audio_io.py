@@ -46,6 +46,16 @@ class VoiceIO:
         "dmitry",
         "svetlana",
     )
+    _FEMALE_VOICE_MARKERS = (
+        "female", "feminine", "жен", "irina", "elena", "svetlana", "anna",
+        "olga", "natalia", "marina", "tatyana", "tatiana", "yulia", "julia",
+        "sarah", "aria", "zira",
+    )
+    _MALE_VOICE_MARKERS = (
+        "male", "masculine", "муж", "dmitry", "dmitri", "pavel", "andrey",
+        "andrei", "sergey", "sergei", "ivan", "mikhail", "nikolai",
+        "alexander", "vladimir", "david", "mark",
+    )
 
     def __init__(
         self,
@@ -316,11 +326,32 @@ class VoiceIO:
                 if requested_voice in voice_name or requested_voice in voice_id:
                     return voice
 
-        for voice in voices:
-            if self._is_russian_sapi_voice(voice):
-                return voice
+        russian_voices = [voice for voice in voices if self._is_russian_sapi_voice(voice)]
+        desired_gender = getattr(self.settings, "assistant_gender", "female")
+        if desired_gender in {"female", "male"}:
+            for voice in russian_voices:
+                if self._sapi_voice_gender(voice) == desired_gender:
+                    return voice
+
+        if russian_voices:
+            return russian_voices[0]
 
         return voices[0]
+
+    def _sapi_voice_gender(self, voice: Any) -> str:
+        """Return SAPI gender metadata, with conservative name hints as fallback."""
+        metadata = str(getattr(voice, "gender", "") or "").strip().casefold()
+        if metadata in {"female", "male"}:
+            return metadata
+
+        voice_text = (
+            f"{getattr(voice, 'name', '')} {getattr(voice, 'id', '')}"
+        ).casefold()
+        if any(marker in voice_text for marker in self._FEMALE_VOICE_MARKERS):
+            return "female"
+        if any(marker in voice_text for marker in self._MALE_VOICE_MARKERS):
+            return "male"
+        return ""
 
     def _is_russian_sapi_voice(self, voice: Any) -> bool:
         voice_text = (

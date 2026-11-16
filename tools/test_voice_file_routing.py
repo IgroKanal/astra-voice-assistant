@@ -35,6 +35,17 @@ class VoiceFileRoutingTests(unittest.TestCase):
         self.assertEqual(parse_command_text("удали файл report.txt").type, CommandType.FILE_MUTATION)
         self.assertFalse(ActionPolicy(("modify_files",)).check(AssistantAction(ActionType.FILE_MUTATION, source="llm_router", confidence=1)).allowed)
 
+    def test_voice_undo_phrases_are_exact_typed_file_actions(self):
+        for phrase in (
+            "отмени последнее файловое действие",
+            "отмени последнюю файловую операцию",
+            "откати последнее файловое действие",
+        ):
+            with self.subTest(phrase=phrase):
+                parsed = parse_command_text(phrase)
+                self.assertEqual(parsed.type, CommandType.FILE_MUTATION)
+                self.assertEqual(parsed.target, "undo")
+
     def test_explicit_wake_grants_and_confirmation_before_trash(self):
         with workspace_tempdir("astra-voice-route-", ROOT) as temp:
             path = Path(temp) / "report.txt"
@@ -61,6 +72,7 @@ class VoiceFileRoutingTests(unittest.TestCase):
             process_turn("Астра, удали файл report.txt", ctx)
             self.assertIn("отключён", responses[-1])
             process_turn("удали файл report.txt", ctx)
+            process_turn("Астра, отмени последнее файловое действие", ctx)
             trash.assert_not_called()
         self.assertEqual(ai.ask_calls, 0)
 
@@ -72,6 +84,8 @@ class VoiceFileRoutingTests(unittest.TestCase):
         process_turn("удали файл report.txt", ctx)
         adapter.prepare.assert_not_called()
         adapter.confirm.assert_not_called()
+        process_turn("отмени последнее файловое действие", ctx)
+        adapter.undo_last.assert_not_called()
         self.assertEqual(ai.ask_calls, 0)
 
     def test_invalid_or_ambiguous_path_fails_closed(self):
@@ -127,6 +141,29 @@ class VoiceFileRoutingTests(unittest.TestCase):
 
             self.assertTrue(target.is_dir())
             self.assertIn("Папка создана", responses[-1])
+            process_turn("Астра, отмени последнее файловое действие", ctx)
+            self.assertFalse(target.exists())
+            self.assertIn("отменено", responses[-1])
+            self.assertEqual(ai.ask_calls, 0)
+            self.assertEqual(ai.route_calls, 0)
+
+    def test_voice_undo_without_prior_operation_fails_closed_without_llm(self):
+        with workspace_tempdir("astra-voice-route-", ROOT) as temp:
+            transactions = FileTransactions(FileWorkspace(Path(temp)))
+            adapter = VoiceFileConfirmation(transactions)
+            ctx, responses, ai, *_ = make_context()
+            ctx = replace(
+                ctx,
+                settings=replace(
+                    ctx.settings,
+                    action_permissions=(*ctx.settings.action_permissions, "modify_files"),
+                ),
+                file_mutation=adapter,
+            )
+
+            process_turn("Астра, отмени последнее файловое действие", ctx)
+
+            self.assertIn("Нет доступного", responses[-1])
             self.assertEqual(ai.ask_calls, 0)
             self.assertEqual(ai.route_calls, 0)
 
@@ -161,6 +198,10 @@ class VoiceFileRoutingTests(unittest.TestCase):
             process_turn("подтверждаю", ctx)
             self.assertEqual((root / "Archive" / "a.txt").read_text(encoding="utf-8"), "hello")
             self.assertIn("скопирован", responses[-1])
+            process_turn("Астра, отмени последнее файловое действие", ctx)
+            self.assertFalse((root / "Archive" / "a.txt").exists())
+            self.assertEqual((root / "Inbox" / "a.txt").read_text(encoding="utf-8"), "hello")
+            self.assertIn("отменено", responses[-1])
 
     def test_unrecognized_confirmation_cancels_preview(self):
         ctx, responses, *_ = make_context()

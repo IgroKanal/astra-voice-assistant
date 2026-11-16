@@ -1197,10 +1197,26 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
 
     if action.type == ActionType.FILE_MUTATION:
         if action.target == FILE_MUTATION_HELP_TARGET:
-            ctx.respond("Назови точный относительный путь внутри выбранной папки. Для новой пустой папки скажи: «создай папку путь». Для копирования или перемещения укажи исходный файл и назначение.")
+            ctx.respond(
+                "Назови точный относительный путь внутри выбранной папки. Для новой пустой папки "
+                "скажи: «создай папку путь». Для копирования или перемещения укажи исходный файл "
+                "и назначение. Последнюю подтверждённую операцию можно отменить командой: "
+                "«отмени последнее файловое действие»."
+            )
             return True
         if ctx.file_mutation is None:
             ctx.respond("Изменение файлов голосом пока не подключено в этом приложении.")
+            return True
+        if action.target == "undo":
+            from src.file_workspace import WorkspaceDenied
+            try:
+                result = ctx.file_mutation.undo_last()
+                ctx.respond(result.message)
+            except WorkspaceDenied:
+                ctx.respond("Нет доступного или безопасного для отката файлового действия. Проверь разрешение записи и состояние файла или папки.")
+            except Exception:
+                ctx.logger.warning("Voice file undo failed")
+                ctx.respond("Не удалось отменить последнее файловое действие.")
             return True
         try:
             from src.file_workspace import WorkspaceDenied

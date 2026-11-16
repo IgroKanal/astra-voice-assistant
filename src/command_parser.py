@@ -923,6 +923,9 @@ COMMAND_HINTS = (
     "удали файл",
     "перемести файл",
     "скопируй файл",
+    "отмени последнее файловое действие",
+    "отмени последнюю файловую операцию",
+    "откати последнее файловое действие",
     "найди документ",
     "поищи файл",
     "поищи документ",
@@ -1620,6 +1623,13 @@ def _parse_memory_command(raw_text: str, normalized: str) -> ParsedCommand | Non
 
 def _parse_file_mutation_command(raw_text: str, normalized: str) -> ParsedCommand | None:
     prefixes = (("удали файл", "trash"), ("перемести файл", "move"), ("скопируй файл", "copy"))
+
+    if normalized in {
+        "отмени последнее файловое действие",
+        "отмени последнюю файловую операцию",
+        "откати последнее файловое действие",
+    }:
+        return ParsedCommand(CommandType.FILE_MUTATION, text=normalized, target="undo")
 
     def relative_workspace_path(value: str) -> str | None:
         if not isinstance(value, str) or not 1 <= len(value) <= 400 or value != value.strip():

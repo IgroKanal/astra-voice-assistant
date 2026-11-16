@@ -34,8 +34,12 @@ class VoiceFileConfirmationTests(unittest.TestCase):
         self.assertFalse(self.file.exists())
         self.assertEqual((self.root / "new.txt").read_text(encoding="utf-8"), "original")
         self.assertTrue(result.operation_id)
-        self.transactions.undo(result.operation_id)
+        undone = self.confirmation.undo_last()
+        self.assertEqual(undone.operation_id, result.operation_id)
         self.assertTrue(self.file.exists())
+        self.assertFalse((self.root / "new.txt").exists())
+        with self.assertRaises(WorkspaceDenied):
+            self.confirmation.undo_last()
         with self.assertRaises(WorkspaceDenied):
             self.confirmation.confirm("подтверждаю")
 
@@ -55,7 +59,7 @@ class VoiceFileConfirmationTests(unittest.TestCase):
         self.assertTrue(target.is_dir())
         self.assertIn("Папка создана", result.message)
         self.assertTrue(result.operation_id)
-        self.transactions.undo(result.operation_id)
+        self.confirmation.undo_last()
         self.assertFalse(target.exists())
 
     def test_create_folder_uses_expiring_group_root_and_root_qualified_undo(self):
@@ -73,8 +77,40 @@ class VoiceFileConfirmationTests(unittest.TestCase):
 
         self.assertTrue((documents / "Новая").is_dir())
         self.assertTrue(result.operation_id.startswith("Documents:"))
-        transactions.undo(result.operation_id)
+        confirmation.undo_last()
         self.assertFalse((documents / "Новая").exists())
+
+    def test_group_undo_rechecks_current_write_grant_and_preserves_operation_on_denial(self):
+        documents = self.root / "Documents"
+        documents.mkdir()
+        group = FileWorkspaceGroup((
+            FileWorkspaceGrant("Documents", FileWorkspace(documents), {"write"}, ttl_seconds=60),
+        ))
+        transactions = FileWorkspaceGroupTransactions(group)
+        transactions.grant_write("Documents", True)
+        confirmation = VoiceFileConfirmation(transactions, clock=lambda: self.time)
+        target = documents / "Новая"
+
+        confirmation.prepare("mkdir", source="", destination="Documents/Новая")
+        confirmation.confirm("подтверждаю")
+        group.revoke("Documents")
+        with self.assertRaises(WorkspaceDenied):
+            confirmation.undo_last()
+        self.assertTrue(target.is_dir())
+
+    def test_successful_trash_clears_previous_voice_undo_slot(self):
+        copied = self.root / "copy.txt"
+        self.transactions.grant_write(True)
+        self.confirmation.prepare("copy", source="note.txt", destination="copy.txt")
+        self.confirmation.confirm("подтверждаю")
+        self.transactions.grant_trash(True)
+        self.confirmation.prepare("trash", source="note.txt")
+        with patch("src.file_transactions.send2trash", side_effect=lambda path: Path(path).unlink()):
+            self.confirmation.confirm("подтверждаю")
+
+        with self.assertRaises(WorkspaceDenied):
+            self.confirmation.undo_last()
+        self.assertTrue(copied.exists())
 
     def test_nested_paths_are_bound_to_selected_workspace_and_folder_is_resolved(self):
         inbox = self.root / "Входящие"

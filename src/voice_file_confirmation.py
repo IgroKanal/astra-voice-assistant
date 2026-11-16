@@ -30,6 +30,7 @@ class VoiceFileConfirmation:
         self._transactions = transactions
         self._clock = clock
         self._pending = None
+        self._last_undoable_operation = ""
         self._lock = threading.RLock()
 
     def cancel(self):
@@ -94,12 +95,27 @@ class VoiceFileConfirmation:
                 raise WorkspaceDenied("Время подтверждения истекло")
             try:
                 if preview.operation == "trash":
-                    return VoiceFileResult(self._transactions.execute_trash(preview.token))
+                    message = self._transactions.execute_trash(preview.token)
+                    self._last_undoable_operation = ""
+                    return VoiceFileResult(message)
                 operation_id = self._transactions.execute(preview.token)
             except Exception:
                 self._transactions.discard_preview(preview.token)
                 raise
+            self._last_undoable_operation = operation_id
             if preview.operation == "mkdir":
                 return VoiceFileResult(f"Папка создана: {preview.destination}.", operation_id)
             verb = "перемещён" if preview.operation == "move" else "скопирован"
             return VoiceFileResult(f"Файл {verb}: {preview.destination}.", operation_id)
+
+    def undo_last(self) -> VoiceFileResult:
+        """Undo only the latest confirmed voice copy, move, or empty-folder create."""
+        with self._lock:
+            self.cancel()
+            operation_id = self._last_undoable_operation
+            if not operation_id:
+                raise WorkspaceDenied("Нет подтверждённого файлового действия для отмены")
+            # The transaction layer rechecks write grants and destination identity/hash.
+            self._transactions.undo(operation_id)
+            self._last_undoable_operation = ""
+            return VoiceFileResult("Последнее подтверждённое файловое действие отменено.", operation_id)

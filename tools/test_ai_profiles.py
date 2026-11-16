@@ -94,6 +94,11 @@ class AIProfileTests(unittest.TestCase):
                     self.assertEqual((settings.assistant_gender, settings.assistant_name), (gender, custom_name))
                     prompt = AIClient(settings)._build_answer_system_prompt()
                     self.assertIn("я понял" if gender == "male" else "я поняла", prompt)
+                    self.assertIn(
+                        "Не используй женский род о себе." if gender == "male"
+                        else "Не используй мужской род о себе.",
+                        prompt,
+                    )
                     self.assertIn(custom_name, prompt)
 
     def test_character_grammar_does_not_modify_quoted_user_text(self):

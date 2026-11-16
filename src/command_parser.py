@@ -35,6 +35,7 @@ class CommandType(str, Enum):
     FILE_OPEN = "file_open"
     FILE_READ = "file_read"
     FILE_QUESTION = "file_question"
+    FILE_MUTATION = "file_mutation"
     BACKGROUND_ASK = "background_ask"
     BACKGROUND_LIST = "background_list"
     BACKGROUND_CANCEL = "background_cancel"
@@ -78,6 +79,7 @@ FILE_OPEN_HELP_TARGET = "__file_open_help__"
 FILE_READ_HELP_TARGET = "__file_read_help__"
 FILE_READ_NEXT_TARGET = "__file_read_next__"
 FILE_QUESTION_HELP_TARGET = "__file_question_help__"
+FILE_MUTATION_HELP_TARGET = "__file_mutation_help__"
 WEB_ANSWER_HELP_TARGET = "__web_answer_help__"
 BACKGROUND_TASK_HELP_TARGET = "__background_task_help__"
 LIST_REMINDER_PHRASES = frozenset({
@@ -918,6 +920,9 @@ COMMAND_HINTS = (
     "забудь заметку",
     "найди заметку",
     "найди файл",
+    "удали файл",
+    "перемести файл",
+    "скопируй файл",
     "найди документ",
     "поищи файл",
     "поищи документ",
@@ -1613,6 +1618,52 @@ def _parse_memory_command(raw_text: str, normalized: str) -> ParsedCommand | Non
     return None
 
 
+def _parse_file_mutation_command(raw_text: str, normalized: str) -> ParsedCommand | None:
+    prefixes = (("удали файл", "trash"), ("перемести файл", "move"), ("скопируй файл", "copy"))
+
+    def relative_workspace_path(value: str) -> str | None:
+        if not isinstance(value, str) or not 1 <= len(value) <= 400 or value != value.strip():
+            return None
+        normalized_path = value.replace("\\", "/")
+        if normalized_path.startswith("/"):
+            return None
+        components = normalized_path.split("/")
+        reserved_names = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+        for component in components:
+            if (not component or component in {".", ".."} or component.endswith((".", " "))
+                    or any(char in component for char in ':<>"|?*«»')
+                    or not all(char.isprintable() and not unicodedata.category(char).startswith("C") for char in component)):
+                return None
+            if component.split(".", 1)[0].upper() in reserved_names:
+                return None
+        return "/".join(components)
+
+    for prefix, operation in prefixes:
+        tail = _memory_match_tail(raw_text, prefix)
+        if normalized != prefix and tail is None:
+            continue
+        parts = [tail] if operation == "trash" and tail else re.split(r"\s+в\s+", tail or "", flags=re.IGNORECASE)
+        expected = 1 if operation == "trash" else 2
+        destination_is_folder = False
+        if expected == 2 and len(parts) == 2:
+            folder_match = re.fullmatch(r"папку\s+(.+)", parts[1], flags=re.IGNORECASE)
+            if folder_match is not None:
+                parts[1] = folder_match.group(1).strip()
+                destination_is_folder = True
+        if len(parts) != expected:
+            return ParsedCommand(CommandType.FILE_MUTATION, text=normalized, target=FILE_MUTATION_HELP_TARGET)
+        paths = [relative_workspace_path(part) for part in parts]
+        if any(path is None for path in paths):
+            return ParsedCommand(CommandType.FILE_MUTATION, text=normalized, target=FILE_MUTATION_HELP_TARGET)
+        payload = {
+            "source": paths[0],
+            "destination": paths[1] if expected == 2 else "",
+            "destination_is_folder": destination_is_folder,
+        }
+        return ParsedCommand(CommandType.FILE_MUTATION, text=normalized, target=operation, query=json.dumps(payload, ensure_ascii=False))
+    return None
+
+
 def _parse_file_search_command(raw_text: str, normalized: str) -> ParsedCommand | None:
     prefixes = (
         "найди файл в папке",
@@ -1781,6 +1832,10 @@ def parse_command_text(text: str) -> ParsedCommand:
     background_task_command = _parse_background_task_command(text, normalized)
     if background_task_command is not None:
         return background_task_command
+
+    file_mutation = _parse_file_mutation_command(text, normalized)
+    if file_mutation is not None:
+        return file_mutation
 
     file_question = _parse_file_question_command(text, normalized)
     if file_question is not None:

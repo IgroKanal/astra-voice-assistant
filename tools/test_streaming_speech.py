@@ -124,6 +124,52 @@ class EarlySpeechCoordinatorTests(unittest.TestCase):
 
 
 class VoiceAnswerStreamingTests(unittest.TestCase):
+    def test_voice_runtime_allows_early_first_sentence_with_local_sapi(self):
+        base_ctx, *_ = make_context()
+        spoken = threading.Event()
+
+        class FakeVoice:
+            microphone = object()
+
+            def __init__(self, **_kwargs):
+                pass
+
+            def set_alternative_selector(self, _selector):
+                pass
+
+            def speak(self, _text):
+                pass
+
+            def speak_audio_only(self, _text, *, manage_state=True):
+                spoken.set()
+                return True
+
+            def listen_once(self, **_kwargs):
+                return SimpleNamespace(ok=True, text="тест", error="")
+
+        def dispatch(_text, ctx):
+            self.assertTrue(callable(ctx.speak_partial))
+            self.assertTrue(ctx.speak_partial("Первый ответ."))
+            return False
+
+        settings = replace(
+            base_ctx.settings,
+            voice_runtime_mode="legacy",
+            wake_only_mode=False,
+            tts_enabled=True,
+            tts_engine="sapi",
+        )
+        with patch("main.VoiceIO", FakeVoice), \
+             patch("src.desktop_file_search.DesktopFileSearchChannel"), \
+             patch("main.process_turn", side_effect=dispatch), \
+             patch("main.emit_event", return_value=True):
+            run_voice_mode(
+                settings, base_ctx.apps, base_ctx.app_manager, base_ctx.keyboard,
+                base_ctx.folders, base_ctx.system, base_ctx.vpn, base_ctx.windows,
+                base_ctx.ai_client, base_ctx.logger,
+            )
+        self.assertTrue(spoken.wait(1.0))
+
     def test_local_answer_speaks_first_sentence_once_and_publishes_complete_text(self):
         base_ctx, responses, *_ = make_context()
         spoken = []

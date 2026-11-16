@@ -39,6 +39,7 @@ from src.command_parser import (
     FILE_READ_NEXT_TARGET,
     FILE_QUESTION_HELP_TARGET,
     FILE_SEARCH_HELP_TARGET,
+    FILE_MUTATION_HELP_TARGET,
     WEB_ANSWER_HELP_TARGET,
     BACKGROUND_TASK_HELP_TARGET,
     MIXED_COMMAND_TARGET,
@@ -101,6 +102,7 @@ _WAKE_REQUIRED_TYPES = {
     CommandType.FILE_OPEN,
     CommandType.FILE_READ,
     CommandType.FILE_QUESTION,
+    CommandType.FILE_MUTATION,
     CommandType.WEB_ANSWER,
     CommandType.BACKGROUND_ASK,
     CommandType.BACKGROUND_LIST,
@@ -125,6 +127,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
     ActionType.FILE_OPEN,
     ActionType.FILE_READ,
     ActionType.FILE_QUESTION,
+    ActionType.FILE_MUTATION,
     ActionType.WEB_ANSWER,
     ActionType.BACKGROUND_ASK,
     ActionType.BACKGROUND_LIST,
@@ -190,6 +193,7 @@ class TurnContext:
     background_tasks: BackgroundTaskManager | None = None
     web_answer: Callable[[str], object] | None = None
     web_sources: Callable[[tuple], None] | None = None
+    file_mutation: object | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -683,6 +687,7 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
         CommandType.FILE_OPEN: ActionType.FILE_OPEN,
         CommandType.FILE_READ: ActionType.FILE_READ,
         CommandType.FILE_QUESTION: ActionType.FILE_QUESTION,
+        CommandType.FILE_MUTATION: ActionType.FILE_MUTATION,
         CommandType.BACKGROUND_ASK: ActionType.BACKGROUND_ASK,
         CommandType.BACKGROUND_LIST: ActionType.BACKGROUND_LIST,
         CommandType.BACKGROUND_CANCEL: ActionType.BACKGROUND_CANCEL,
@@ -708,6 +713,8 @@ def parsed_to_action(parsed: ParsedCommand, source: str = "local") -> AssistantA
     elif parsed.type == CommandType.FILE_READ:
         query = parsed.target
     elif parsed.type == CommandType.FILE_QUESTION:
+        query = parsed.query
+    elif parsed.type == CommandType.FILE_MUTATION:
         query = parsed.query
     elif parsed.type == CommandType.WEB_ANSWER:
         query = parsed.target if parsed.target != WEB_ANSWER_HELP_TARGET else ""
@@ -1186,6 +1193,38 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+
+    if action.type == ActionType.FILE_MUTATION:
+        if action.target == FILE_MUTATION_HELP_TARGET:
+            ctx.respond("Назови точный относительный путь к файлу внутри выбранной папки. Для копирования или перемещения укажи файл назначения или папку.")
+            return True
+        if ctx.file_mutation is None:
+            ctx.respond("Изменение файлов голосом пока не подключено в этом приложении.")
+            return True
+        try:
+            from src.file_workspace import WorkspaceDenied
+            payload = json.loads(action.query)
+            if (not isinstance(payload, dict)
+                    or set(payload) != {"source", "destination", "destination_is_folder"}
+                    or type(payload["destination_is_folder"]) is not bool
+                    or action.target not in {"trash", "copy", "move"}):
+                raise ValueError("Некорректный запрос")
+            prompt = ctx.file_mutation.prepare(
+                action.target,
+                source=payload["source"],
+                destination=payload["destination"],
+                destination_is_folder=payload["destination_is_folder"],
+            )
+        except (ValueError, TypeError, WorkspaceDenied):
+            ctx.respond("Не удалось подготовить файловое действие. Проверь выбранную папку, имена и разрешения.")
+            return True
+        except Exception:
+            ctx.logger.warning("Voice file preview failed")
+            ctx.respond("Не удалось подготовить файловое действие.")
+            return True
+        set_pending(ctx.state, "file_mutation_confirmation")
+        ctx.respond(prompt)
         return True
 
     if action.type == ActionType.WEB_ANSWER:
@@ -1963,6 +2002,28 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
     Разница режимов передаётся через callbacks и флаги TurnContext.
     """
     raw_text = raw_text.strip()
+    if ctx.state.pending_kind == "file_mutation_confirmation":
+        active = pending_is_active(ctx.state)
+        clear_pending(ctx.state)
+        phrase = normalize_text(_strip_wake_prefix_for_follow_up(raw_text, ctx.settings))
+        if ctx.file_mutation is not None:
+            if active and phrase == "подтверждаю":
+                decision = ActionPolicy(ctx.settings.action_permissions).check(AssistantAction(ActionType.FILE_MUTATION, source="pending_followup"))
+                if not decision.allowed:
+                    ctx.file_mutation.cancel()
+                    ctx.respond(decision.reason)
+                    return True
+                try:
+                    result = ctx.file_mutation.confirm("подтверждаю")
+                    ctx.respond(result.message)
+                except Exception:
+                    ctx.logger.warning("Voice file confirmation failed")
+                    ctx.respond("Файловое действие не выполнено. Проверь файл и разрешения.")
+                return True
+            ctx.file_mutation.cancel()
+        if phrase in {"подтверждаю", "отмени", "отмена", "нет"}:
+            ctx.respond("Файловое действие отменено или время подтверждения истекло.")
+            return True
     if not raw_text:
         ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
@@ -2197,9 +2258,15 @@ def _listen_pending_voice_follow_up(
 
     if not follow_up.ok:
         logger.info("Pending command session timeout/unknown: %s", follow_up.error)
+        file_confirmation = ctx.state.pending_kind == "file_mutation_confirmation"
+        if file_confirmation and ctx.file_mutation is not None:
+            ctx.file_mutation.cancel()
         clear_pending(ctx.state)
         if _stop_after_microphone_failure(follow_up, logger):
             return False
+        if file_confirmation:
+            ctx.respond("Подтверждение не распознано. Файловое действие отменено.")
+            return True
         ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
@@ -2207,7 +2274,7 @@ def _listen_pending_voice_follow_up(
     return process_turn(follow_up.text, ctx)
 
 
-def run_voice_mode(
+def _run_voice_mode_impl(
     settings: Settings,
     apps: dict[str, AppConfig],
     app_manager: WindowsAppManager,
@@ -2221,6 +2288,7 @@ def run_voice_mode(
     routines: RoutineController | None = None,
     media: MediaController | None = None,
     background_tasks: BackgroundTaskManager | None = None,
+    file_mutation: object | None = None,
 ) -> None:
     from src.desktop_file_search import DesktopFileSearchChannel
 
@@ -2323,15 +2391,12 @@ def run_voice_mode(
         file_read=file_search_channel.read_exact,
         file_question=file_search_channel.ask_file,
         speak_private_local=getattr(voice, "speak_private_local", None),
-        speak_partial=(
-            speak_partial
-            if settings.tts_enabled and settings.tts_engine == "edge"
-            else None
-        ),
+        speak_partial=speak_partial if settings.tts_enabled else None,
         respond_streamed=respond_streamed,
         background_tasks=background_tasks,
         web_answer=lambda query: _voice_web_answer(settings, query),
         web_sources=_publish_web_sources,
+        file_mutation=file_mutation,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -2465,6 +2530,39 @@ def run_voice_mode(
         should_continue = process_turn(listen_result.text, ctx)
         if not should_continue:
             return
+
+
+def run_voice_mode(
+    settings: Settings,
+    apps: dict[str, AppConfig],
+    app_manager: WindowsAppManager,
+    keyboard: KeyboardController,
+    folders: FolderController,
+    system: SystemController,
+    vpn: VpnController,
+    windows: WindowController,
+    ai_client: AIClient,
+    logger: logging.Logger,
+    routines: RoutineController | None = None,
+    media: MediaController | None = None,
+    background_tasks: BackgroundTaskManager | None = None,
+    *,
+    file_mutation: object | None = None,
+) -> None:
+    """Run voice mode and always discard an unfinished file-action preview."""
+    try:
+        return _run_voice_mode_impl(
+            settings, apps, app_manager, keyboard, folders, system, vpn,
+            windows, ai_client, logger, routines, media, background_tasks,
+            file_mutation,
+        )
+    finally:
+        cancel = getattr(file_mutation, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                logger.warning("Voice file preview cleanup failed")
 
 
 

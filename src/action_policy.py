@@ -35,6 +35,9 @@ CAPABILITY_CATALOG = (
 )
 ALL_SCOPES = tuple(item.key for item in CAPABILITY_CATALOG)
 DEFAULT_SCOPES = tuple(item.key for item in CAPABILITY_CATALOG if item.enabled_by_default)
+# Runtime capability owned by a newer client integration. Keep it out of the
+# legacy desktop settings catalog until that client exposes a dedicated toggle.
+INTERNAL_SCOPES = frozenset({"modify_files"})
 
 
 def capability_catalog() -> tuple[CapabilityDescriptor, ...]:
@@ -56,6 +59,7 @@ SCOPES = {
     ActionType.FILE_OPEN: "open_files",
     ActionType.FILE_READ: "read_files",
     ActionType.FILE_QUESTION: "ask_files",
+    ActionType.FILE_MUTATION: "modify_files",
 }
 ROUTER_ALLOWED = {ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.WEB_SEARCH, ActionType.GET_TIME, ActionType.GET_DATE, ActionType.HELP, ActionType.ASK_LLM, ActionType.UNKNOWN, ActionType.EMPTY}
 TRUSTED_LOCAL = {
@@ -82,7 +86,11 @@ class ActionPolicy:
             self.allowed = frozenset(allowed_scopes)
         except TypeError:
             raise ValueError("Разрешения должны быть простыми именами навыков") from None
-        if any(not isinstance(scope, str) or scope not in ALL_SCOPES for scope in self.allowed):
+        if any(
+            not isinstance(scope, str)
+            or (scope not in ALL_SCOPES and scope not in INTERNAL_SCOPES)
+            for scope in self.allowed
+        ):
             raise ValueError("Неизвестное разрешение навыка")
 
     def check(self, action: AssistantAction) -> PolicyDecision:

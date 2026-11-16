@@ -5,6 +5,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from src.file_workspace import WorkspaceDenied
 
@@ -16,9 +17,10 @@ class VoiceFileResult:
 
 
 class VoiceFileConfirmation:
-    """Adapter for a single already-granted FileTransactions workspace.
+    """Adapter for existing file transactions and already-granted workspaces.
 
     The caller must resolve an exact relative path before preparing an action.
+    A transaction object may wrap one workspace or an expiring multi-root grant.
     This object never grants permissions and is not a speech recognizer.
     """
 
@@ -36,16 +38,35 @@ class VoiceFileConfirmation:
             if pending is not None:
                 self._transactions.discard_preview(pending[0].token)
 
-    def prepare(self, operation: str, *, source: str, destination: str = "") -> str:
+    def prepare(
+        self,
+        operation: str,
+        *,
+        source: str,
+        destination: str = "",
+        destination_is_folder: bool = False,
+    ) -> str:
         with self._lock:
             self.cancel()
             if operation not in {"trash", "move", "copy"}:
                 raise WorkspaceDenied("Эта голосовая файловая операция не поддерживается")
+            if type(destination_is_folder) is not bool or (operation == "trash" and destination_is_folder):
+                raise WorkspaceDenied("Некорректная папка назначения")
             for path in (source, destination):
                 if (not isinstance(path, str) or len(path) > 400 or any(
                     unicodedata.category(char).startswith("C") or char in "«»" for char in path
                 )):
                     raise WorkspaceDenied("Некорректное имя файла для голосового подтверждения")
+            source = source.replace("\\", "/")
+            if operation != "trash" and destination_is_folder:
+                source_name = PurePosixPath(source).name
+                if not source_name or source_name in {".", ".."}:
+                    raise WorkspaceDenied("Укажи точный исходный файл и папку назначения")
+                destination = str(PurePosixPath(destination.replace("\\", "/")) / source_name)
+            elif destination:
+                destination = destination.replace("\\", "/")
+            if len(destination) > 400:
+                raise WorkspaceDenied("Путь назначения слишком длинный")
             preview = self._transactions.preview(operation, source=source, destination=destination)
             self._pending = (preview, self._clock())
             if operation == "trash":
@@ -65,8 +86,12 @@ class VoiceFileConfirmation:
             if not 0 <= self._clock() - created <= self.TTL_SECONDS:
                 self._transactions.discard_preview(preview.token)
                 raise WorkspaceDenied("Время подтверждения истекло")
-            if preview.operation == "trash":
-                return VoiceFileResult(self._transactions.execute_trash(preview.token))
-            operation_id = self._transactions.execute(preview.token)
+            try:
+                if preview.operation == "trash":
+                    return VoiceFileResult(self._transactions.execute_trash(preview.token))
+                operation_id = self._transactions.execute(preview.token)
+            except Exception:
+                self._transactions.discard_preview(preview.token)
+                raise
             verb = "перемещён" if preview.operation == "move" else "скопирован"
             return VoiceFileResult(f"Файл {verb}: {preview.destination}.", operation_id)

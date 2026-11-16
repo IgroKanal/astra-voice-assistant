@@ -31,6 +31,7 @@ class ActionType(str, Enum):
     FILE_OPEN = "file_open"
     FILE_READ = "file_read"
     FILE_QUESTION = "file_question"
+    FILE_MUTATION = "file_mutation"
     BACKGROUND_ASK = "background_ask"
     BACKGROUND_LIST = "background_list"
     BACKGROUND_CANCEL = "background_cancel"

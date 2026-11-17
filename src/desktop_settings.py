@@ -130,9 +130,18 @@ class DesktopSettings:
 
     def apply(self, settings: Settings) -> Settings:
         profile = self.load()
-        name = profile.assistant_name or settings.assistant_name
+        character = profile.character_profiles.get(profile.avatar_id)
+        if character is None:
+            # Profiles created before per-character settings keep using their
+            # top-level name and voice as a backwards-compatible fallback.
+            name = profile.assistant_name or settings.assistant_name
+            voice_id = profile.voice_id
+        else:
+            name = character["assistant_name"]
+            # Empty means automatic voice selection for the character's gender.
+            voice_id = character["voice_id"]
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], wake_phrases=phrases, tts_engine="sapi", tts_voice_name=profile.voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

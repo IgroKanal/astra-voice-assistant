@@ -101,6 +101,59 @@ class AIProfileTests(unittest.TestCase):
                     )
                     self.assertIn(custom_name, prompt)
 
+    def test_active_character_profile_supplies_its_own_name_and_voice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                assistant_name="Legacy name",
+                voice_id="legacy-voice-id",
+                avatar_id="male_kai",
+                character_profiles={
+                    "female_miku": {"assistant_name": "Мику", "voice_id": "female-voice-id"},
+                    "male_kai": {"assistant_name": "Кай", "voice_id": "male-voice-id"},
+                },
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_name, "Кай")
+            self.assertEqual(settings.assistant_gender, "male")
+            self.assertEqual(settings.tts_voice_name, "male-voice-id")
+            self.assertIn("кай", settings.wake_phrases)
+
+    def test_empty_character_voice_selects_gender_matched_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                voice_id="legacy-female-voice-id",
+                avatar_id="male_ren",
+                character_profiles={
+                    "male_ren": {"assistant_name": "Рэн", "voice_id": ""},
+                },
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_gender, "male")
+            self.assertEqual(settings.tts_voice_name, "")
+
+    def test_profile_without_character_map_uses_legacy_voice_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                assistant_name="Рэн",
+                voice_id="legacy-voice-id",
+                avatar_id="male_ren",
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_name, "Рэн")
+            self.assertEqual(settings.tts_voice_name, "legacy-voice-id")
+
     def test_character_grammar_does_not_modify_quoted_user_text(self):
         from src.assistant_persona import character_phrase
         text = "Она сказала: я нашла"

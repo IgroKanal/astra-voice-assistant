@@ -249,6 +249,12 @@ def test_wake_only_runtime_markers_present() -> None:
     assert "wake_allow_direct_command" in main_py
     assert "Wake-only voice runtime enabled" in main_py
     assert "начни новый диалог" in astra_main.build_help_text("voice")
+    assert "что ты услышала" in astra_main.build_help_text(
+        "voice", Settings(assistant_gender="female")
+    )
+    assert "что ты услышал" in astra_main.build_help_text(
+        "voice", Settings(assistant_gender="male")
+    )
 
 
 def main() -> None:

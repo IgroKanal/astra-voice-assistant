@@ -871,7 +871,7 @@ def resolve_action(
     )
 
 
-def build_help_text(topic: str = "general") -> str:
+def build_help_text(topic: str = "general", settings: Settings | None = None) -> str:
     topic = (topic or "general").strip().lower()
 
     help_by_topic = {
@@ -905,7 +905,7 @@ def build_help_text(topic: str = "general") -> str:
             "сделай скриншот."
         ),
         "voice": (
-            "Голос: повтори, что ты услышала, стоп. "
+            f"Голос: повтори, что ты {character_phrase(settings, female='услышала', male='услышал')}, стоп. "
             "Если фраза обрезалась, скажи команду короче или ответь на уточнение. "
             "Для нового диалога назови имя ассистента и скажи: начни новый диалог."
         ),
@@ -1937,7 +1937,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         return True
 
     if action.type == ActionType.HELP:
-        ctx.respond(build_help_text(action.target or action.query or "general"))
+        ctx.respond(build_help_text(action.target or action.query or "general", ctx.settings))
         return True
 
     if action.type == ActionType.GET_TIME:

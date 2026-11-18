@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import base64
 import ctypes
 import logging
+import os
 import shutil
 import socket
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +17,68 @@ class SystemActionResult:
     message: str
 
 
+@dataclass(frozen=True)
+class BatteryStatus:
+    battery_flag: int
+    battery_life_percent: int
+
+
+class _SystemPowerStatus(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("Reserved1", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_uint32),
+        ("BatteryFullLifeTime", ctypes.c_uint32),
+    ]
+
+
+def read_system_power_status(kernel32: object | None = None) -> BatteryStatus | None:
+    """Read the current battery percentage with GetSystemPowerStatus only."""
+    if kernel32 is None:
+        if os.name != "nt":
+            return None
+        try:
+            kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        except (AttributeError, OSError):
+            return None
+    try:
+        get_status = getattr(kernel32, "GetSystemPowerStatus")
+        get_status.argtypes = (ctypes.POINTER(_SystemPowerStatus),)
+        get_status.restype = ctypes.c_int
+        status = _SystemPowerStatus()
+        if not get_status(ctypes.byref(status)):
+            return None
+        return BatteryStatus(status.BatteryFlag, status.BatteryLifePercent)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _capture_primary_screen(output_path: Path) -> None:
+    """Capture the primary display through Win32/Pillow without a shell."""
+    if os.name != "nt":
+        raise OSError("Screen capture is available only on Windows")
+    user32 = ctypes.WinDLL("user32.dll", use_last_error=True)
+    get_system_metrics = user32.GetSystemMetrics
+    get_system_metrics.argtypes = (ctypes.c_int,)
+    get_system_metrics.restype = ctypes.c_int
+    width = int(get_system_metrics(0))  # SM_CXSCREEN
+    height = int(get_system_metrics(1))  # SM_CYSCREEN
+    if not 0 < width <= 16_384 or not 0 < height <= 16_384:
+        raise OSError("Primary display dimensions are unavailable")
+    if width * height > 40_000_000:
+        raise OSError("Primary display exceeds the screenshot size limit")
+
+    from PIL import ImageGrab
+
+    image = ImageGrab.grab(bbox=(0, 0, width, height))
+    try:
+        image.save(str(output_path), format="PNG")
+    finally:
+        image.close()
+
+
 class SystemController:
     """Безопасные системные действия: скриншот и краткая информация о ПК."""
 
@@ -25,47 +86,32 @@ class SystemController:
         self,
         logger: logging.Logger | None = None,
         capability_summary: Callable[[], str] | None = None,
+        *,
+        battery_reader: Callable[[], BatteryStatus | None] = read_system_power_status,
+        screenshot_capture: Callable[[Path], None] = _capture_primary_screen,
+        home: Path | None = None,
     ) -> None:
         self.logger = logger or logging.getLogger(__name__)
-        self.home = Path.home()
+        self.home = Path(home) if home is not None else Path.home()
         self.capability_summary = capability_summary
+        self.battery_reader = battery_reader
+        self.screenshot_capture = screenshot_capture
 
     def take_screenshot(self) -> SystemActionResult:
         screenshots_dir = self.home / "Pictures" / "AstraScreenshots"
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"astra_{datetime.now():%Y%m%d_%H%M%S}.png"
+        filename = f"astra_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
         output_path = screenshots_dir / filename
-
-        # Path is embedded as Base64 inside the script. This avoids the old
-        # PowerShell `$args[0]` bug where the path was empty and Bitmap.Save failed.
-        path_b64 = base64.b64encode(str(output_path).encode("utf-8")).decode("ascii")
-
-        script = rf"""
-$ErrorActionPreference = 'Stop'
-$path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{path_b64}'))
-
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
-$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$bitmap = New-Object System.Drawing.Bitmap ([int]$bounds.Width), ([int]$bounds.Height)
-$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-
-try {{
-    $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
-    $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-}} finally {{
-    $graphics.Dispose()
-    $bitmap.Dispose()
-}}
-"""
-        result = self._run_powershell_encoded(script, timeout=10)
-        if result.ok and output_path.exists():
-            self.logger.info("Скриншот сохранён: %s", output_path)
+        try:
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            self.screenshot_capture(output_path)
+            size = output_path.stat().st_size if output_path.is_file() else 0
+            if not 1 <= size <= 256 * 1024 * 1024:
+                raise OSError("Screenshot output is missing or outside the size limit")
+            self.logger.info("Screenshot saved")
             return SystemActionResult(True, "Скриншот сохранён.")
-
-        self.logger.warning("Screenshot failed: %s", result.message)
-        return SystemActionResult(False, "Не удалось сделать скриншот.")
+        except Exception as exc:
+            self.logger.warning("Screenshot failed: %s", type(exc).__name__)
+            return SystemActionResult(False, "Не удалось сделать скриншот.")
 
     def system_info(self, target: str) -> SystemActionResult:
         target = (target or "summary").strip().lower()
@@ -102,24 +148,21 @@ try {{
         return SystemActionResult(True, message)
 
     def _battery_info(self) -> SystemActionResult:
-        script = r"""
-$ErrorActionPreference = 'Stop'
-$battery = Get-CimInstance Win32_Battery | Select-Object -First 1
-if ($null -eq $battery) {
-    Write-Output 'NO_BATTERY'
-} else {
-    Write-Output $battery.EstimatedChargeRemaining
-}
-"""
-        result = self._run_powershell(script, timeout=5)
-        if not result.ok:
+        try:
+            status = self.battery_reader()
+        except Exception:
+            self.logger.exception("Battery status query failed")
             return SystemActionResult(False, "Не удалось узнать заряд батареи.")
-
-        value = result.message.strip()
-        if value == "NO_BATTERY" or not value:
+        if status is None:
+            return SystemActionResult(False, "Не удалось узнать заряд батареи.")
+        if status.battery_flag & 0x80:
             return SystemActionResult(False, "Батарея не найдена.")
-
-        return SystemActionResult(True, f"Заряд батареи {value} процентов.")
+        if not 0 <= status.battery_life_percent <= 100:
+            return SystemActionResult(False, "Уровень заряда батареи недоступен.")
+        return SystemActionResult(
+            True,
+            f"Заряд батареи {status.battery_life_percent} процентов.",
+        )
 
     def _memory_info(self) -> SystemActionResult:
         try:
@@ -169,66 +212,6 @@ if ($null -eq $battery) {
                 continue
 
         return SystemActionResult(False, "Интернет не отвечает.")
-
-    def _run_powershell(self, script: str, timeout: int) -> SystemActionResult:
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ]
-
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            output = (result.stdout or result.stderr or "").strip()
-            if result.returncode == 0:
-                return SystemActionResult(True, output)
-            return SystemActionResult(False, output)
-        except subprocess.TimeoutExpired:
-            return SystemActionResult(False, "PowerShell timeout")
-        except OSError as exc:
-            return SystemActionResult(False, str(exc))
-
-    def _run_powershell_encoded(self, script: str, timeout: int) -> SystemActionResult:
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            encoded,
-        ]
-
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            output = (result.stdout or result.stderr or "").strip()
-            if result.returncode == 0:
-                return SystemActionResult(True, output)
-            return SystemActionResult(False, output)
-        except subprocess.TimeoutExpired:
-            return SystemActionResult(False, "PowerShell timeout")
-        except OSError as exc:
-            return SystemActionResult(False, str(exc))
-
 
 class MEMORYSTATUSEX(ctypes.Structure):
     _fields_ = [

@@ -71,6 +71,11 @@ not as proof that the resource does not exist. The snapshot does not grant
 permission; launching a newly discovered app and changing VPN state retain
 their existing confirmation rules.
 
+System battery status now uses Win32 `GetSystemPowerStatus`, and screenshot
+capture uses `GetSystemMetrics` plus Pillow. These core actions no longer start
+PowerShell. Screenshot output is limited to the primary display, bounded by a
+pixel-count limit, and reported successful only when a non-empty PNG exists.
+
 At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
 An explicit per-user choice wins when that service is still present; otherwise
 an explicit `.env` choice is kept when present. A stale AmneziaWG/WireGuard

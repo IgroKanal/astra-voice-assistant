@@ -84,6 +84,7 @@ class Settings:
     speech_language: str = "ru-RU"
     stt_device_index: int | None = None
     stt_device_identity: str = ""
+    stt_device_endpoint_identity: str = ""
     stt_recognition_timeout_seconds: float = 12.0
     listen_timeout_seconds: int = 10
     phrase_time_limit_seconds: int = 16

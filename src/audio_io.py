@@ -120,9 +120,16 @@ class VoiceIO:
     def _init_microphone(self) -> None:
         configured_index = getattr(self.settings, "stt_device_index", None)
         device_identity = getattr(self.settings, "stt_device_identity", "")
+        endpoint_identity = getattr(
+            self.settings, "stt_device_endpoint_identity", ""
+        )
         device_index = configured_index
-        if device_identity:
-            device_index = resolve_audio_input_index(device_identity, discover_audio_inputs())
+        if device_identity or endpoint_identity:
+            device_index = resolve_audio_input_index(
+                device_identity,
+                discover_audio_inputs(),
+                endpoint_identity=endpoint_identity,
+            )
         candidates = (device_index, None) if device_index is not None else (None,)
         self.microphone = None
         for candidate in candidates:
@@ -134,7 +141,11 @@ class VoiceIO:
                         duration=self.settings.ambient_noise_duration_seconds,
                     )
                 self.microphone = microphone
-                if candidate is None and (configured_index is not None or bool(device_identity)):
+                if candidate is None and (
+                    configured_index is not None
+                    or bool(device_identity)
+                    or bool(endpoint_identity)
+                ):
                     message = "Сохранённый микрофон не найден; используется микрофон Windows по умолчанию."
                     self.logger.warning(message)
                     print(message)

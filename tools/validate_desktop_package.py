@@ -22,6 +22,7 @@ def validate_voice_core_modules(modules):
         "src.assistant_persona",
         "src.runtime_events",
         "src.audio_device_discovery",
+        "src.windows_audio_endpoint",
         "src.vpn_controller",
         "src.windows_service_control",
     )
@@ -94,7 +95,7 @@ def main():
             required_modules = {
                 "pypdf", "PIL.Image", "PIL.ImageOps",
                 "src.file_workspace", "src.file_transactions", "src.file_rag", "src.skill_executor",
-                "src.plan_interpreter", "src.avatar_preview", "src.audio_device_discovery", "src.onboarding_state",
+                "src.plan_interpreter", "src.avatar_preview", "src.audio_device_discovery", "src.windows_audio_endpoint", "src.onboarding_state",
                 "src.profile_backup", "src.backup_crypto", "src.portable_memory_backup",
                 "src.portable_reminder_backup", "src.action_audit", "src.command_catalog",
                 "src.desktop_file_search", "src.desktop_tray", "src.qt_theme", "src.qt_widgets",

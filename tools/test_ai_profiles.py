@@ -54,7 +54,7 @@ class AIProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             AIProfile(provider="ollama", cloud_dialogue_enabled=True).validate()
 
-    @patch("src.desktop_settings.audio_input_identity_for_index", return_value="a" * 64)
+    @patch("src.desktop_settings.audio_input_identities_for_index", return_value=("a" * 64, "b" * 64))
     def test_voice_profile_roundtrip_and_custom_wake_name(self, identity_for_index):
         with tempfile.TemporaryDirectory() as temp:
             store = DesktopSettings(Path(temp) / "settings.dpapi")
@@ -62,6 +62,10 @@ class AIProfileTests(unittest.TestCase):
             store.save(profile)
             loaded = store.load()
             self.assertEqual(loaded.microphone_identity, "a" * 64)
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "b" * 64,
+            )
             self.assertEqual((loaded.assistant_name, loaded.voice_id, loaded.microphone_index, loaded.voice_rate, loaded.voice_volume, loaded.avatar_id), ("Рэн", profile.voice_id, 2, 210, .65, "male_ren"))
             settings = store.apply(Settings())
             self.assertEqual(settings.assistant_name, "Рэн")

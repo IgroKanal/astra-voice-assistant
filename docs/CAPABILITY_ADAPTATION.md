@@ -110,22 +110,28 @@ if no configured preference resolves and several supported services remain,
 voice asks for an ordinal from 1 to 9, rechecks the exact selected service,
 stores that preference separately, and then asks for the action confirmation.
 User speech is never used as a service name. The user choice is stored in the
-versioned per-user override file, separate from `.env`; version 1 preference
-files remain readable. The current detector recognizes only
+versioned per-user override file, separate from `.env`; preference files from
+versions 1 and 2 remain readable. The current detector recognizes only
 AmneziaWG/WireGuard tunnel services and does not detect every commercial or
 Windows-native VPN client. No VPN state was changed during automated tests.
 
 When a user saves a microphone selection, the encrypted per-user profile stores
 a SHA-256 fingerprint of its normalized device name and host API, not the raw
-name or machine-local PortAudio index. On startup, the core enumerates input
-metadata without opening a recording stream and resolves the fingerprint to
-the current index only when there is one unique match. A missing or ambiguous
-match skips the stale index and tries the Windows default once, with a status
-message. A profile created on an older version still uses its saved index until
-the user saves settings again. If the selected device cannot initialize, the
-Windows default is tried and reported; if that also fails, voice input remains
-unavailable. Automated tests inject fake device inventories and do not open a
-real microphone.
+name or machine-local PortAudio index. On Windows, a second hash of the opaque
+Core Audio endpoint ID is stored in the separate per-user capability overrides
+file. Raw endpoint IDs and friendly names are never persisted. Core Audio is
+matched to a PortAudio entry only when the normalized friendly name identifies
+one endpoint; identical names remain unresolved. At startup, the endpoint hash
+is preferred, then the older label hash is used only for one unique match. This
+keeps the selected input stable across PortAudio index changes while allowing
+older profiles and systems without Core Audio metadata to fall back safely.
+Missing or ambiguous matches skip the stale index and try the Windows default
+once, with a status message. A profile created on an older version still uses
+its saved index until the user saves settings again. If the selected device
+cannot initialize, the Windows default is tried and reported; if that also
+fails, voice input remains unavailable. Automated tests inject fake device
+inventories; Core Audio discovery reads metadata only and never opens a
+recording stream.
 
 The selected built-in character supplies the runtime assistant name and
 grammatical gender. Both are included in the answer-model instruction; local
@@ -176,9 +182,10 @@ spoken “yes” must not create a lasting permission.
    AmneziaWG/WireGuard resolver honors a valid per-user preference,
    auto-selects only a unique discovered tunnel, and asks for an exact numbered
    voice choice when the configured service is stale and several candidates exist.
-   Microphone selection uses a per-user hashed name/host-API fingerprint and
-   refuses to guess when duplicate devices match; Windows Core Audio endpoint
-   IDs remain a stronger option for identical devices.
+   Microphone selection uses per-user hashes of the unique Windows Core Audio
+   endpoint and the legacy name/host-API fallback. Exact mapping is limited to
+   unique normalized friendly names; duplicate names remain ambiguous and use
+   the Windows default rather than guessing.
 5. Keep voice state events as the source of character animation state. The Qt
    scene and current 2D art are preserved; production layered art or a real VRM/
    Live2D-compatible model is still required before attempting polished new

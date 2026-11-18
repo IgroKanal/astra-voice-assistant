@@ -2960,7 +2960,8 @@ def main() -> int:
         capability_overrides = None
     if capability_overrides is not None:
         settings = replace(settings, automatic_safe_actions=True,
-                           denied_auto_scopes=capability_overrides.disabled_auto_scopes)
+                           denied_auto_scopes=capability_overrides.disabled_auto_scopes,
+                           stt_device_endpoint_identity=capability_overrides.microphone_endpoint_identity)
     try:
         vpn_services = discover_vpn_tunnel_services()
     except (OSError, ValueError):

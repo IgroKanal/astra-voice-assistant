@@ -5,6 +5,7 @@ from pathlib import Path
 from src.capability_overrides import CapabilityOverrides, CapabilityOverrideStore
 from src.config_loader import AppConfig
 from src.system_discovery import BrowserDiscovery, _parse_registered_executable, discover_registered_applications, discover_windows_browsers, merge_discovered_browsers, resolve_browser_preference
+from tools.build_paths import resolve_build_paths
 
 
 class FakeRegistry:
@@ -217,22 +218,37 @@ class DiscoveryTests(unittest.TestCase):
     def test_overrides_round_trip_and_reject_paths(self):
         with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
             store = CapabilityOverrideStore(Path(root) / 'preferences.json')
-            store.save(CapabilityOverrides('Chrome', vpn_service_preferred='WireGuardTunnel$home'))
+            store.save(CapabilityOverrides(
+                'Chrome',
+                vpn_service_preferred='WireGuardTunnel$home',
+                microphone_endpoint_identity='a' * 64,
+            ))
             self.assertEqual(store.load().browser_preferred, 'chrome')
             self.assertEqual(store.load().vpn_service_preferred, 'WireGuardTunnel$home')
+            self.assertEqual(store.load().microphone_endpoint_identity, 'a' * 64)
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides('C:\\evil.exe'))
-            store.save(CapabilityOverrides('chrome', ('browser',)))
+            store.save(CapabilityOverrides(
+                'chrome', ('browser',),
+                microphone_endpoint_identity='a' * 64,
+            ))
             self.assertEqual(store.load().disabled_auto_scopes, ('browser',))
             store.set_vpn_service_preferred('WireGuardTunnel$home')
             updated = store.load()
             self.assertEqual(updated.browser_preferred, 'chrome')
             self.assertEqual(updated.disabled_auto_scopes, ('browser',))
             self.assertEqual(updated.vpn_service_preferred, 'WireGuardTunnel$home')
+            self.assertEqual(updated.microphone_endpoint_identity, 'a' * 64)
+            store.set_microphone_endpoint_identity('b' * 64)
+            self.assertEqual(store.load().microphone_endpoint_identity, 'b' * 64)
+            store.set_microphone_endpoint_identity('')
+            self.assertEqual(store.load().microphone_endpoint_identity, '')
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides(disabled_auto_scopes=({},)))
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides(vpn_service_preferred='WireGuardTunnel$home*'))
+            with self.assertRaises(ValueError):
+                store.save(CapabilityOverrides(microphone_endpoint_identity='C:\\device'))
 
     def test_legacy_override_file_loads_without_vpn_choice(self):
         with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
@@ -244,6 +260,21 @@ class DiscoveryTests(unittest.TestCase):
             loaded = CapabilityOverrideStore(path).load()
             self.assertEqual(loaded.browser_preferred, 'chrome')
             self.assertEqual(loaded.vpn_service_preferred, '')
+            self.assertEqual(loaded.microphone_endpoint_identity, '')
+
+    def test_v2_override_file_migrates_without_audio_endpoint_choice(self):
+        temp_root = resolve_build_paths(Path(__file__).resolve().parents[1]).temp_root
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as root:
+            path = Path(root) / 'preferences.json'
+            path.write_text(
+                '{"version":2,"browser_preferred":"chrome",'
+                '"disabled_auto_scopes":[],"vpn_service_preferred":"WireGuardTunnel$home"}',
+                encoding='utf-8',
+            )
+            loaded = CapabilityOverrideStore(path).load()
+            self.assertEqual(loaded.vpn_service_preferred, 'WireGuardTunnel$home')
+            self.assertEqual(loaded.microphone_endpoint_identity, '')
 
 
 if __name__ == '__main__':

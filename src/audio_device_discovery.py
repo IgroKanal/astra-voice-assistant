@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import hashlib
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Callable
+
+from src.windows_audio_endpoint import (
+    WindowsAudioEndpoint,
+    discover_windows_capture_endpoints,
+)
 
 
 _MAX_AUDIO_DEVICES = 512
@@ -14,10 +19,11 @@ _IDENTITY_RE = re.compile(r"^[a-f0-9]{64}$")
 
 @dataclass(frozen=True)
 class AudioInputDevice:
-    """A current PortAudio index paired with a stable metadata fingerprint."""
+    """Current PortAudio index and legacy plus Core Audio identities."""
 
     index: int
     identity: str
+    endpoint_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +53,26 @@ def audio_input_identity(name: Any, host_api_name: Any = "") -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def audio_input_endpoint_identity(endpoint_id: Any, host_api_name: Any = "") -> str:
+    """Hash an opaque Core Audio endpoint ID without storing its raw value."""
+    if (
+        not isinstance(endpoint_id, str)
+        or not endpoint_id
+        or len(endpoint_id) > 1024
+        or any(ord(character) < 32 for character in endpoint_id)
+    ):
+        return ""
+    clean_host = _normalize_label(host_api_name)
+    payload = (
+        "astra-audio-input-endpoint-v1\0" + endpoint_id + "\0" + clean_host
+    )
+    try:
+        encoded = payload.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def audio_output_identity(name: Any, host_api_name: Any = "") -> str:
     """Hash output labels separately from input labels; never persist raw names."""
     clean_name = _normalize_label(name)
@@ -58,15 +84,48 @@ def audio_output_identity(name: Any, host_api_name: Any = "") -> str:
 
 
 def discover_audio_inputs(
-    pyaudio_module: Any | None = None, *, strict: bool = False
+    pyaudio_module: Any | None = None,
+    *,
+    strict: bool = False,
+    endpoint_discovery: Callable[[], object] | None = None,
 ) -> tuple[AudioInputDevice, ...]:
     """Enumerate input metadata without opening a recording stream.
 
     ``pyaudio_module`` is injectable so tests do not touch physical devices.
     Failures return an empty snapshot by default; callers then use the OS
     default input. Inventory callers may request strict errors to distinguish
-    an unavailable backend from a computer with no input endpoints.
+    an unavailable backend from a computer with no input endpoints. On Windows,
+    Core Audio endpoint IDs strengthen identity matching; the older hashed
+    label identity remains as a unique-match fallback for existing profiles and
+    when Core Audio metadata is unavailable.
     """
+    if endpoint_discovery is None:
+        endpoint_discovery = discover_windows_capture_endpoints
+    endpoint_by_name: dict[str, list[str]] = {}
+    try:
+        endpoint_records = endpoint_discovery()
+        if isinstance(endpoint_records, (tuple, list)) and len(endpoint_records) <= _MAX_AUDIO_DEVICES:
+            for endpoint in endpoint_records:
+                if not isinstance(endpoint, WindowsAudioEndpoint):
+                    continue
+                if (
+                    not isinstance(endpoint.endpoint_id, str)
+                    or not isinstance(endpoint.friendly_name, str)
+                    or not endpoint.endpoint_id
+                    or len(endpoint.endpoint_id) > 1024
+                    or not endpoint.friendly_name
+                    or len(endpoint.friendly_name) > 512
+                    or any(ord(character) < 32 for character in endpoint.endpoint_id)
+                    or any(ord(character) < 32 for character in endpoint.friendly_name)
+                ):
+                    continue
+                key = _normalize_label(endpoint.friendly_name)
+                endpoint_by_name.setdefault(key, []).append(endpoint.endpoint_id)
+    except Exception:
+        # Stable endpoint IDs are an optional enhancement. If Core Audio is
+        # unavailable, retain the existing conservative fingerprint path.
+        endpoint_by_name = {}
+
     audio = None
     try:
         if pyaudio_module is None:
@@ -104,9 +163,22 @@ def discover_audio_inputs(
                             host_api_name = host_info.get("name", "")
                     except Exception:
                         pass
-                identity = audio_input_identity(info.get("name", ""), host_api_name)
+                name = info.get("name", "")
+                identity = audio_input_identity(name, host_api_name)
+                matching_endpoints = endpoint_by_name.get(_normalize_label(name), ())
+                endpoint_identity = (
+                    audio_input_endpoint_identity(matching_endpoints[0], host_api_name)
+                    if len(matching_endpoints) == 1
+                    else ""
+                )
                 if identity:
-                    devices.append(AudioInputDevice(index=index, identity=identity))
+                    devices.append(
+                        AudioInputDevice(
+                            index=index,
+                            identity=identity,
+                            endpoint_identity=endpoint_identity,
+                        )
+                    )
             except (OSError, TypeError, ValueError, OverflowError):
                 continue
     finally:
@@ -171,17 +243,54 @@ def discover_audio_outputs(
     return tuple(devices)
 
 
-def resolve_audio_input_index(identity: str, devices: tuple[AudioInputDevice, ...]) -> int | None:
-    """Resolve only a unique current match; never guess between identical devices."""
+def resolve_audio_input_index(
+    identity: str,
+    devices: tuple[AudioInputDevice, ...],
+    *,
+    endpoint_identity: str = "",
+) -> int | None:
+    """Prefer a unique Core Audio ID, then a unique legacy label match."""
+    if endpoint_identity:
+        if not isinstance(endpoint_identity, str) or not _IDENTITY_RE.fullmatch(endpoint_identity):
+            return None
+        endpoint_matches = [
+            device.index
+            for device in devices
+            if device.endpoint_identity == endpoint_identity
+        ]
+        if endpoint_matches:
+            return endpoint_matches[0] if len(endpoint_matches) == 1 else None
     if not isinstance(identity, str) or not _IDENTITY_RE.fullmatch(identity):
         return None
     matches = [device.index for device in devices if device.identity == identity]
     return matches[0] if len(matches) == 1 else None
 
 
-def audio_input_identity_for_index(index: int | None, pyaudio_module: Any | None = None) -> str:
-    """Capture a fingerprint for a user-selected index, if it is unambiguous."""
+def audio_input_identities_for_index(
+    index: int | None, pyaudio_module: Any | None = None
+) -> tuple[str, str]:
+    """Capture label and optional endpoint hashes in one metadata scan."""
     if type(index) is not int or not 0 <= index < _MAX_AUDIO_DEVICES:
-        return ""
-    matches = [device.identity for device in discover_audio_inputs(pyaudio_module) if device.index == index]
-    return matches[0] if len(matches) == 1 else ""
+        return "", ""
+    matches = [
+        device
+        for device in discover_audio_inputs(pyaudio_module)
+        if device.index == index
+    ]
+    if len(matches) != 1:
+        return "", ""
+    return matches[0].identity, matches[0].endpoint_identity
+
+
+def audio_input_identity_for_index(
+    index: int | None, pyaudio_module: Any | None = None
+) -> str:
+    """Capture a label fingerprint for a user-selected index."""
+    return audio_input_identities_for_index(index, pyaudio_module)[0]
+
+
+def audio_input_endpoint_identity_for_index(
+    index: int | None, pyaudio_module: Any | None = None
+) -> str:
+    """Capture the optional Core Audio identity for a unique selected endpoint."""
+    return audio_input_identities_for_index(index, pyaudio_module)[1]

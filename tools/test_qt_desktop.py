@@ -119,7 +119,7 @@ class QtDesktopTests(unittest.TestCase):
         self.window.avatar_choice.setCurrentText("Кай · мужской образ")
         self.window.name_edit.setText("Кайто")
         self.window.scale_choice.setCurrentIndex(2)
-        with patch("src.desktop_settings.audio_input_identity_for_index", return_value=""):
+        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("", "")):
             self.window.save_settings()
         saved = qt.DesktopSettings().load()
         self.assertEqual((saved.avatar_id, saved.assistant_name, saved.ui_scale), ("male_kai", "Кайто", 125))
@@ -156,7 +156,7 @@ class QtDesktopTests(unittest.TestCase):
         for scope, check in self.window.scope_checks.items():
             self.assertNotEqual(check.text(), scope)
             check.setChecked(scope in {"read_files", "ask_files"})
-        with patch("src.desktop_settings.audio_input_identity_for_index", return_value=""):
+        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("", "")):
             self.window.save_settings()
         saved = qt.DesktopSettings().load()
         self.assertEqual(saved.microphone_index, 3)

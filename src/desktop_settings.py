@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 
 import win32crypt
 
-from src.audio_device_discovery import audio_input_identity_for_index
+from src.audio_device_discovery import audio_input_identities_for_index
+from src.capability_overrides import CapabilityOverrideStore
 from src.config_loader import Settings
 from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
@@ -111,8 +112,20 @@ class AIProfile:
 
 
 class DesktopSettings:
-    def __init__(self, path: Path | None = None):
+    def __init__(
+        self,
+        path: Path | None = None,
+        capability_override_store: CapabilityOverrideStore | None = None,
+    ):
         self.path = path or Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "settings.dpapi"
+        if capability_override_store is not None:
+            self.capability_override_store = capability_override_store
+        elif path is not None:
+            self.capability_override_store = CapabilityOverrideStore(
+                self.path.parent / "capability_overrides.json"
+            )
+        else:
+            self.capability_override_store = CapabilityOverrideStore()
 
     def load(self) -> AIProfile:
         if not self.path.exists():
@@ -128,9 +141,14 @@ class DesktopSettings:
     def save(self, profile: AIProfile):
         profile.validate()
         if profile.microphone_index is not None and not profile.microphone_identity:
-            identity = audio_input_identity_for_index(profile.microphone_index)
+            identity, endpoint_identity = audio_input_identities_for_index(
+                profile.microphone_index
+            )
             if identity:
                 profile = replace(profile, microphone_identity=identity)
+                self.capability_override_store.set_microphone_endpoint_identity(
+                    endpoint_identity
+                )
         data = asdict(profile)
         if not profile.microphone_identity:
             data.pop("microphone_identity", None)

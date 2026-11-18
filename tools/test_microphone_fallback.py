@@ -8,9 +8,14 @@ from src.audio_device_discovery import AudioInputDevice
 
 
 class MicrophoneFallbackTests(unittest.TestCase):
-    def make_voice(self, index, identity=""):
+    def make_voice(self, index, identity="", endpoint_identity=""):
         voice = VoiceIO.__new__(VoiceIO)
-        voice.settings = SimpleNamespace(stt_device_index=index, stt_device_identity=identity, ambient_noise_duration_seconds=0.1)
+        voice.settings = SimpleNamespace(
+            stt_device_index=index,
+            stt_device_identity=identity,
+            stt_device_endpoint_identity=endpoint_identity,
+            ambient_noise_duration_seconds=0.1,
+        )
         voice.logger = logging.getLogger('test.microphone')
         voice.recognizer = Mock()
         return voice
@@ -45,6 +50,40 @@ class MicrophoneFallbackTests(unittest.TestCase):
         voice._init_microphone()
         self.assertIs(voice.microphone, device)
         self.assertEqual([call.kwargs['device_index'] for call in microphone.call_args_list], [3])
+        emit.assert_not_called()
+
+    @patch('src.audio_io.emit_event')
+    @patch('src.audio_io.discover_audio_inputs')
+    @patch('src.audio_io.sr.Microphone')
+    def test_endpoint_identity_wins_over_same_legacy_name(self, microphone, discover, emit):
+        legacy_identity = 'a' * 64
+        endpoint_identity = 'b' * 64
+        device = MagicMock()
+        microphone.return_value = device
+        discover.return_value = (
+            AudioInputDevice(3, 'c' * 64, endpoint_identity),
+            AudioInputDevice(6, legacy_identity, 'd' * 64),
+        )
+        voice = self.make_voice(8, legacy_identity, endpoint_identity)
+        voice._init_microphone()
+        self.assertIs(voice.microphone, device)
+        self.assertEqual([call.kwargs['device_index'] for call in microphone.call_args_list], [3])
+        emit.assert_not_called()
+
+    @patch('src.audio_io.emit_event')
+    @patch('src.audio_io.discover_audio_inputs')
+    @patch('src.audio_io.sr.Microphone')
+    def test_changed_endpoint_uses_unique_legacy_match(self, microphone, discover, emit):
+        legacy_identity = 'a' * 64
+        device = MagicMock()
+        microphone.return_value = device
+        discover.return_value = (
+            AudioInputDevice(4, legacy_identity, 'c' * 64),
+        )
+        voice = self.make_voice(8, legacy_identity, 'b' * 64)
+        voice._init_microphone()
+        self.assertIs(voice.microphone, device)
+        self.assertEqual([call.kwargs['device_index'] for call in microphone.call_args_list], [4])
         emit.assert_not_called()
 
     @patch('src.audio_io.emit_event')

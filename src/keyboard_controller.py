@@ -683,6 +683,9 @@ class KeyboardController:
     def _activate_process_by_pid(self, pid: int) -> bool:
         # Kept as fallback. It is slower than WinAPI EnumWindows, but useful when
         # Windows foreground-lock rules reject SetForegroundWindow.
+        if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= 0xFFFFFFFF:
+            return False
+
         script = f"""
 $ErrorActionPreference = 'SilentlyContinue'
 $ws = New-Object -ComObject WScript.Shell

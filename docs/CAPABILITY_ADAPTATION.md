@@ -84,6 +84,13 @@ and the existing voice confirmation and exact-service revalidation still run
 before a transition. This changes the adapter implementation, not which VPNs
 are detected or which operations are authorized.
 
+Window focusing tries native Win32 activation first. The `WScript.Shell` fallback
+is optional: if Windows PowerShell is unavailable, focus simply reports failure
+when native activation was also denied; it does not block runtime startup or
+other commands. The PID passed to that fallback is range-checked, and no spoken
+text is included in the script. Windows may deny foreground activation while
+the user is interacting with another application.
+
 At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
 An explicit per-user choice wins when that service is still present; otherwise
 an explicit `.env` choice is kept when present. A stale AmneziaWG/WireGuard

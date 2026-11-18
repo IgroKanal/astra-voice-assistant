@@ -79,7 +79,13 @@ def main() -> None:
     # v0.10.4 voice UX and practical local commands.
     assert_cmd("повтори", CommandType.VOICE_FEEDBACK, "repeat_last")
     assert_cmd("повтори еще раз", CommandType.VOICE_FEEDBACK, "repeat_last")
+    assert_cmd("повтори что сказал", CommandType.VOICE_FEEDBACK, "repeat_last")
+    assert_cmd("что ты сказала", CommandType.VOICE_FEEDBACK, "repeat_last")
+    assert_cmd("что ты сказал", CommandType.VOICE_FEEDBACK, "repeat_last")
     assert_cmd("что ты услышала", CommandType.VOICE_FEEDBACK, "last_heard")
+    assert_cmd("что ты услышал", CommandType.VOICE_FEEDBACK, "last_heard")
+    assert_cmd("что ты распознала", CommandType.VOICE_FEEDBACK, "last_heard")
+    assert_cmd("что ты распознал", CommandType.VOICE_FEEDBACK, "last_heard")
     assert_cmd("что я сказал", CommandType.VOICE_FEEDBACK, "last_heard")
 
     assert_cmd("покажи рабочий стол", CommandType.WINDOW_CONTROL, "show_desktop")

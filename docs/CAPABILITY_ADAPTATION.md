@@ -81,7 +81,9 @@ The selected built-in character supplies the runtime assistant name and
 grammatical gender. Both are included in the answer-model instruction; local
 file-search, memory, reminder, dialogue-reset and common controller error
 phrases use the selected gender. Other fixed text may still need review; model
-compliance and real voice output require user testing.
+compliance and real voice output require user testing. Voice-feedback commands
+accept both masculine and feminine forms so the parser remains usable when the
+user switches character gender.
 
 ## Security boundary
 

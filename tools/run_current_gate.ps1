@@ -1,9 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = "C:\Projects\astra-voice-assistant"
+    [string]$ProjectRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+}
 
 if (-not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
     throw "Astra project directory not found: $ProjectRoot"
@@ -16,16 +20,32 @@ if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
 
 Push-Location -LiteralPath $ProjectRoot
 try {
-    & git status --short --branch
-    if ($LASTEXITCODE -ne 0) { throw "git status failed" }
+    if (Test-Path -LiteralPath (Join-Path $ProjectRoot ".git")) {
+        & git status --short --branch
+        if ($LASTEXITCODE -ne 0) { throw "git status failed" }
 
-    & git diff --check
-    if ($LASTEXITCODE -ne 0) { throw "git diff --check failed" }
+        & git diff --check
+        if ($LASTEXITCODE -ne 0) { throw "git diff --check failed" }
+    }
+    else {
+        Write-Host "Git metadata is absent; repository-only checks are not applicable."
+    }
+
+    $buildTempRoot = & $python -c "from pathlib import Path; from tools.build_paths import resolve_build_paths; print(resolve_build_paths(Path.cwd()).temp_root)"
+    if ($LASTEXITCODE -ne 0 -or -not $buildTempRoot) {
+        throw "Could not resolve the safe temporary directory for the Astra gate"
+    }
+    $buildTempRoot = $buildTempRoot.Trim()
+    New-Item -ItemType Directory -Path $buildTempRoot -Force | Out-Null
+    $env:TEMP = $buildTempRoot
+    $env:TMP = $buildTempRoot
+    $env:TMPDIR = $buildTempRoot
+    Write-Host "Python gate temporary directory: $buildTempRoot"
 
     & $python -m compileall main.py src tools
     if ($LASTEXITCODE -ne 0) { throw "compileall failed" }
 
-    & $python -m py_compile astra_desktop.pyw astra_runtime.py
+    & $python -m py_compile astra_desktop.pyw astra_desktop_qt.py astra_runtime.py src/qt_theme.py src/qt_widgets.py src/qt_dialogs.py src/qt_voice_files.py
     if ($LASTEXITCODE -ne 0) { throw "Desktop compilation failed" }
 
     $tests = @(

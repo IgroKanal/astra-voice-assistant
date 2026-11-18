@@ -8,7 +8,7 @@ import json
 import re
 import threading
 
-from src.file_workspace import FileWorkspace, WorkspaceDenied
+from src.file_workspace import FileWorkspace, FileWorkspaceGroup, WorkspaceDenied
 from src.ollama_client import OllamaClient
 
 
@@ -33,7 +33,7 @@ class FileQuestionSession:
     MAX_FILES = 5
     STOP_WORDS = frozenset("какой какая какие какое где когда почему чтобы который это как что для или про мне файл файле документ документе расскажи пожалуйста".split())
 
-    def __init__(self, workspace: FileWorkspace, relative: str | tuple[str, ...] | list[str]):
+    def __init__(self, workspace: FileWorkspace | FileWorkspaceGroup, relative: str | tuple[str, ...] | list[str]):
         if isinstance(relative, str):
             relatives = (relative,)
         elif isinstance(relative, (tuple, list)):
@@ -46,6 +46,9 @@ class FileQuestionSession:
             raise ValueError("Список выбранных файлов пуст или содержит неверный путь")
         if len(set(relatives)) != len(relatives):
             raise ValueError("Один и тот же файл выбран несколько раз")
+        if isinstance(workspace, FileWorkspaceGroup):
+            for relative_path in relatives:
+                workspace.authorize_question(relative_path)
         self.workspace, self.relatives = workspace, relatives
         self.relative = relatives[0]
         self.revoked = threading.Event()
@@ -53,9 +56,18 @@ class FileQuestionSession:
     def revoke(self):
         self.revoked.set()
 
+    def _is_cancelled(self, cancelled=None):
+        return self.revoked.is_set() or (cancelled is not None and cancelled.is_set())
+
     def check(self, cancelled=None):
-        if self.revoked.is_set() or (cancelled is not None and cancelled.is_set()):
+        if self._is_cancelled(cancelled):
             raise WorkspaceDenied("Запрос отменён или разрешение на файл отозвано")
+
+    def _read_selected(self, relative, cancelled=None):
+        options = {"is_cancelled": lambda: self._is_cancelled(cancelled)}
+        if isinstance(self.workspace, FileWorkspaceGroup):
+            options["operation"] = "ask"
+        return self.workspace.read_text(relative, **options)
 
     @staticmethod
     def fingerprint(text):
@@ -66,6 +78,33 @@ class FileQuestionSession:
         identity = [{"file": path, "sha256": cls.fingerprint(text)} for path, text in contents]
         return cls.fingerprint(json.dumps(identity, ensure_ascii=False, separators=(",", ":")))
 
+    @staticmethod
+    def _query_terms(question):
+        return {
+            word
+            for word in re.findall(r"\w{3,}", question.casefold())
+            if word not in FileQuestionSession.STOP_WORDS
+        }
+
+    @staticmethod
+    def _token_match_score(query_word, passage_word):
+        """Score exact tokens above inflection prefixes; never match inner substrings."""
+        if query_word == passage_word:
+            return 2
+        prefix_length = min(4, len(query_word), len(passage_word))
+        return int(query_word[:prefix_length] == passage_word[:prefix_length])
+
+    @classmethod
+    def _passage_score(cls, query_terms, text):
+        passage_terms = set(re.findall(r"\w{3,}", text.casefold()))
+        return sum(
+            max(
+                (cls._token_match_score(query, candidate) for candidate in passage_terms),
+                default=0,
+            )
+            for query in query_terms
+        )
+
     def retrieve(self, question, cancelled=None):
         self.check(cancelled)
         if not isinstance(question, str) or not 1 <= len(question.strip()) <= 1000:
@@ -74,25 +113,26 @@ class FileQuestionSession:
         total_characters = 0
         for relative in self.relatives:
             self.check(cancelled)
-            text = self.workspace.read_text(relative)
+            text = self._read_selected(relative, cancelled)
             total_characters += len(text)
             if total_characters > self.MAX_CHARACTERS:
                 raise ValueError("Общий текст выбранных файлов превышает 200000 символов")
             contents.append((relative, text))
-        words = {word for word in re.findall(r"\w{3,}", question.casefold()) if word not in self.STOP_WORDS}
-        words = {word[:5] if len(word) > 5 else word for word in words}
+        words = self._query_terms(question)
         passages = []
         for relative, text in contents:
             lines = text.splitlines()
             buffer, size, start = [], 0, 1
             # Fixed-size fragments preserve original line numbers, including long lines.
             for number, line in enumerate(lines, 1):
+                self.check(cancelled)
                 for offset in range(0, max(1, len(line)), 700):
+                    self.check(cancelled)
                     part = line[offset:offset + 700]
                     if buffer and (size + len(part) > 900 or number - start >= 12):
                         chunk = "\n".join(buffer)
                         passages.append(Passage(start, end, chunk,
-                                                sum(word in chunk.casefold() for word in words), relative))
+                                                self._passage_score(words, chunk), relative))
                         buffer, size = [], 0
                     if not buffer:
                         start = number
@@ -102,15 +142,17 @@ class FileQuestionSession:
             if buffer:
                 chunk = "\n".join(buffer)
                 passages.append(Passage(start, end, chunk,
-                                        sum(word in chunk.casefold() for word in words), relative))
+                                        self._passage_score(words, chunk), relative))
         summary = bool(re.search(r"кратк|перескаж|содержани|резюме|о ч[её]м", question.casefold()))
         ranked = sorted(passages, key=lambda item: (-item.score, self.relatives.index(item.file), item.start_line))
         selected = tuple(item for item in ranked[:min(2 * len(self.relatives), 10)] if item.score or summary)
         self.check(cancelled)
         return selected, self.collection_fingerprint(contents)
 
-    def answer(self, question, profile, cancelled=None):
+    def answer(self, question, profile, cancelled=None, *, timeout_seconds=120):
         self.check(cancelled)
+        if type(timeout_seconds) not in (int, float) or not 1 <= timeout_seconds <= 120:
+            raise ValueError("Некорректный лимит локального вопроса")
         profile.validate()
         if profile.provider != "ollama":
             raise ValueError("Вопросы по файлу доступны только с явно выбранным локальным Ollama. Содержимое не отправляется в облако.")
@@ -140,15 +182,42 @@ class FileQuestionSession:
             "Ссылайся на каждый факт индексом фрагмента [1], [2]. Не смешивай источники без явной ссылки. "
             "Не утверждай, что прочитаны целые файлы: это ограниченная выборка."
         )
-        answer = OllamaClient(profile.base_url, timeout=120).chat(profile.model, system, question, max_tokens=500, memory_context=context)
+        answer = OllamaClient(profile.base_url, timeout=timeout_seconds).chat(
+            profile.model,
+            system,
+            question,
+            max_tokens=500,
+            memory_context=context,
+            cancelled=lambda: self._is_cancelled(cancelled),
+        )
         self.check(cancelled)
         current = []
         for relative in self.relatives:
             self.check(cancelled)
-            current.append((relative, self.workspace.read_text(relative)))
+            current.append((relative, self._read_selected(relative, cancelled)))
         if self.collection_fingerprint(current) != digest:
             raise WorkspaceDenied("Один из выбранных файлов изменился во время ответа. Повтори вопрос по актуальному содержимому.")
-        transmitted = tuple(Passage(item["lines"][0], item["lines"][1], item["text"],
-                                    passages[index].score, passages[index].file)
-                            for index, item in enumerate(selected))
+        citation_matches = [
+            int(match.group(1))
+            for match in re.finditer(r"\[\s*(\d+)\s*\]", answer)
+        ]
+        invalid_citations = {
+            index for index in citation_matches
+            if not 1 <= index <= len(selected)
+        }
+        if invalid_citations:
+            raise ValueError("Локальная модель сослалась на отсутствующий фрагмент; повтори вопрос и проверь источники вручную.")
+        if not citation_matches:
+            raise ValueError("Локальная модель не указала источник ответа; повтори вопрос или проверь документ вручную.")
+        cited_indices = tuple(dict.fromkeys(index - 1 for index in citation_matches))
+        transmitted = tuple(
+            Passage(
+                selected[index]["lines"][0],
+                selected[index]["lines"][1],
+                selected[index]["text"],
+                passages[index].score,
+                passages[index].file,
+            )
+            for index in cited_indices
+        )
         return FileAnswer(answer, transmitted, digest)

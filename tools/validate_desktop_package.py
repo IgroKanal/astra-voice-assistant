@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -11,7 +12,13 @@ import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools.build_paths import configure_temp_directory, resolve_build_paths
 from tools.validate_package import _secret_findings, _unsafe_path_reason, _forbidden_file_reason
+
+
+def validate_voice_core_modules(modules):
+    if any(name not in modules for name in ("src.microphone_recovery", "src.assistant_persona", "src.runtime_events")):
+        raise ValueError("The packaged runtime is missing character, event or microphone recovery support")
 
 
 def main():
@@ -39,12 +46,15 @@ def main():
         folder = roots.pop()
         names = set(archive.namelist())
         avatar_assets = ("anime_female.png", "anime_female_speaking.png", "anime_male.png", "anime_male_speaking.png",
-                         "anime_female_saya.png", "anime_female_saya_speaking.png", "anime_male_kai.png", "anime_male_kai_speaking.png")
+                         "anime_female_saya.png", "anime_female_saya_speaking.png", "anime_male_kai.png", "anime_male_kai_speaking.png",
+                         "full_female.png", "full_female_speaking.png", "full_male.png", "full_male_speaking.png",
+                         "full_female_saya.png", "full_female_saya_speaking.png", "full_male_kai.png", "full_male_kai_speaking.png")
         required_files = ("Astra.exe", "runtime/AstraRuntime/AstraRuntime.exe", "config/apps.json", "config/routines.json",
                           "assets/branding/astra.ico", "assets/branding/astra.png", "assets/branding/astra.svg",
                           *("assets/avatars/" + name for name in avatar_assets), "assets/3d_avatar/project.godot",
                           "assets/3d_avatar/main.tscn", "assets/3d_avatar/scripts/avatar_viewer.gd",
                           "third_party/godot/Godot_v4.7.2-stable_win64.exe", "GODOT_LICENSE.txt", "GODOT_COPYRIGHT.txt",
+                          "third_party_licenses/Qt-LGPL-3.0-only.txt", "third_party_licenses/Qt-GPL-3.0-only.txt",
                           "build_manifest.json", ".env.example", "THIRD_PARTY_NOTICES.md")
         for required in required_files:
             if folder + "/" + required not in names:
@@ -54,7 +64,14 @@ def main():
             raise ValueError("CRC failure: " + bad)
         print(f"DESKTOP_PACKAGE_PASS: {len(entries)} entries, no forbidden files or known secret patterns")
         if args.test_relocated:
-            destination = Path(tempfile.mkdtemp(prefix="astra relocated preview "))
+            paths = resolve_build_paths(ROOT)
+            paths.temp_root.mkdir(parents=True, exist_ok=True)
+            configure_temp_directory(paths.temp_root)
+            destination_temp = tempfile.TemporaryDirectory(
+                prefix="astra-relocated-preview-", dir=paths.temp_root
+            )
+            atexit.register(destination_temp.cleanup)
+            destination = Path(destination_temp.name)
             archive.extractall(destination)
             from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
             ui_exe = destination / folder / "Astra.exe"
@@ -63,25 +80,52 @@ def main():
             probe.write_bytes(embedded.extract("PYZ.pyz"))
             modules = ZlibArchiveReader(str(probe)).toc
             probe.unlink()
-            if ("pypdf" not in modules or "src.file_workspace" not in modules or
-                    "src.plan_ui" not in modules or "src.plan_interpreter" not in modules or
-                    "src.avatar_preview" not in modules or "src.onboarding_ui" not in modules or
-                    "src.onboarding_state" not in modules or "src.profile_backup" not in modules or
-                    "src.backup_crypto" not in modules or "src.portable_memory_backup" not in modules or
-                    "src.portable_reminder_backup" not in modules or
-                    "src.action_audit" not in modules or "src.action_audit_ui" not in modules or
-                    "src.desktop_theme" not in modules or "src.scroll_section" not in modules or
-                    "PIL.Image" not in modules or "PIL.ImageOps" not in modules or "PIL.ImageTk" not in modules):
-                raise ValueError("A file reader, plan interpreter, plan UI, avatar preview or onboarding module is missing from Astra.exe")
+            required_modules = {
+                "pypdf", "PIL.Image", "PIL.ImageOps",
+                "src.file_workspace", "src.file_transactions", "src.file_rag", "src.skill_executor",
+                "src.plan_interpreter", "src.avatar_preview", "src.onboarding_state",
+                "src.profile_backup", "src.backup_crypto", "src.portable_memory_backup",
+                "src.portable_reminder_backup", "src.action_audit", "src.command_catalog",
+                "src.desktop_file_search", "src.desktop_tray", "src.qt_theme", "src.qt_widgets",
+                "src.qt_dialogs", "src.qt_voice_files",
+            }
+            missing_modules = sorted(required_modules.difference(modules))
+            if missing_modules:
+                raise ValueError("Required Qt desktop modules are missing from Astra.exe: " + ", ".join(missing_modules))
+            embedded_names = {name.replace("\\", "/").casefold() for name in embedded.toc}
+            qt_binaries = (
+                "pyside6/qtcore.pyd", "pyside6/qtgui.pyd", "pyside6/qtwidgets.pyd",
+                "pyside6/qt/plugins/platforms/qwindows.dll",
+            )
+            missing_binaries = [
+                required for required in qt_binaries
+                if not any(name.endswith(required) for name in embedded_names)
+            ]
+            if missing_binaries:
+                raise ValueError("Required Qt binaries or Windows platform plugin are missing from Astra.exe: " + ", ".join(missing_binaries))
+            runtime_exe = destination / folder / "runtime" / "AstraRuntime" / "AstraRuntime.exe"
+            runtime_embedded = CArchiveReader(str(runtime_exe))
+            runtime_probe = destination / ".astra-runtime-package-pyz-check.pyz"
+            runtime_probe.write_bytes(runtime_embedded.extract("PYZ.pyz"))
+            runtime_modules = ZlibArchiveReader(str(runtime_probe)).toc
+            runtime_probe.unlink()
+            if ("src.ai_client" not in runtime_modules or "src.llm_providers" not in runtime_modules or
+                    "src.desktop_file_search" not in runtime_modules):
+                raise ValueError("The runtime model client, provider adapter or voice file-access module is missing from AstraRuntime.exe")
+            validate_voice_core_modules(runtime_modules)
+            print("PACKAGED_LLM_PROVIDER_PASS: AIClient and the shared provider adapters are embedded in AstraRuntime.exe")
+            print("PACKAGED_VOICE_CORE_PASS: character, event and microphone recovery modules are embedded in AstraRuntime.exe")
+            print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open/read IPC and workspace checks are embedded in AstraRuntime.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")
-            print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded preview/execution UI are embedded in Astra.exe")
+            print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded Qt preview/execution UI are embedded in Astra.exe")
             print("PACKAGED_AVATAR_LAUNCHER_PASS: the packaged UI includes the isolated 3D preview launcher")
             print("PACKAGED_ONBOARDING_PASS: first-run setup wizard is embedded in Astra.exe")
             print("PACKAGED_ONBOARDING_STATE_PASS: DPAPI-backed first-run choice is embedded in Astra.exe")
             print("PACKAGED_PROFILE_BACKUP_PASS: encrypted portable profile migration is embedded in Astra.exe")
             print("PACKAGED_PORTABLE_MEMORY_BACKUP_PASS: encrypted cross-PC memory migration is embedded in Astra.exe")
             print("PACKAGED_PORTABLE_REMINDER_BACKUP_PASS: encrypted cross-PC reminder migration is embedded in Astra.exe")
-            print("PACKAGED_IMAGE_PREVIEW_PASS: bounded local image decoder and Tk viewer are embedded in Astra.exe")
+            print("PACKAGED_IMAGE_PREVIEW_PASS: bounded local image decoder and Qt viewer are embedded in Astra.exe")
+            print("PACKAGED_QT_PLATFORM_PASS: Qt widgets and the native Windows platform plugin are embedded in Astra.exe")
             for name in avatar_assets:
                 internal = "assets\\avatars\\" + name
                 payload = embedded.extract(internal)

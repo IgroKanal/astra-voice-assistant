@@ -4,7 +4,7 @@ Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 projectDir = fso.GetParentFolderName(WScript.ScriptFullName)
 pythonw = projectDir & "\.venv\Scripts\pythonw.exe"
-entry = projectDir & "\astra_desktop.pyw"
+entry = projectDir & "\astra_desktop_qt.py"
 If Not fso.FileExists(pythonw) Then
     MsgBox "Astra Python environment was not found.", vbCritical, "Astra"
     WScript.Quit 1

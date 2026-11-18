@@ -1,0 +1,52 @@
+# Core runtime event contract for the Kimi desktop client
+
+This document describes the local stdout event contract between Astra's core runtime and a desktop client. Typed web-source and active-character metadata do not change the existing human-readable chat path.
+
+## Event framing
+
+Each event is one UTF-8 JSON line prefixed with `@ASTRA_EVENT `:
+
+```json
+{"version":1,"type":"assistant","text":"Источники: [1] Документация — https://docs.example/page","data":{"kind":"web_sources","sources":[{"index":1,"title":"Документация","url":"https://docs.example/page"}]}}
+```
+
+`version`, `type`, and `text` retain their existing meanings. The optional `data` object is supported for `type: "assistant"` with `kind: "web_sources"`, and for `type: "profile"` with `kind: "assistant_profile"`. Source entries contain consecutive integer indices, display titles, and HTTPS URLs. Profile entries contain only a safe avatar identifier, display name, and grammatical gender. The parser rejects credentials, loopback/private/reserved IPs, local hostnames, controls, malformed links, unknown profile values, and extra fields.
+
+## Core APIs
+
+- `src.runtime_events.parse_event(line)` remains the legacy API and returns `(type, text)`, preserving the current Astra Desktop chat.
+- `src.runtime_events.parse_event_record(line)` returns a validated `RuntimeEvent(kind, text, data)` for clients that render structured metadata.
+- `DesktopBridge.events` is the bounded legacy queue of `(type, text)` pairs.
+- `DesktopBridge.typed_events` is a bounded queue of metadata-bearing `RuntimeEvent` records (64 entries). Poll it promptly. If it fills, Astra drops the typed copy while retaining the readable text event in the legacy queue.
+
+The `web_sources` metadata is display data only. A client may render it as a source card and open a link only after the user clicks it; it must never treat a citation as a command or auto-open the URL.
+
+An opted-in core emits one `profile` event at startup after applying the encrypted desktop profile. It identifies the active character so a new client can keep its portrait, displayed name, and grammatical gender aligned with core speech. `DesktopBridge` places this event only in `typed_events`; it does not show an empty profile event in the legacy chat queue. Profile changes take effect after the runtime restarts. The event contains no API keys, TTS voice identifiers, or file paths.
+
+## Web research disclosure
+
+Voice web answers require the separate `web_research` permission, which is off by default, an explicit web-answer command, and the selected local Ollama provider. Astra sends the explicit search query to Bing and sends retrieved page excerpts only to that local Ollama instance. There is no cloud model fallback. If Edge TTS is selected, the answer text also goes to that network speech service; Windows SAPI keeps speech synthesis local. The new client should make this data flow clear and provide a visible way to review or revoke the permission.
+
+## Compatibility
+
+Older clients continue receiving the source list as normal assistant text. New clients can use `parse_event_record` or `DesktopBridge.typed_events` to render structured citations without scraping that text.
+
+## Character and model integration
+
+The core's `Settings.assistant_name` and `Settings.assistant_gender` are separate: the latter is `female` or `male` and governs Russian self-reference, regardless of the custom name. Authored responses and help examples that refer to the assistant use the active gender; user quotations and the user's gender are not rewritten. The existing encrypted desktop profile selects gender via the active `avatar_id`: `female_miku` and `female_saya` map to `female`; `male_ren` and `male_kai` map to `male`. If `character_profiles` contains the active avatar, its `assistant_name` and `voice_id` supply that character's identity and explicit Windows SAPI voice; an empty voice ID requests automatic voice selection using the character's gender. Older profiles without an entry for the active avatar continue to use the top-level `assistant_name` and `voice_id`. Profile settings are applied when the runtime starts; restart the runtime after a profile change. A client using another profile store must explicitly pass both settings to its core instance, or use `ASSISTANT_NAME` and `ASSISTANT_GENDER` with desktop profile loading deliberately disabled. Merely changing a picture does not update core settings.
+
+Human-readable state events remain unchanged. A new client may explicitly set both `ASTRA_DESKTOP_EVENTS=1` and `ASTRA_ACTIVITY_EVENTS=1` when it starts the runtime to opt in to machine-readable events such as `{"version":1,"type":"activity","text":"speaking:start"}` and `speaking:stop`. The allowed activity names are `listening`, `recognizing`, `thinking` and `speaking`; each has `start` and `stop` phases. Activities may overlap (streamed speech can begin while a model is still generating), so track each activity independently rather than treating them as a single exclusive state. Clear all active indicators when the runtime process exits or its connection is lost. The speech activity covers the TTS attempt, including synthesis and possible playback failure; it does not promise audible sound. This protocol does not provide phonemes, lip sync, emotions, animation assets or window lifecycle controls. Without the explicit opt-in, older clients receive no new activity events. Do not infer that a model has performed an action from its text. File and Windows actions remain subject to the core's typed action policy.
+
+`DesktopBridge.events` forwards these opt-in `("activity", "name:phase")` tuples. Structured assistant/profile metadata appears only in `DesktopBridge.typed_events`; activity events do not appear there. A client reading runtime stdout directly can use `parse_event_record`.
+
+OpenRouter conversation configuration uses the existing `compatible` provider, `https://openrouter.ai/api/v1` and `openai/gpt-6-luna`. The core requests `reasoning.effort=none` for this exact endpoint and model. `openai/gpt-6-luna-decisions` uses a different decision endpoint and is not a conversational model. No key is included here; cloud requests require an independently configured key and send the current user question and system prompt to the selected provider. Local notes and local dialogue history are never sent. Optional `LLM_CLOUD_DIALOGUE_ENABLED=true` additionally sends up to four previous question/answer pairs from this cloud session, each entry capped at 2,000 characters; this is off by default. The new client should explain that enabling it sends previous dialogue to the selected provider. A new dialogue clears this in-memory history; the provider may retain data under its own policy. This setup has only mock coverage until a real key and network test are available.
+
+When using the encrypted desktop profile instead of environment-only configuration, the client can set `AIProfile.cloud_dialogue_enabled` after the user chooses to send the prior turns. The field defaults to false for older profiles, is only accepted for `compatible` or `gemini`, and is applied when the runtime restarts. A profile with the option enabled requires a runtime that supports this field; update the client and runtime together before enabling it. Profiles that leave it disabled omit the field for compatibility. UI integration is not part of this change.
+
+## Early voice response
+
+When TTS is enabled, the voice runtime streams compatible-provider output and may begin speaking the first complete, screened sentence through either Edge or local SAPI while the rest of the answer is still being generated. Ollama thinking mode intentionally disables early speech. The complete answer still arrives through the ordinary assistant event; this reduces perceived waiting but does not guarantee a provider's time to first token.
+
+## File-action confirmation adapter
+
+`src.voice_file_confirmation.VoiceFileConfirmation` accepts either `FileTransactions` for one workspace or `FileWorkspaceGroupTransactions` for separately granted roots. `prepare("trash"|"move"|"copy"|"mkdir", source=..., destination=..., destination_is_folder=False)` creates a preview and a spoken confirmation prompt; `mkdir` creates only an empty folder under a live write grant. `confirm("подтверждаю")` executes that exact, still-valid preview, and `cancel()` discards it. Relative paths may point into nested folders; an explicit “в папку …” destination appends the source filename, and the transaction layer verifies the destination parent inside the granted root. For group transactions, cross-root copy still needs read access to the source and write access to the destination; cross-root move remains denied. The existing root grants expire and are rechecked at confirmation. The voice confirmation expires after 30 seconds and is consumed once. After a confirmed copy, move, or empty-folder creation, an exact wake-prefixed command such as “отмени последнее файловое действие” calls `undo_last()`; it targets only the latest undoable operation made by this adapter since the current runtime started. A successful undo clears that pointer, and a successful trash action clears it as well. Undo reuses the transaction journal, so current write grants and file/folder identity or content are checked again; restart clears the in-memory pointer. Permissions remain controlled by the transaction layer, with a separate trash grant and Windows Recycle Bin semantics. File mutation and undo require the separate `modify_files` policy scope, which is absent by default and intentionally not exposed by the legacy desktop settings catalog. The runtime calls `cancel()` on every exit, while workspace switches and permission revocation must also invalidate the preview. An integrating client must provide an explicit opt-in for `modify_files` as well as workspace-specific grants. Model text cannot authorize these actions. Current desktop IPC and the Kimi client do not yet supply the adapter; the default runtime therefore reports that voice file changes are not connected. Packaging and real microphone use remain unverified.

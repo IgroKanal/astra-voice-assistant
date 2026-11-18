@@ -1,15 +1,17 @@
 from pathlib import Path
+from dataclasses import replace
 import json
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import win32crypt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile, AVATAR_PROFILES, DesktopSettings
-from src.ollama_client import OllamaClient
+from src.action_policy import ActionPolicy
+from src.ollama_client import OllamaClient, OllamaResponseTruncated
 from src.ai_client import AIClient
 
 
@@ -27,12 +29,30 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(settings.llm_api_key, "")
             self.assertFalse(settings.llm_router_enabled)
             self.assertEqual(settings.llm_fallback_model, "")
+            store.save(AIProfile(provider="ollama", local_command_router_enabled=True))
+            settings = store.apply(Settings(llm_router_enabled=False))
+            self.assertTrue(settings.llm_router_enabled)
+            self.assertTrue(store.load().local_command_router_enabled)
 
     def test_permissions_apply_even_in_env_mode(self):
         with tempfile.TemporaryDirectory() as temp:
             store = DesktopSettings(Path(temp) / "settings.dpapi")
             store.save(AIProfile(provider="env", allowed_scopes=()))
             self.assertEqual(store.apply(Settings()).action_permissions, ())
+
+    def test_cloud_dialogue_preference_roundtrips_and_requires_cloud_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            profile = AIProfile(provider="compatible", base_url="https://example.invalid/v1", model="cloud", cloud_dialogue_enabled=True)
+            store.save(profile)
+            self.assertTrue(store.load().cloud_dialogue_enabled)
+            self.assertTrue(store.apply(Settings()).llm_cloud_dialogue_enabled)
+            store.save(AIProfile(provider="compatible", base_url="https://example.invalid/v1", model="cloud"))
+            self.assertFalse(store.apply(Settings(llm_cloud_dialogue_enabled=True)).llm_cloud_dialogue_enabled)
+            decoded = json.loads(win32crypt.CryptUnprotectData(store.path.read_bytes(), None, None, None, 1)[1].decode("utf-8"))
+            self.assertNotIn("cloud_dialogue_enabled", decoded)
+        with self.assertRaises(ValueError):
+            AIProfile(provider="ollama", cloud_dialogue_enabled=True).validate()
 
     def test_voice_profile_roundtrip_and_custom_wake_name(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -53,6 +73,93 @@ class AIProfileTests(unittest.TestCase):
     def test_unknown_avatar_profile_is_rejected(self):
         with self.assertRaises(ValueError):
             AIProfile(avatar_id="arbitrary-file.png").validate()
+
+    def test_openrouter_decision_model_is_rejected_before_saving(self):
+        profile = AIProfile(provider="compatible", base_url="https://openrouter.ai/api/v1", model="openai/gpt-6-luna-decisions")
+        with self.assertRaisesRegex(ValueError, "не предназначена для диалога"):
+            profile.validate()
+
+    def test_character_gender_follows_avatar_even_with_custom_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            for avatar, gender, custom_name in (
+                ("female_miku", "female", "Рэн"),
+                ("female_saya", "female", "Кай"),
+                ("male_ren", "male", "Мику"),
+                ("male_kai", "male", "Сая"),
+            ):
+                with self.subTest(avatar=avatar):
+                    store.save(AIProfile(provider="disabled", avatar_id=avatar, assistant_name=custom_name))
+                    settings = store.apply(Settings())
+                    self.assertEqual((settings.assistant_gender, settings.assistant_name), (gender, custom_name))
+                    prompt = AIClient(settings)._build_answer_system_prompt()
+                    self.assertIn("я понял" if gender == "male" else "я поняла", prompt)
+                    self.assertIn(
+                        "Не используй женский род о себе." if gender == "male"
+                        else "Не используй мужской род о себе.",
+                        prompt,
+                    )
+                    self.assertIn(custom_name, prompt)
+
+    def test_active_character_profile_supplies_its_own_name_and_voice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                assistant_name="Legacy name",
+                voice_id="legacy-voice-id",
+                avatar_id="male_kai",
+                character_profiles={
+                    "female_miku": {"assistant_name": "Мику", "voice_id": "female-voice-id"},
+                    "male_kai": {"assistant_name": "Кай", "voice_id": "male-voice-id"},
+                },
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_name, "Кай")
+            self.assertEqual(settings.assistant_gender, "male")
+            self.assertEqual(settings.assistant_avatar_id, "male_kai")
+            self.assertEqual(settings.tts_voice_name, "male-voice-id")
+            self.assertIn("кай", settings.wake_phrases)
+
+    def test_empty_character_voice_selects_gender_matched_default(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                voice_id="legacy-female-voice-id",
+                avatar_id="male_ren",
+                character_profiles={
+                    "male_ren": {"assistant_name": "Рэн", "voice_id": ""},
+                },
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_gender, "male")
+            self.assertEqual(settings.tts_voice_name, "")
+
+    def test_profile_without_character_map_uses_legacy_voice_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(
+                provider="disabled",
+                assistant_name="Рэн",
+                voice_id="legacy-voice-id",
+                avatar_id="male_ren",
+            ))
+
+            settings = store.apply(Settings())
+
+            self.assertEqual(settings.assistant_name, "Рэн")
+            self.assertEqual(settings.tts_voice_name, "legacy-voice-id")
+
+    def test_character_grammar_does_not_modify_quoted_user_text(self):
+        from src.assistant_persona import character_phrase
+        text = "Она сказала: я нашла"
+        phrase = character_phrase(Settings(assistant_gender="male"), female="Услышала", male="Услышал")
+        self.assertEqual(f"{phrase}: {text}", "Услышал: Она сказала: я нашла")
 
     def test_avatar_registry_has_two_original_profiles_per_gender(self):
         root = Path(__file__).resolve().parents[1]
@@ -85,6 +192,10 @@ class AIProfileTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 OllamaClient(url)
 
+    def test_local_command_router_option_is_valid_only_for_ollama(self):
+        with self.assertRaises(ValueError):
+            AIProfile(provider="compatible", local_command_router_enabled=True).validate()
+
     def test_local_answer_and_failure_never_create_cloud_client(self):
         settings = Settings(llm_provider="ollama", llm_base_url="http://127.0.0.1:11434", llm_api_key="ignored", llm_model="qwen3:4b")
         with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), patch.object(OllamaClient, "chat", return_value="Привет"):
@@ -94,6 +205,198 @@ class AIProfileTests(unittest.TestCase):
         with patch.object(OllamaClient, "chat", side_effect=TimeoutError):
             self.assertFalse(client.ask("Вопрос").ok)
             self.assertIsNone(client._client)
+
+    def test_local_answer_uses_fast_no_thinking_mode_by_default(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        with patch.object(OllamaClient, "chat", return_value="Короткий ответ") as chat:
+            result = AIClient(settings).ask("Вопрос для проверки")
+        self.assertTrue(result.ok)
+        self.assertFalse(chat.call_args.kwargs["think"])
+        self.assertTrue(callable(chat.call_args.kwargs["timing_callback"]))
+
+    def test_local_answer_records_only_first_token_duration(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+
+        def answer(*_args, **kwargs):
+            kwargs["timing_callback"]({"first_token_seconds": 0.25, "elapsed_seconds": 0.9})
+            return "Секретный текст ответа"
+
+        with patch.object(OllamaClient, "chat", side_effect=answer), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("Секретный вопрос")
+
+        self.assertTrue(result.ok)
+        timing_lines = [line for line in captured.output if "first-token timing" in line]
+        self.assertEqual(len(timing_lines), 1)
+        self.assertIn("elapsed=0.250s", timing_lines[0])
+        self.assertNotIn("Секретный", "\n".join(captured.output))
+
+    def test_local_answer_streams_text_only_when_hidden_thinking_is_disabled(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        chunks = []
+
+        def answer(*_args, **kwargs):
+            kwargs["on_chunk"]("Первое предложение.")
+            return "Первое предложение."
+
+        with patch.object(OllamaClient, "chat", side_effect=answer) as chat:
+            result = AIClient(settings).ask("Вопрос", on_text_chunk=chunks.append)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(chunks, ["Первое предложение."])
+        self.assertTrue(callable(chat.call_args.kwargs["on_chunk"]))
+
+        settings = replace(settings, ollama_thinking_enabled=True)
+        with patch.object(OllamaClient, "chat", return_value="Полный ответ.") as chat:
+            result = AIClient(settings).ask("Вопрос", on_text_chunk=chunks.append)
+        self.assertTrue(result.ok)
+        self.assertNotIn("on_chunk", chat.call_args.kwargs)
+
+    def test_local_thinking_can_be_enabled_through_runtime_settings(self):
+        settings = Settings(
+            llm_provider="ollama",
+            llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+            ollama_thinking_enabled=True,
+        )
+        with patch.object(OllamaClient, "chat", return_value="Развёрнутый ответ") as chat:
+            result = AIClient(settings).ask("Сложный вопрос")
+        self.assertTrue(result.ok)
+        self.assertTrue(chat.call_args.kwargs["think"])
+
+    def test_cloud_answer_logs_duration_without_question_text(self):
+        settings = Settings(
+            llm_provider="compatible",
+            llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="fast-model",
+            llm_fallback_model="",
+        )
+        response = Mock()
+        response.choices = [Mock(message=Mock(content="Короткий ответ"))]
+        client = Mock()
+        client.chat.completions.create.return_value = response
+
+        with patch("src.ai_client.OpenAI", return_value=client), self.assertLogs(
+            "src.ai_client", level="INFO"
+        ) as captured:
+            result = AIClient(settings).ask("уникальный текст вопроса")
+
+        self.assertTrue(result.ok)
+        log_text = "\n".join(captured.output)
+        self.assertIn("task=answer model=fast-model result=ok", log_text)
+        self.assertNotIn("уникальный текст вопроса", log_text)
+
+    def test_cloud_answer_cancellation_closes_stream_and_skips_fallback(self):
+        settings = Settings(
+            llm_provider="compatible",
+            llm_api_key="test-key",
+            llm_base_url="https://example.invalid/v1",
+            llm_model="primary-model",
+            llm_fallback_model="fallback-model",
+            llm_cloud_dialogue_enabled=True,
+        )
+        cancelled = [False]
+
+        class CloseableStream:
+            def __init__(self):
+                self.events = [Mock(choices=[Mock(delta=Mock(content="Первый токен"))])]
+                self.closed = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if not self.events:
+                    raise StopIteration
+                return self.events.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        stream = CloseableStream()
+        remote = Mock()
+        remote.chat.completions.create.return_value = stream
+
+        with patch("src.ai_client.OpenAI", return_value=remote):
+            client = AIClient(settings)
+            result = client.ask(
+                "Вопрос для отменяемого ответа.",
+                on_text_chunk=lambda _part: cancelled.__setitem__(0, True),
+                cancelled=lambda: cancelled[0],
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.message, "Запрос отменён.")
+        self.assertTrue(stream.closed)
+        remote.chat.completions.create.assert_called_once()
+        self.assertEqual(
+            remote.chat.completions.create.call_args.kwargs["model"],
+            "primary-model",
+        )
+        self.assertEqual(client._cloud_dialogue, [])
+
+    def test_local_command_router_requires_opt_in_and_never_falls_back_to_cloud(self):
+        disabled = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=False, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", side_effect=AssertionError("Opt-in required")) as local_chat:
+            result = disabled.route_command("который час", {})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.action.type.value, "unknown")
+            local_chat.assert_not_called()
+
+        enabled = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        response = '{"action":"get_time","target":"","query":"","url":"","confidence":0.93,"reason":"Вопрос о времени"}'
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value=response) as local_chat:
+            result = enabled.route_command("который час", {})
+            self.assertTrue(result.ok)
+            self.assertEqual(result.action.type.value, "get_time")
+            local_chat.assert_called_once()
+            self.assertEqual(local_chat.call_args.kwargs["temperature"], 0)
+            self.assertFalse(local_chat.call_args.kwargs["think"])
+            self.assertTrue(ActionPolicy().check(result.action).allowed)
+
+    def test_local_command_router_malformed_output_fails_closed_without_cloud(self):
+        client = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value='{"action":"powershell","confidence":1}'):
+            result = client.route_command("открой приложение", {})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.action.type.value, "unknown")
+
+    def test_local_command_router_invalid_json_returns_unknown(self):
+        client = AIClient(Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_router_enabled=True, llm_model="installed-model",
+        ))
+        with patch("src.ai_client.OpenAI", side_effect=AssertionError("Cloud forbidden")), \
+             patch.object(OllamaClient, "chat", return_value="not-json"):
+            result = client.route_command("открой приложение", {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.action.type.value, "unknown")
 
     def test_missing_model_is_not_downloaded(self):
         client = OllamaClient()
@@ -110,6 +413,15 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(len(client._dialogue), 8)
             self.assertEqual(client._dialogue[0]["content"], "вопрос 2")
             self.assertEqual(AIClient(settings)._dialogue, [])
+
+    def test_clear_dialogue_removes_only_in_memory_turns(self):
+        client = AIClient(Settings(llm_provider="ollama", llm_base_url="http://127.0.0.1:11434"))
+        client._dialogue.extend([
+            {"role": "user", "content": "вопрос"},
+            {"role": "assistant", "content": "ответ"},
+        ])
+        client.clear_dialogue()
+        self.assertEqual(client._dialogue, [])
 
     def test_context_cannot_add_system_or_tool_messages(self):
         client = OllamaClient()
@@ -130,6 +442,20 @@ class AIProfileTests(unittest.TestCase):
         with patch.object(client, "models", return_value=["test"]), patch.object(client, "_request", side_effect=responses):
             with self.assertRaises(ValueError):
                 client.chat("test", "system", "question")
+
+    def test_thinking_only_truncation_explains_the_model_limit(self):
+        settings = Settings(
+            llm_provider="ollama", llm_base_url="http://127.0.0.1:11434",
+            llm_model="qwen3:4b",
+        )
+        with patch.object(
+            OllamaClient, "chat",
+            side_effect=OllamaResponseTruncated(thinking_channel_required=True),
+        ):
+            result = AIClient(settings).ask("Вопрос")
+        self.assertFalse(result.ok)
+        self.assertIn("рассуждения не удалось отключить", result.message)
+        self.assertIn("быструю модель", result.message)
 
 
 if __name__ == "__main__":

@@ -45,7 +45,10 @@ def encrypt_profile(profile: AIProfile, passphrase: str) -> bytes:
     profile.validate()
     salt = secrets.token_bytes(16)
     nonce = secrets.token_bytes(12)
-    plaintext = json.dumps(asdict(profile), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    data = asdict(profile)
+    if not profile.cloud_dialogue_enabled:
+        data.pop("cloud_dialogue_enabled")
+    plaintext = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ciphertext = AESGCM(_derive(passphrase, salt)).encrypt(nonce, plaintext, AAD)
     envelope = {
         "format": FORMAT,

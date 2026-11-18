@@ -10,14 +10,14 @@ from urllib.parse import urlsplit
 import win32crypt
 
 from src.config_loader import Settings
-from src.action_policy import ALL_SCOPES
+from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
 
 AVATAR_PROFILES = {
-    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "asset": "anime_female.png", "speaking_asset": "anime_female_speaking.png"},
-    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "asset": "anime_male.png", "speaking_asset": "anime_male_speaking.png"},
-    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "asset": "anime_female_saya.png", "speaking_asset": "anime_female_saya_speaking.png"},
-    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "asset": "anime_male_kai.png", "speaking_asset": "anime_male_kai_speaking.png"},
+    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "gender": "female", "asset": "full_female.png", "speaking_asset": "full_female_speaking.png"},
+    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "gender": "male", "asset": "full_male.png", "speaking_asset": "full_male_speaking.png"},
+    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "gender": "female", "asset": "full_female_saya.png", "speaking_asset": "full_female_saya_speaking.png"},
+    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "gender": "male", "asset": "full_male_kai.png", "speaking_asset": "full_male_kai_speaking.png"},
 }
 DEFAULT_AVATAR_ID = "female_miku"
 COMMAND_LIKE_NAMES = ("открой", "закрой", "сверни", "разверни", "покажи", "включи", "выключи", "напомни", "следующий", "предыдущий", "обнови", "найди", "поищи", "переключи", "нажми", "напиши", "громче", "тише", "стоп")
@@ -30,7 +30,9 @@ class AIProfile:
     base_url: str = "http://127.0.0.1:11434"
     api_key: str = field(default="", repr=False)
     memory_enabled: bool = False
-    allowed_scopes: tuple[str, ...] = ALL_SCOPES
+    cloud_dialogue_enabled: bool = False
+    local_command_router_enabled: bool = False
+    allowed_scopes: tuple[str, ...] = DEFAULT_SCOPES
     assistant_name: str | None = None
     voice_id: str = ""
     microphone_index: int | None = None
@@ -38,6 +40,9 @@ class AIProfile:
     voice_volume: float = 1.0
     avatar_id: str = DEFAULT_AVATAR_ID
     character_profiles: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    avatar_mode: str = "2d"
+    ui_scale: int = 100
+    reduced_motion: bool = False
 
     def validate(self):
         if self.provider not in {"env", "disabled", "ollama", "gemini", "compatible"}:
@@ -46,6 +51,10 @@ class AIProfile:
             raise ValueError("Неизвестное разрешение навыка")
         if not isinstance(self.memory_enabled, bool) or (self.memory_enabled and self.provider != "ollama"):
             raise ValueError("Личная память разрешена только для локального Ollama")
+        if not isinstance(self.cloud_dialogue_enabled, bool) or (self.cloud_dialogue_enabled and self.provider not in {"gemini", "compatible"}):
+            raise ValueError("Контекст облачного диалога доступен только для выбранного облачного провайдера")
+        if not isinstance(self.local_command_router_enabled, bool) or (self.local_command_router_enabled and self.provider != "ollama"):
+            raise ValueError("Некорректная настройка локального распознавания команд")
         if not isinstance(self.model, str) or not self.model.strip() or len(self.model) > 200:
             raise ValueError("Укажи модель (до 200 символов)")
         if not isinstance(self.api_key, str) or len(self.api_key) > 10000:
@@ -76,6 +85,12 @@ class AIProfile:
             raise ValueError("Скорость голоса должна быть от 80 до 300")
         if type(self.voice_volume) not in (int, float) or not 0 <= self.voice_volume <= 1:
             raise ValueError("Громкость голоса должна быть от 0 до 1")
+        if self.avatar_mode not in {"2d", "3d"}:
+            raise ValueError("Режим персонажа должен быть 2D или 3D")
+        if type(self.ui_scale) is not int or self.ui_scale not in {100, 110, 125, 150}:
+            raise ValueError("Масштаб интерфейса должен быть 100, 110, 125 или 150%")
+        if not isinstance(self.reduced_motion, bool):
+            raise ValueError("Некорректная настройка анимации")
         if self.provider == "ollama":
             url = urlsplit(self.base_url)
             if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"} or url.username or url.password or url.path not in {"", "/"} or url.query or url.fragment:
@@ -86,6 +101,8 @@ class AIProfile:
             url = urlsplit(self.base_url)
             if url.scheme != "https" or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError("Для облачного провайдера нужен HTTPS endpoint без credentials")
+            if url.hostname == "openrouter.ai" and self.model.strip() == "openai/gpt-6-luna-decisions":
+                raise ValueError("Luna Decisions не предназначена для диалога. Выбери openai/gpt-6-luna.")
         return self
 
 
@@ -106,7 +123,11 @@ class DesktopSettings:
 
     def save(self, profile: AIProfile):
         profile.validate()
-        raw = json.dumps(dict(version=1, **asdict(profile)), ensure_ascii=False).encode("utf-8")
+        data = asdict(profile)
+        # Older clients can still read profiles that do not opt in.
+        if not profile.cloud_dialogue_enabled:
+            data.pop("cloud_dialogue_enabled")
+        raw = json.dumps(dict(version=1, **data), ensure_ascii=False).encode("utf-8")
         encrypted = win32crypt.CryptProtectData(raw, "Astra settings", None, None, None, 1)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8) + ".tmp")
@@ -118,14 +139,23 @@ class DesktopSettings:
 
     def apply(self, settings: Settings) -> Settings:
         profile = self.load()
-        name = profile.assistant_name or settings.assistant_name
+        character = profile.character_profiles.get(profile.avatar_id)
+        if character is None:
+            # Profiles created before per-character settings keep using their
+            # top-level name and voice as a backwards-compatible fallback.
+            name = profile.assistant_name or settings.assistant_name
+            voice_id = profile.voice_id
+        else:
+            name = character["assistant_name"]
+            # Empty means automatic voice selection for the character's gender.
+            voice_id = character["voice_id"]
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=profile.voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":
             return replace(settings, llm_enabled=False, llm_router_enabled=False)
         if profile.provider == "ollama":
-            return replace(settings, llm_enabled=True, llm_provider="ollama", llm_base_url=profile.base_url.rstrip("/"), llm_model=profile.model, llm_fallback_model="", llm_api_key="", llm_timeout_seconds=120, llm_router_enabled=False, personal_memory_enabled=profile.memory_enabled)
+            return replace(settings, llm_enabled=True, llm_provider="ollama", llm_base_url=profile.base_url.rstrip("/"), llm_model=profile.model, llm_fallback_model="", llm_api_key="", llm_timeout_seconds=120, llm_router_enabled=profile.local_command_router_enabled, personal_memory_enabled=profile.memory_enabled)
         endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/" if profile.provider == "gemini" else profile.base_url
-        return replace(settings, llm_enabled=True, llm_provider=profile.provider, llm_base_url=endpoint, llm_model=profile.model, llm_fallback_model="", llm_api_key=profile.api_key)
+        return replace(settings, llm_enabled=True, llm_provider=profile.provider, llm_base_url=endpoint, llm_model=profile.model, llm_fallback_model="", llm_api_key=profile.api_key, llm_cloud_dialogue_enabled=profile.cloud_dialogue_enabled)

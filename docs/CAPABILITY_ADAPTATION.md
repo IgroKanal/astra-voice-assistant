@@ -1,0 +1,91 @@
+# Adaptive capabilities: current implementation and next steps
+
+## Current slice
+
+The core reads the current Windows browser registrations at startup and combines
+the discovered executables with `config/apps.json`. It checks both per-user and
+machine-wide `App Paths` and `StartMenuInternet` registrations, then reads the
+HTTPS `UserChoice` ProgId to find the OS-selected browser. A candidate is kept
+only when its registry command resolves to an absolute existing `.exe` path.
+The command parser takes the executable token only; spoken text is never added
+to that command line.
+
+The live OS default is used when no saved preference names a browser found on
+this computer. A per-user preference can be kept separately at
+`%LOCALAPPDATA%\AstraVoiceAssistant\capability_overrides.json`; this file is
+versioned, size-limited, validated, and written atomically. It contains a
+preference, not a permission grant or a discovered system fact. Existing
+`BROWSER_PREFERRED` remains a compatibility fallback.
+
+Discovery is read-only. It does not install software, change the Windows
+default, enable a capability, or grant access to user files. If registry access
+is unavailable, the existing app configuration remains usable.
+
+There is also a bounded inventory of registered `App Paths` entries. It keeps
+only existing absolute executable paths and prefers a per-user registration.
+Known command interpreters and script launchers are excluded from discovery;
+the spoken request is never used as an executable path or command line.
+If a local command exactly names an otherwise unknown entry, Astra requests a
+one-time confirmation. Confirmation expires after 20 seconds; before launching,
+the core verifies the registration and file identity again. The language model
+and routines cannot request this launch. Fuzzy recognition, richer application
+names and per-application risk classification are still open.
+If no exact registration is found in the initial inventory, the core refreshes
+the inventory once, allowing newly registered applications to be found without
+restarting. A different command cancels a pending confirmation and goes through
+the ordinary wake-word and action checks.
+Wake-only voice mode supports up to three consecutive follow-ups, so an open
+request, application name and confirmation can be spoken in separate turns.
+Timeout or failed recognition cancels the pending request.
+
+For VPN status, when the configured tunnel service is absent, Astra can inspect
+the names of registered AmneziaWG and WireGuard tunnel services. Exactly one
+match can be queried; multiple matches are reported as ambiguous. This is a
+read-only fallback. Connect and disconnect still use the configured service;
+automatic selection, user choice and confirmation for changing a connection
+remain open. No VPN state was changed during automated tests.
+
+If the configured microphone cannot initialize, the voice runtime tries the
+Windows default once and reports the fallback. If both fail, it remains
+unavailable. This does not detect an index that now points to a different but
+working device: stable device identification remains open. No real microphone
+was opened by the automated fallback tests.
+
+The selected built-in character supplies the runtime assistant name and
+grammatical gender. Both are included in the answer-model instruction; local
+file-search, memory, reminder, dialogue-reset and common controller error
+phrases use the selected gender. Other fixed text may still need review; model
+compliance and real voice output require user testing.
+
+## Security boundary
+
+Discovery answers **what appears to exist on this PC**. It does not answer
+**whether Astra may perform an action**. The current ActionPolicy still uses
+typed action scopes for most actions. Web search and system information are
+enabled as specific low-risk actions when user overrides load successfully.
+`disabled_auto_scopes` in `capability_overrides.json` can disable either
+automatic action (`browser`, `system`). Invalid overrides disable automatic
+mode. Screenshots, URL opening, file access and other actions are not granted
+by this mode. The remaining transition away from scope checkbox state and
+general confirmation for sensitive operations is still open.
+
+Do not treat a discovered VPN service, device, executable, or file as an
+authorization. Those require their own adapters and risk classification. A
+confirmation must be bound to the exact pending action and expire; a general
+spoken “yes” must not create a lasting permission.
+
+## Remaining architecture work
+
+1. Build a typed capability inventory for installed applications, browsers,
+   VPN clients, audio devices, and supported Windows features.
+2. Separate discovered inventory, per-user overrides, and authorization state.
+3. Keep ordinary reversible actions available by default; request confirmation
+   immediately before sensitive or irreversible operations.
+4. Replace fixed VPN service names and device indices with discovered IDs plus
+   stable user overrides.
+5. Keep voice state events as the source of character animation state. The Qt
+   scene and current 2D art are preserved; production layered art or a real VRM/
+   Live2D-compatible model is still required before attempting polished new
+   animation. Procedural 3D primitives remain out of the UI.
+
+This is a foundation increment, not completion of version 3.2 or a Beta gate.

@@ -48,6 +48,74 @@ class ReminderTests(unittest.TestCase):
         self.assertFalse(self.store.acknowledge(identity, claim.token))
         self.assertEqual(self.store.claim_due(999), [])
 
+    def test_cancel_next_atomically_cancels_only_earliest_active_reminder(self):
+        later = self.store.add("later", 300)
+        next_pending = self.store.add("next", 200)
+        delivered = self.store.add("delivered", 50)
+        delivered_claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, delivered_claim.token))
+        next_delivering = self.store.add("delivering", 100)
+        delivery_claim = self.store.claim_due(100)[0]
+
+        self.assertTrue(self.store.cancel_next())
+        self.assertFalse(self.store.valid_claim(next_delivering, delivery_claim.token))
+        self.assertFalse(self.store.acknowledge(next_delivering, delivery_claim.token))
+        self.assertTrue(self.store.cancel_next())
+        self.assertTrue(self.store.cancel_next())
+        self.assertFalse(self.store.cancel_next())
+
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[next_delivering], "cancelled")
+        self.assertEqual(states[next_pending], "cancelled")
+        self.assertEqual(states[later], "cancelled")
+        self.assertEqual(states[delivered], "delivered")
+
+    def test_cancel_matching_requires_one_active_title_fragment_match(self):
+        matching = self.store.add("позвонить про встречу", 100)
+        delivered = self.store.add("встреча уже прошла", 50)
+        claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, claim.token))
+
+        result, title = self.store.cancel_matching("про встречу")
+
+        self.assertEqual((result, title), ("cancelled", "позвонить про встречу"))
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[matching], "cancelled")
+        self.assertEqual(states[delivered], "delivered")
+        self.assertEqual(self.store.cancel_matching("нет такой задачи"), ("not_found", ""))
+
+    def test_cancel_matching_keeps_multiple_matches_untouched(self):
+        first = self.store.add("встреча с Анной", 100)
+        second = self.store.add("план встречи", 200)
+
+        self.assertEqual(self.store.cancel_matching("встреч"), ("ambiguous", ""))
+        states = {item.id: item.state for item in self.store.list()}
+        self.assertEqual(states[first], "pending")
+        self.assertEqual(states[second], "pending")
+        for invalid_query in (" ", "a", "x" * 161):
+            with self.assertRaises(ValueError):
+                self.store.cancel_matching(invalid_query)
+
+    def test_list_upcoming_returns_only_active_reminders_in_due_order_and_respects_limit(self):
+        later = self.store.add("later", 300)
+        earliest = self.store.add("earliest", 100)
+        delivered = self.store.add("delivered", 50)
+        claim = self.store.claim_due(50)[0]
+        self.assertTrue(self.store.acknowledge(delivered, claim.token))
+        delivering = self.store.add("delivering", 75)
+        self.store.claim_due(75)
+        cancelled = self.store.add("cancelled", 80)
+        self.assertTrue(self.store.cancel(cancelled))
+
+        items = self.store.list_upcoming(limit=2)
+
+        self.assertEqual([item.text for item in items], ["delivering", "earliest"])
+        self.assertEqual([item.id for item in items], [delivering, earliest])
+        self.assertNotIn(later, [item.id for item in items])
+        for invalid_limit in (0, 11, True, 2.0):
+            with self.assertRaises(ValueError):
+                self.store.list_upcoming(invalid_limit)
+
     def test_delivered_reminder_stays_unread_across_restart(self):
         identity = self.store.add("x", 100)
         claim = self.store.claim_due(100)[0]

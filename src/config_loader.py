@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from src.action_policy import ALL_SCOPES
+from src.action_policy import DEFAULT_SCOPES
 
 
 class ConfigError(Exception):
@@ -17,6 +17,10 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Settings:
     assistant_name: str = "Астра"
+    # Grammatical gender of the active character, independent of their name.
+    assistant_gender: str = "female"
+    # Stable profile identity for clients that need to render the selected character.
+    assistant_avatar_id: str = ""
     wake_phrases: list[str] = field(
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
@@ -37,7 +41,7 @@ class Settings:
     router_cooldown_seconds: float = 2.0
 
     stt_command_aware_alternatives: bool = True
-    stt_mistake_log_enabled: bool = True
+    stt_mistake_log_enabled: bool = False
     stt_mistake_log_path: str = "logs/stt_mistakes.log"
 
     browser_preferred: str = ""
@@ -63,18 +67,23 @@ class Settings:
     llm_model: str = "gemma-4-31b-it"
     llm_fallback_model: str = "gemini-3.5-flash"
     llm_system_prompt: str = (
-        "Ты голосовой ассистент для ПК. Твоё имя Астра. "
+        "Ты голосовой ассистент для ПК. "
         "Отвечай кратко, понятно и по делу. Обычно 1–3 предложения."
     )
     llm_temperature: float = 0.2
     llm_max_tokens: int = 500
     llm_timeout_seconds: int = 30
+    # Explicit opt-in: recent cloud conversation turns are sent to the chosen provider.
+    llm_cloud_dialogue_enabled: bool = False
 
     llm_router_enabled: bool = True
     llm_router_min_confidence: float = 0.55
+    ollama_thinking_enabled: bool = False
+    ollama_warmup_on_wake: bool = True
 
     speech_language: str = "ru-RU"
     stt_device_index: int | None = None
+    stt_recognition_timeout_seconds: float = 12.0
     listen_timeout_seconds: int = 10
     phrase_time_limit_seconds: int = 16
     ambient_noise_duration_seconds: float = 0.6
@@ -94,6 +103,7 @@ class Settings:
     tts_edge_rate: str = "+10%"
     tts_edge_volume: str = "+0%"
     tts_edge_pitch: str = "+0Hz"
+    tts_playback_timeout_seconds: float = 25.0
 
     tts_cache_enabled: bool = True
     tts_cache_dir: str = ""
@@ -145,7 +155,9 @@ class Settings:
     tts_debug_voices: bool = True
     personal_memory_enabled: bool = False
     personal_memory_path: str = ""
-    action_permissions: tuple[str, ...] = ALL_SCOPES
+    action_permissions: tuple[str, ...] = DEFAULT_SCOPES
+    automatic_safe_actions: bool = False
+    denied_auto_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -266,6 +278,9 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
 
     default_name = "Астра"
     assistant_name = os.getenv("ASSISTANT_NAME", default_name).strip() or default_name
+    assistant_gender = os.getenv("ASSISTANT_GENDER", "female").strip().lower()
+    if assistant_gender not in {"female", "male"}:
+        raise ConfigError("ASSISTANT_GENDER должен быть female или male.")
 
     default_wake_phrases = list(
         dict.fromkeys(
@@ -284,7 +299,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
     )
 
     default_system_prompt = (
-        f"Ты голосовой ассистент для ПК. Твоё имя {assistant_name}. "
+        "Ты голосовой ассистент для ПК. "
         "Отвечай кратко, понятно и законченными фразами. "
         "Обычно 1–3 предложения. Не используй markdown и черновики."
     )
@@ -293,6 +308,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
 
     return Settings(
         assistant_name=assistant_name,
+        assistant_gender=assistant_gender,
         wake_phrases=_list_from_env("WAKE_PHRASES", default_wake_phrases),
         allow_commands_without_wake=_bool_from_env(
             "ALLOW_COMMANDS_WITHOUT_WAKE",
@@ -352,7 +368,7 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         ),
         stt_mistake_log_enabled=_bool_from_env(
             "STT_MISTAKE_LOG_ENABLED",
-            True,
+            False,
         ),
         stt_mistake_log_path=_str_from_env(
             "STT_MISTAKE_LOG_PATH",
@@ -402,12 +418,19 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         llm_temperature=_float_from_env("LLM_TEMPERATURE", 0.2),
         llm_max_tokens=_int_from_env("LLM_MAX_TOKENS", 500),
         llm_timeout_seconds=_int_from_env("LLM_TIMEOUT_SECONDS", 30),
+        llm_cloud_dialogue_enabled=_bool_from_env("LLM_CLOUD_DIALOGUE_ENABLED", False),
         llm_router_enabled=_bool_from_env("LLM_ROUTER_ENABLED", True),
         llm_router_min_confidence=_float_from_env(
             "LLM_ROUTER_MIN_CONFIDENCE",
             0.55,
         ),
+        ollama_thinking_enabled=_bool_from_env("OLLAMA_THINKING_ENABLED", False),
+        ollama_warmup_on_wake=_bool_from_env("OLLAMA_WARMUP_ON_WAKE", True),
         speech_language=os.getenv("SPEECH_LANGUAGE", "ru-RU").strip(),
+        stt_recognition_timeout_seconds=_float_from_env(
+            "STT_RECOGNITION_TIMEOUT_SECONDS",
+            12.0,
+        ),
         listen_timeout_seconds=_int_from_env("LISTEN_TIMEOUT_SECONDS", 10),
         phrase_time_limit_seconds=_int_from_env("PHRASE_TIME_LIMIT_SECONDS", 16),
         ambient_noise_duration_seconds=_float_from_env(
@@ -436,6 +459,10 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         tts_edge_rate=_str_from_env("TTS_EDGE_RATE", "+10%"),
         tts_edge_volume=_str_from_env("TTS_EDGE_VOLUME", "+0%"),
         tts_edge_pitch=_str_from_env("TTS_EDGE_PITCH", "+0Hz"),
+        tts_playback_timeout_seconds=_float_from_env(
+            "TTS_PLAYBACK_TIMEOUT_SECONDS",
+            25.0,
+        ),
         tts_cache_enabled=_bool_from_env("TTS_CACHE_ENABLED", True),
         tts_cache_dir=os.getenv("TTS_CACHE_DIR", "").strip(),
         tts_cache_prewarm_enabled=_bool_from_env(

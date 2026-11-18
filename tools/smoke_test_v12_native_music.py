@@ -211,7 +211,7 @@ def test_direct_resolver_and_honest_missing_result() -> None:
     ), patch.object(subprocess, "Popen") as popen:
         result = manager.open_app("яндекс музыка")
     assert not result.ok, result
-    assert "Не нашёл приложение Яндекс Музыка" in result.message, result
+    assert "Приложение Яндекс Музыка не найдено" in result.message, result
     popen.assert_not_called()
 
 

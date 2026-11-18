@@ -47,6 +47,15 @@ class ActionAudit:
         with closing(sqlite3.connect(self.path, timeout=3)) as db:
             return db.execute("SELECT created,action,outcome,correlation FROM events ORDER BY rowid DESC LIMIT ?", (min(500, max(1, int(limit))),)).fetchall()
 
+    def clear(self) -> int:
+        """Delete all retained metadata and overwrite its SQLite pages."""
+        with closing(sqlite3.connect(self.path, timeout=3)) as db, db:
+            db.execute("PRAGMA secure_delete=ON")
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute("SELECT count(*) FROM events").fetchone()[0]
+            db.execute("DELETE FROM events")
+        return count
+
 
 def default_audit():
     root = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "AstraVoiceAssistant"

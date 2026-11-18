@@ -317,7 +317,7 @@ class KeyboardController:
         if name == "incomplete_key":
             return KeyboardActionResult(
                 False,
-                "Не понял, какую клавишу нажать. Скажи: нажми Enter.",
+                "Уточни, какую клавишу нажать. Например: нажми Enter.",
             )
 
         if name == "enter" and self.is_foreground_terminal_like():
@@ -387,7 +387,7 @@ class KeyboardController:
         hwnd = self._media_target_window(clean_target)
 
         if clean_target and not hwnd:
-            return KeyboardActionResult(False, "Не нашёл открытый выбранный медиаплеер.")
+            return KeyboardActionResult(False, "Выбранный медиаплеер не найден среди открытых окон.")
 
         for index in range(repeat_count):
             if hwnd:

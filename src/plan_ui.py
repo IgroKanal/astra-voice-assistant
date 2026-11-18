@@ -25,13 +25,15 @@ SKILLS = {
     "Перемещение файла": ("files.move", ("source", "destination"), "Относительные пути источника и назначения"),
     "Переименование файла": ("files.rename", ("source", "destination"), "Относительные пути файла и нового имени в той же папке"),
     "Создание пустой папки": ("files.create_folder", ("path",), "Относительный путь новой папки"),
+    "Перемещение файла в Корзину": ("files.trash", ("path",), "Относительный путь точного файла"),
 }
 
 
 def _step_title(name: str) -> str:
     return {"files.search": "Поиск файлов", "files.read_text": "Чтение документа",
             "files.copy": "Копирование файла", "files.move": "Перемещение файла",
-            "files.rename": "Переименование файла", "files.create_folder": "Создание пустой папки"}.get(name, name)
+            "files.rename": "Переименование файла", "files.create_folder": "Создание пустой папки",
+            "files.trash": "Перемещение файла в Корзину Windows"}.get(name, name)
 
 
 def _step_value(step: SkillCall) -> str:
@@ -53,8 +55,9 @@ def open_plan_ui(owner, workspace: FileWorkspace, button, transactions: FileTran
     tk.Label(panel, text="План в выбранной папке", bg=BG, fg=TEXT,
              font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=20, pady=(18, 4))
     tk.Label(panel,
-             text="До 8 шагов поиска, чтения, копирования и перемещения. Симуляция не обращается к файлам. "
-                  "Изменение файлов и создание папок требуют отдельного разрешения записи, точного preview и подтверждения.",
+             text="До 8 шагов поиска, чтения, копирования и перемещения файлов. Симуляция не обращается к файлам. "
+                  "Изменения требуют отдельного разрешения записи; Корзина Windows — отдельного разрешения. "
+                  "Перед выполнением Astra покажет точный preview и попросит подтверждение.",
              bg=BG, fg=MUTED, wraplength=770, justify="left").pack(anchor="w", padx=20, pady=(0, 12))
 
     form = tk.Frame(panel, bg=BG)
@@ -266,6 +269,17 @@ def open_plan_ui(owner, workspace: FileWorkspace, button, transactions: FileTran
                     else:
                         details.append(f"{index + 1}. {title}\n   Источник: {preview.source}\n"
                                        f"   Назначение: {preview.destination}\n   Объём: {preview.size} байт")
+                elif step.name in SkillExecutor.TRASH_SKILLS:
+                    if transactions is None:
+                        raise PlanDenied("Открой операции с файлами и отдельно разреши перемещение в Корзину")
+                    preview = transactions.preview("trash", source=step.arguments["path"])
+                    prepared.append(preview.token)
+                    write_tokens[index] = preview.token
+                    details.append(
+                        f"{index + 1}. {title}\n   Файл: {preview.source}\n"
+                        f"   Размер: {preview.size} байт\n"
+                        "   Файл будет перемещён в Корзину Windows, не удалён навсегда"
+                    )
                 else:
                     details.append(f"{index + 1}. {title}: {_step_value(step)}")
         except Exception as exc:

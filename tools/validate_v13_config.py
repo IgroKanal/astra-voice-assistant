@@ -17,7 +17,7 @@ def main() -> None:
         ROOT / "tools" / "smoke_test_v13_media_control.py",
         ROOT / "tools" / "smoke_test_v13_window_actions.py",
         ROOT / "tools" / "apply_v13_beta_env.ps1",
-        ROOT / "RELEASE_NOTES_v1.3.md",
+        ROOT / "docs/releases/v1.3.md",
     ]
     missing = [str(path.relative_to(ROOT)) for path in required if not path.is_file()]
     assert not missing, f"Missing v1.3 files: {missing}"

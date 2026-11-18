@@ -228,25 +228,25 @@ class WindowsAppManager:
     def open_app(self, user_target: str) -> AppActionResult:
         app = self.find_app(user_target)
         if app is None:
-            return AppActionResult(False, "Не нашёл такое приложение в списке.")
+            return AppActionResult(False, "Такое приложение не найдено в списке.")
 
         command = self._resolve_open_command(app)
         if command is None:
             if app.name == "vscode":
                 return AppActionResult(
                     False,
-                    "Не нашёл Code.exe. Проверь путь к VS Code или установи команду code в PATH.",
+                    "Code.exe не найден. Проверь путь к VS Code или установи команду code в PATH.",
                 )
             if app.name == self._YANDEX_MUSIC_APP_NAME:
                 return AppActionResult(
                     False,
-                    "Не нашёл приложение Яндекс Музыка. Проверь установку или "
+                    "Приложение Яндекс Музыка не найдено. Проверь установку или "
                     "ASTRA_YANDEX_MUSIC_PATH.",
                 )
             if app.name == self._LOCAL_MEDIA_APP_NAME:
                 return AppActionResult(
                     False,
-                    "Не нашёл локальный медиаплеер. Укажи его путь в "
+                    "Локальный медиаплеер не найден. Укажи его путь в "
                     "ASTRA_LOCAL_MEDIA_PLAYER_PATH.",
                 )
             return AppActionResult(False, f"Не удалось открыть {app.name}: команда запуска не найдена.")
@@ -593,7 +593,7 @@ class WindowsAppManager:
     def close_app(self, user_target: str) -> AppActionResult:
         app = self.find_app(user_target)
         if app is None:
-            return AppActionResult(False, "Не нашёл такое приложение в списке.")
+            return AppActionResult(False, "Такое приложение не найдено в списке.")
         if app.name == self._LOCAL_MEDIA_APP_NAME:
             return self._close_local_media_player()
         return self._close_allowed_processes([app.process_name])

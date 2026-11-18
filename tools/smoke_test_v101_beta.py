@@ -327,7 +327,7 @@ def test_shell_apps_are_not_executable_targets() -> None:
     for target in ("cmd", "powershell"):
         assert manager.find_app(target) is None, target
         process_turn(f"Астра, открой {target}", ctx)
-        assert responses[-1] == "Не нашёл такое приложение в списке.", responses
+        assert responses[-1] == "Такое приложение не найдено в списке.", responses
 
     assert ai.route_calls == 0 and ai.ask_calls == 0
 

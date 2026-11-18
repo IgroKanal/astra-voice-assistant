@@ -5,14 +5,19 @@ import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
-from src.runtime_events import parse_event
+from src.runtime_events import RuntimeEvent, parse_event_record
+from src.desktop_file_search import encode_file_result
+
+_UNSET_PROCESS = object()
 
 
 class DesktopBridge:
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.events: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=2000)
+        self.typed_events: queue.Queue[RuntimeEvent] = queue.Queue(maxsize=64)
         self.process: subprocess.Popen | None = None
         self.mode = "text"
         self._lock = threading.RLock()
@@ -49,7 +54,13 @@ class DesktopBridge:
         else:
             python = self.root / ".venv" / "Scripts" / "python.exe"
             if not python.is_file():
-                raise FileNotFoundError("Не найден runtime Astra или Python в .venv.")
+                # A source handoff may be started with an existing Python
+                # environment before a project-local .venv has been created.
+                # Frozen apps must never treat their own executable as Python.
+                current_python = Path(sys.executable)
+                if getattr(sys, "frozen", False) or not current_python.is_file():
+                    raise FileNotFoundError("Не найден runtime Astra или Python в .venv.")
+                python = current_python
             command = [str(python), "-u", str(self.root / "main.py")]
         if mode == "text":
             command.append("--text")
@@ -69,9 +80,18 @@ class DesktopBridge:
         try:
             assert process.stdout is not None
             for line in process.stdout:
-                event = parse_event(line.rstrip())
+                event = parse_event_record(line.rstrip())
                 if event:
-                    self.emit(*event)
+                    # Profile metadata is available only through the typed
+                    # queue; keep it out of the legacy chat/event stream.
+                    if event.kind != "profile":
+                        self.emit(event.kind, event.text)
+                    if event.data is not None:
+                        try:
+                            self.typed_events.put_nowait(event)
+                        except queue.Full:
+                            # The legacy text event remains available if a new client falls behind.
+                            pass
                 else:
                     self.emit("output", line.rstrip())
         finally:
@@ -88,6 +108,28 @@ class DesktopBridge:
         assert self.process is not None and self.process.stdin is not None
         self.process.stdin.write(text + "\n")
         self.process.stdin.flush()
+
+    def reply_file_request(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
+        line = encode_file_result(result)
+        if len(line) > 8192:
+            raise ValueError("Ответ файлового действия слишком велик")
+        with self._lock:
+            process = self.process
+            if (
+                process is None
+                or (expected_process is not _UNSET_PROCESS and process is not expected_process)
+                or process.poll() is not None
+                or process.stdin is None
+                or self.mode != "voice"
+            ):
+                return False
+            process.stdin.write(line)
+            process.stdin.flush()
+        return True
+
+    def reply_file_search(self, result: dict, *, expected_process=_UNSET_PROCESS) -> bool:
+        """Compatibility wrapper for callers that only reply to a search request."""
+        return self.reply_file_request(result, expected_process=expected_process)
 
     def stop(self) -> None:
         with self._lock:

@@ -17,39 +17,41 @@ from src.scroll_section import scroll_section
 def open_ai_settings(owner, button, on_saved, app=None):
     store = DesktopSettings()
     panel = tk.Toplevel(owner)
-    panel.title("Astra · настройки ИИ")
-    panel.geometry(f"780x{min(820, max(560, owner.winfo_screenheight() - 100))}")
-    panel.minsize(680, 520)
-    panel.configure(bg="#101322")
+    panel.title("Astra · настройки")
+    panel.geometry(f"900x{min(820, max(560, owner.winfo_screenheight() - 100))}")
+    panel.minsize(760, 560)
+    panel.configure(bg="#0B1020")
     tabs = ttk.Notebook(panel)
-    tabs.pack(fill="both", expand=True, padx=12, pady=12)
+    tabs.pack(fill="both", expand=True, padx=12, pady=(12, 4))
     content_page, content = scroll_section(tabs)
     voice_page, voice_tab = scroll_section(tabs)
-    permissions = tk.Frame(tabs, bg="#101322")
+    permissions, permission_content = scroll_section(tabs)
+    appearance_page, appearance_tab = scroll_section(tabs)
     tabs.add(content_page, text="ИИ и память")
-    tabs.add(voice_page, text="Голос и микрофон")
-    tabs.add(permissions, text="Разрешения навыков")
+    tabs.add(voice_page, text="Студия персонажа")
+    tabs.add(permissions, text="Разрешения")
+    tabs.add(appearance_page, text="Внешний вид")
     profile_load_failed = False
     try:
         profile = store.load()
     except Exception:
         profile = AIProfile()
         profile_load_failed = True
-    tk.Label(voice_tab, text=f"{DISPLAY_VERSION} · голос Windows", bg="#101322", fg="#e9ecff", font=("Segoe UI", 17)).pack(pady=18)
-    tk.Label(voice_tab, text="2D-образ ассистента · персонажа можно просмотреть до сохранения", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
+    tk.Label(voice_tab, text="Студия персонажа", bg="#101322", fg="#e9ecff", font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=24, pady=(18, 2))
+    tk.Label(voice_tab, text="Образ, имя и голос · изменения применятся только после сохранения", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24, pady=(0, 10))
     avatar_labels = {item["label"]: identity for identity, item in AVATAR_PROFILES.items()}
     initial_avatar = profile.avatar_id if profile.avatar_id in AVATAR_PROFILES else DEFAULT_AVATAR_ID
     avatar_row = tk.Frame(voice_tab, bg="#101322")
     avatar_row.pack(fill="x", padx=24, pady=(2, 6))
     avatar = ttk.Combobox(avatar_row, values=tuple(avatar_labels), state="readonly", font=("Segoe UI", 11))
     avatar.pack(side="left", fill="x", expand=True, padx=(0, 12))
-    preview_card = tk.Frame(avatar_row, bg="#191f34", width=92, height=82)
+    preview_card = tk.Frame(avatar_row, bg="#191f34", width=164, height=154, highlightbackground="#283652", highlightthickness=1)
     preview_card.pack(side="right")
     preview_card.pack_propagate(False)
     preview_image = tk.Label(preview_card, bg="#191f34", fg="#a2abc9", text="2D")
-    preview_image.pack(side="top", pady=(2, 0))
+    preview_image.pack(side="top", pady=(4, 0))
     preview_name = tk.StringVar(value="")
-    tk.Label(preview_card, textvariable=preview_name, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 8), wraplength=88).pack(side="bottom", fill="x")
+    tk.Label(preview_card, textvariable=preview_name, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 10, "bold"), wraplength=150).pack(side="bottom", fill="x", pady=5)
     avatar.set(AVATAR_PROFILES[initial_avatar]["label"])
     panel.astra_avatar_preview = preview_image
     panel.astra_avatar_preview_name = preview_name
@@ -74,7 +76,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
                 resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
                 image_path = resource_root / "assets" / "avatars" / AVATAR_PROFILES[selected]["asset"]
                 image = tk.PhotoImage(master=panel, file=str(image_path))
-                factor = max(1, (max(image.width(), image.height()) + 79) // 80)
+                factor = max(1, (max(image.width(), image.height()) + 127) // 128)
                 preview_photos[selected] = image.subsample(factor, factor)
             except Exception:
                 preview_photos[selected] = None
@@ -111,6 +113,11 @@ def open_ai_settings(owner, button, on_saved, app=None):
     tk.Button(voice_tab, text="Открыть 3D-preview выбранного персонажа", command=preview_3d,
               bg="#34304f", fg="#e9ecff", activebackground="#51447e", relief="flat",
               font=("Segoe UI", 10)).pack(anchor="w", padx=24, pady=(0, 10))
+    avatar_mode = tk.StringVar(master=panel, value=profile.avatar_mode)
+    mode_row = tk.LabelFrame(voice_tab, text="Режим отображения", bg="#101322", fg="#a2abc9", bd=0, padx=8, pady=4)
+    mode_row.pack(anchor="w", padx=24, pady=(0, 8), fill="x")
+    for label, value in (("2D · быстрый встроенный портрет", "2d"), ("3D · отдельное preview-окно", "3d")):
+        tk.Radiobutton(mode_row, text=label, variable=avatar_mode, value=value, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(side="left", padx=8)
     def avatar_changed(_event=None):
         selected = avatar_labels.get(avatar.get(), DEFAULT_AVATAR_ID)
         previous = previous_avatar[0]
@@ -140,6 +147,22 @@ def open_ai_settings(owner, button, on_saved, app=None):
     tk.Scale(voice_tab, from_=80, to=300, variable=rate, orient="horizontal", bg="#101322", fg="#e9ecff", highlightthickness=0).pack(fill="x", padx=20)
     tk.Label(voice_tab, text="Громкость речи", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
     tk.Scale(voice_tab, from_=0, to=100, variable=volume, orient="horizontal", bg="#101322", fg="#e9ecff", highlightthickness=0).pack(fill="x", padx=20)
+
+    tk.Label(appearance_tab, text="Спокойный интерфейс", bg="#101322", fg="#e9ecff", font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=24, pady=(20, 4))
+    tk.Label(appearance_tab, text="Тёмная тема Quiet Orbit · читаемая типографика и экономная анимация", bg="#101322", fg="#a2abc9", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=(0, 20))
+    scale_labels = {100: "100% · стандартный", 110: "110% · немного крупнее", 125: "125% · крупный", 150: "150% · очень крупный"}
+    scale_values = {label: value for value, label in scale_labels.items()}
+    tk.Label(appearance_tab, text="Масштаб текста и элементов", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
+    scale = ttk.Combobox(appearance_tab, values=tuple(scale_values), state="readonly", font=("Segoe UI", 11))
+    scale.set(scale_labels[profile.ui_scale])
+    scale.pack(fill="x", padx=24, pady=(4, 12))
+    reduced_motion = tk.BooleanVar(master=panel, value=profile.reduced_motion)
+    tk.Checkbutton(appearance_tab, text="Уменьшить движение · отключить плавание и пульсацию портрета", variable=reduced_motion, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=8)
+    tk.Label(appearance_tab, text="Масштаб применяется при следующем запуске Astra. Системное масштабирование Windows учитывается автоматически.", bg="#101322", fg="#a2abc9", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=8)
+    appearance_save = button(appearance_tab, "Сохранить внешний вид", lambda: save())
+    appearance_save.pack(anchor="w", padx=24, pady=18)
+    panel.astra_scale_selector = scale
+    panel.astra_reduced_motion = reduced_motion
     status = tk.StringVar(value="Ключ хранится локально в зашифрованном виде. Проверка сети запускается отдельно.")
     if profile_load_failed:
         status.set("Сохранённые настройки не прочитаны. Можно сохранить новый профиль.")
@@ -193,11 +216,76 @@ def open_ai_settings(owner, button, on_saved, app=None):
                 voice_rows = None
             mailbox.put(("audio", (microphone_rows, voice_rows)))
         threading.Thread(target=work, name="astra-audio-devices", daemon=True).start()
-    scope_labels = {"apps": "Приложения из разрешённого списка", "browser": "Браузер и поиск", "folders": "Открытие известных папок", "media": "Медиа и громкость", "windows": "Управление окнами", "typing": "Ввод текста и клавиши", "system": "Сведения о системе и скриншоты", "vpn": "Заданный VPN", "routines": "Пользовательские режимы", "reminders": "Создание напоминаний"}
+    scope_labels = {
+        "apps": "Приложения из разрешённого списка",
+        "browser": "Браузер и поиск",
+        "folders": "Открытие известных папок",
+        "media": "Медиа и громкость",
+        "windows": "Управление окнами",
+        "typing": "Ввод текста и клавиши",
+        "system": "Сведения о системе и скриншоты",
+        "vpn": "Заданный VPN",
+        "routines": "Пользовательские режимы",
+        "reminders": "Создание напоминаний",
+        "memory": "Голосовое управление личными заметками",
+        "files": "Поиск файлов в выбранной папке",
+        "open_files": "Открытие файлов голосом",
+        "read_files": "Чтение выбранных документов вслух",
+        "ask_files": "Вопросы по выбранным файлам",
+        "web_research": "Веб-исследование с локальной моделью",
+    }
+    scope_descriptions = {
+        "apps": "Запуск приложений, которые Astra распознаёт по имени.",
+        "browser": "Открытие браузера, поиск и переход к запрошенной странице.",
+        "folders": "Открытие известных папок Windows и выбранных пользователем папок.",
+        "media": "Управление воспроизведением и системной громкостью.",
+        "windows": "Сворачивание, разворачивание и переключение окон.",
+        "typing": "Ввод подготовленного текста и поддерживаемые сочетания клавиш.",
+        "system": "Чтение ограниченных сведений о системе и создание скриншотов.",
+        "vpn": "Управление только VPN-подключением, заданным в настройках Astra.",
+        "routines": "Запуск пользовательских режимов; каждое действие режима проверяется отдельно.",
+        "reminders": "Создание, просмотр и отметка локальных напоминаний.",
+        "memory": "Запись, поиск и удаление заметок по голосовой команде; нужен локальный Ollama и включённая личная память.",
+        "files": "Поиск только имён в папке, которую выбрали в приложении Astra; доступ заканчивается при закрытии окна файлов.",
+        "open_files": "Открывает только одно точное совпадение в выбранной папке для безопасного документа или медиа; исполняемые файлы и ссылки запрещены.",
+        "read_files": "Читает отрывки одного точно названного текстового, конфигурационного, исходного или офисного файла в выбранной папке. Для текста поддерживаются UTF-8, UTF-16 с BOM и CP1251; запуска исполняемых файлов это разрешение не даёт. Следующий отрывок можно запросить фразой «прочитай дальше» в течение 3 минут. Текст не добавляется в чат, не сохраняется между запусками и озвучивается локальным Windows SAPI; разрешение выключено по умолчанию.",
+        "ask_files": "По явной голосовой команде отправляет вопрос и ограниченные цитаты из одного точно названного поддерживаемого документа только локальному Ollama. Ответ произносится локальным Windows SAPI; содержимое не добавляется в чат и не передаётся облачному синтезу. Нужны выбранная папка и отдельное разрешение.",
+        "web_research": "По явной команде отправляет поисковый запрос Bing; открытые страницы передаются только выбранной локальной Ollama. Если выбран Edge TTS, текст ответа также обрабатывает сетевой синтезатор; Windows SAPI озвучивает его локально.",
+    }
     scope_vars = {scope: tk.BooleanVar(value=scope in profile.allowed_scopes) for scope in ALL_SCOPES}
-    tk.Label(permissions, text="Отключённые навыки блокируются перед исполнением,\nвключая шаги пользовательских режимов. Файловая запись\nразрешается отдельно в выбранной папке.", bg="#101322", fg="#a2abc9").pack(pady=18)
+    tk.Label(
+        permission_content,
+        text="Разрешения Astra",
+        bg="#101322", fg="#e9ecff", font=("Segoe UI", 17, "bold"),
+    ).pack(anchor="w", padx=24, pady=(20, 4))
+    tk.Label(
+        permission_content,
+        text="Отключённый навык блокируется до выполнения, в том числе внутри пользовательского режима. Запись в файлы разрешается отдельно для выбранной папки.",
+        bg="#101322", fg="#a2abc9", wraplength=650, justify="left",
+    ).pack(anchor="w", padx=24, pady=(0, 14))
+    permission_cards = {}
     for scope, variable in scope_vars.items():
-        tk.Checkbutton(permissions, text=scope_labels[scope], variable=variable, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(anchor="w", padx=30, pady=4)
+        card = tk.Frame(
+            permission_content, bg="#191f34", highlightthickness=1,
+            highlightbackground="#242c46", highlightcolor="#9786ff",
+        )
+        card.pack(fill="x", padx=24, pady=5)
+        checkbox = tk.Checkbutton(
+            card, text=scope_labels[scope], variable=variable,
+            bg="#191f34", fg="#e9ecff", selectcolor="#242c46",
+            activebackground="#191f34", activeforeground="#e9ecff",
+            anchor="w", justify="left", wraplength=620,
+            font=("Segoe UI", 11, "bold"), relief="flat",
+            highlightthickness=0, takefocus=True, padx=12, pady=8,
+        )
+        checkbox.pack(fill="x")
+        tk.Label(
+            card, text=scope_descriptions[scope], bg="#191f34", fg="#a2abc9",
+            wraplength=600, justify="left", anchor="w", font=("Segoe UI", 9),
+        ).pack(fill="x", padx=(42, 12), pady=(0, 10))
+        checkbox.bind("<FocusIn>", lambda _event, frame=card: frame.configure(highlightbackground="#9786ff"), add="+")
+        checkbox.bind("<FocusOut>", lambda _event, frame=card: frame.configure(highlightbackground="#242c46"), add="+")
+        permission_cards[scope] = checkbox
     labels = {"env": "Настройки существующего проекта (.env)", "disabled": "ИИ выключен · только команды", "ollama": "Локальный Ollama · без облака", "gemini": "Облачный Gemini", "compatible": "Облачный совместимый API"}
     tk.Label(content, text="Интеллект Astra", bg="#101322", fg="#e9ecff", font=("Segoe UI", 19)).pack(pady=20)
     provider = ttk.Combobox(content, values=list(labels.values()), state="readonly", font=("Segoe UI", 11))
@@ -213,7 +301,24 @@ def open_ai_settings(owner, button, on_saved, app=None):
     endpoint = field("Адрес сервера (для Ollama — localhost, для облака — HTTPS)", profile.base_url)
     key = field("API-ключ (для локального Ollama оставь пустым)", profile.api_key, True)
     memory = tk.BooleanVar(value=profile.memory_enabled)
-    tk.Checkbutton(content, text="Использовать мои сохранённые заметки только в локальном диалоге", variable=memory, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(padx=20, pady=8)
+    tk.Checkbutton(content, text="Сохранять и использовать личные заметки только с локальным Ollama", variable=memory, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(padx=20, pady=8)
+    local_router = tk.BooleanVar(value=profile.local_command_router_enabled)
+    local_router_control = tk.Checkbutton(
+        content,
+        text="Распознавать команды локальной моделью Ollama",
+        variable=local_router,
+        bg="#101322", fg="#e9ecff", selectcolor="#191f34",
+        activebackground="#101322", activeforeground="#e9ecff",
+        wraplength=660, justify="left",
+    )
+    local_router_control.pack(anchor="w", padx=20, pady=8)
+
+    def update_router_availability():
+        enabled = provider.get() == labels["ollama"]
+        local_router_control.configure(state="normal" if enabled else "disabled")
+        if not enabled:
+            local_router.set(False)
+
     def provider_changed(_event=None):
         code = next(code for code, label in labels.items() if label == provider.get())
         if code == "ollama":
@@ -225,8 +330,10 @@ def open_ai_settings(owner, button, on_saved, app=None):
             endpoint.insert(0, "https://generativelanguage.googleapis.com/v1beta/openai/")
         if code != "ollama":
             memory.set(False)
+        update_router_availability()
     provider.bind("<<ComboboxSelected>>", provider_changed)
-    tk.Label(content, text="Ollama использует только установленную модель. Новые модели автоматически не скачиваются.\nОблачный режим отправляет вопросы выбранному провайдеру.", bg="#101322", fg="#a2abc9", wraplength=680).pack(padx=20, pady=10)
+    update_router_availability()
+    tk.Label(content, text="Ollama использует только установленную модель. Новые модели автоматически не скачиваются. Локальная маршрутизация выключена, пока ты явно не включишь флажок выше.\nОблачный режим отправляет вопросы выбранному провайдеру.", bg="#101322", fg="#a2abc9", wraplength=680).pack(padx=20, pady=10)
     voice_actions = tk.Frame(voice_page, bg="#101322")
     voice_actions.pack(side="bottom", before=voice_page.astra_canvas, fill="x", pady=10)
     discover_button = tk.Button(voice_actions, text="Обнаружить устройства и голоса", command=discover_audio, bg="#2b3454", fg="#e9ecff", relief="flat", font=("Segoe UI", 10), padx=16, pady=9)
@@ -241,7 +348,11 @@ def open_ai_settings(owner, button, on_saved, app=None):
         selected_voice = voices_map.get(voices.get(), character_profiles[selected_avatar]["voice_id"])
         selected_name = assistant_name.get().strip()
         character_profiles[selected_avatar] = {"assistant_name": selected_name, "voice_id": selected_voice}
-        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles)).validate()
+        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), local_command_router_enabled=local_router.get() and code == "ollama", allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles), avatar_mode=avatar_mode.get(), ui_scale=scale_values[scale.get()], reduced_motion=reduced_motion.get()).validate()
+    panel.astra_provider_selector = provider
+    panel.astra_local_router_control = local_router_control
+    panel.astra_local_router_variable = local_router
+    panel.astra_current_profile = current
     def save():
         if busy[0]:
             status.set("Дождись завершения проверки или прослушивания")
@@ -348,12 +459,20 @@ def open_ai_settings(owner, button, on_saved, app=None):
     voice_save_row.pack(fill="x")
     button(voice_save_row, "Прослушать выбранный голос", lambda: preview_voice()).pack(side="left", padx=(20, 8))
     button(voice_save_row, "Сохранить голос и микрофон", save).pack(side="right", padx=(8, 20))
-    button(permissions, "Сохранить разрешения", save).pack(pady=15)
+    save_permissions_button = button(permissions, "Сохранить разрешения", save)
+    save_permissions_button.pack(side="bottom", fill="x", padx=24, pady=(6, 10))
     backup_row = tk.Frame(permissions, bg="#101322")
-    backup_row.pack(pady=(0, 14))
+    backup_row.pack(side="bottom", fill="x", padx=16, pady=(4, 0))
     button(backup_row, "Экспорт профиля…", backup_export).pack(side="left", padx=5)
     button(backup_row, "Импорт профиля…", backup_import).pack(side="left", padx=5)
-    tk.Label(permissions, text="Профильная копия может содержать API-ключ, но только внутри шифрования. Нужна парольная фраза от 12 символов; потерянную фразу восстановить нельзя. Импорт заменит настройки профиля, но не затронет память и напоминания.", bg="#101322", fg="#a2abc9", wraplength=650, justify="left").pack(padx=24, pady=(0, 12))
+    tk.Label(
+        permission_content,
+        text="Зашифрованная копия профиля может содержать API-ключ. Для неё нужна парольная фраза от 12 символов; восстановить потерянную фразу нельзя. Импорт заменяет настройки профиля, но не память и напоминания.",
+        bg="#101322", fg="#a2abc9", wraplength=620, justify="left",
+    ).pack(anchor="w", padx=24, pady=(14, 20))
+    panel.astra_permission_cards = permission_cards
+    panel.astra_permission_save = save_permissions_button
+    panel.astra_permission_backup = backup_row
     def preview_voice():
         if busy[0]:
             return
@@ -426,6 +545,9 @@ def open_ai_settings(owner, button, on_saved, app=None):
         if timer[0] is not None:
             panel.after_cancel(timer[0])
         panel.destroy()
+    cancel = button(panel, "Отмена · закрыть без сохранения", close)
+    cancel.pack(side="bottom", anchor="e", padx=20, pady=(0, 10))
+    panel.astra_cancel = cancel
     panel.protocol("WM_DELETE_WINDOW", close)
     def destroyed(event):
         if event.widget == panel and timer[0] is not None:

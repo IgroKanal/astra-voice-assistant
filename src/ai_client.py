@@ -5,15 +5,22 @@ import logging
 import os
 from pathlib import Path
 import re
+import threading
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from openai import OpenAIError
 
 from src.config_loader import AppConfig, Settings
 from src.task_router import ActionType, AssistantAction, known_site_aliases
-from src.ollama_client import OllamaClient
+from src.ollama_client import OllamaClient, OllamaRequestCancelled, OllamaResponseTruncated
+from src.llm_providers import (
+    ProviderRequestCancelled,
+    UnsupportedConversationModel,
+    create_provider,
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +34,22 @@ class RouteResult:
     ok: bool
     action: AssistantAction
     raw_message: str = ""
+
+
+def _cloud_api_error_message(status: int) -> str:
+    """Explain common provider errors without exposing the response payload."""
+    messages = {
+        401: "Провайдер не принял ключ ИИ. Проверь ключ в настройках.",
+        402: "Провайдер отклонил платёж. Проверь баланс и платёжные настройки.",
+        403: "Нет доступа к выбранной модели или провайдеру. Проверь права и настройки.",
+        404: "Модель или адрес провайдера не найдены. Проверь настройки подключения.",
+        429: "Провайдер ограничил запросы. Попробуй позже и проверь доступные лимиты.",
+        500: "У провайдера произошла ошибка. Попробуй ещё раз позже.",
+        502: "Провайдер временно недоступен. Попробуй ещё раз позже.",
+        503: "Провайдер временно недоступен. Попробуй ещё раз позже.",
+        504: "Провайдер не успел ответить. Попробуй ещё раз позже.",
+    }
+    return messages.get(status, f"Провайдер ИИ вернул ошибку API: {status}.")
 
 
 class AIClient:
@@ -43,24 +66,82 @@ class AIClient:
     ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(__name__)
-        self._client: OpenAI | None = None
+        self.provider = create_provider(
+            settings,
+            openai_factory=OpenAI,
+            ollama_factory=OllamaClient,
+            can_create_compatible=self._can_create_compatible_provider(),
+        )
         self._dialogue: list[dict[str, str]] = []
+        self._cloud_dialogue: list[dict[str, str]] = []
+        self._cloud_dialogue_lock = threading.Lock()
+        self._cloud_dialogue_generation = 0
         self._memory_stamp = None
-        self._local = OllamaClient(settings.llm_base_url, settings.llm_timeout_seconds) if settings.llm_enabled and settings.llm_provider == "ollama" else None
+        self._warmup_lock = threading.Lock()
+        self._warmup_thread: threading.Thread | None = None
 
-        if self._local is None and self._can_create_client():
-            self._client = OpenAI(
-                api_key=self.settings.llm_api_key,
-                base_url=self.settings.llm_base_url or None,
-                timeout=self.settings.llm_timeout_seconds,
-                max_retries=0,
-            )
+    @property
+    def _local(self):
+        """Compatibility view for diagnostics and older integrations."""
+        if getattr(self.provider, "is_local", False):
+            return self.provider.client
+        return None
+
+    @property
+    def _client(self):
+        """Compatibility view for diagnostics and older integrations."""
+        if self.provider is not None and not getattr(self.provider, "is_local", False):
+            return getattr(self.provider, "client", None)
+        return None
 
     @property
     def is_available(self) -> bool:
-        return self._client is not None or self._local is not None
+        return self.provider.available
 
-    def _can_create_client(self) -> bool:
+    def clear_dialogue(self) -> None:
+        """Forget in-memory conversation history for this session."""
+        self._dialogue.clear()
+        with self._cloud_dialogue_lock:
+            self._cloud_dialogue.clear()
+            self._cloud_dialogue_generation += 1
+
+    def prewarm_local_async(self):
+        """Warm only an installed loopback Ollama model without blocking voice capture."""
+        if not self.provider.is_local:
+            return None
+        with self._warmup_lock:
+            if self._warmup_thread is not None and self._warmup_thread.is_alive():
+                return self._warmup_thread
+            thread = threading.Thread(
+                target=self._prewarm_local,
+                name="AstraOllamaWarmup",
+                daemon=True,
+            )
+            self._warmup_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._warmup_thread = None
+                self.logger.warning("Local model warmup could not start")
+                return None
+            return thread
+
+    def _prewarm_local(self) -> None:
+        started = time.perf_counter()
+        try:
+            ready = self.provider.warmup(self.settings.llm_model)
+            self.logger.info(
+                "LLM warmup: provider=ollama result=%s elapsed=%.3fs",
+                "ready" if ready else "model_missing",
+                time.perf_counter() - started,
+            )
+        except Exception:
+            self.logger.info(
+                "LLM warmup: provider=ollama result=unavailable elapsed=%.3fs; no model download attempted",
+                time.perf_counter() - started,
+            )
+
+    def _can_create_compatible_provider(self) -> bool:
         if not self.settings.llm_enabled:
             return False
         if not self.settings.llm_api_key:
@@ -71,29 +152,115 @@ class AIClient:
             return False
         return True
 
-    def ask(self, question: str) -> LLMResult:
+    def ask(
+        self,
+        question: str,
+        on_text_chunk: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> LLMResult:
         question = question.strip()
         if not question:
             return LLMResult(False, "Вопрос пустой.")
+        if on_text_chunk is not None and not callable(on_text_chunk):
+            return LLMResult(False, "Некорректный обработчик потокового ответа.")
+        if cancelled is not None and not callable(cancelled):
+            return LLMResult(False, "Некорректный обработчик отмены запроса.")
+
+        def is_cancelled() -> bool:
+            if cancelled is None:
+                return False
+            try:
+                return bool(cancelled())
+            except Exception:
+                # A failed cancellation signal must stop work, not keep it alive.
+                return True
+
+        if is_cancelled():
+            return LLMResult(False, "Запрос отменён.")
 
         if not self.settings.llm_enabled:
             return LLMResult(False, "LLM отключена в настройках.")
 
-        if self._local is not None:
+        if self.provider.is_local:
+            started = time.perf_counter()
+            stream_timing: dict[str, float | None] = {}
+
+            def capture_stream_timing(values: dict[str, float | None]) -> None:
+                if not isinstance(values, dict):
+                    return
+                first_token = values.get("first_token_seconds")
+                if type(first_token) in (int, float) and first_token >= 0:
+                    stream_timing["first_token_seconds"] = float(first_token)
+
             try:
                 context = self._memory_context(question)
-                answer = self._local.chat(self.settings.llm_model, self._build_answer_system_prompt(), question, self.settings.llm_max_tokens, history=self._dialogue, memory_context=context)
+                answer_options = dict(
+                    model=self.settings.llm_model,
+                    system=self._build_answer_system_prompt(),
+                    question=question,
+                    max_tokens=self.settings.llm_max_tokens,
+                    temperature=self.settings.llm_temperature,
+                    history=self._dialogue,
+                    memory_context=context,
+                    think=self.settings.ollama_thinking_enabled,
+                    timing_callback=capture_stream_timing,
+                )
+                if cancelled is not None:
+                    answer_options["cancelled"] = is_cancelled
+                if on_text_chunk is not None and not self.settings.ollama_thinking_enabled:
+                    answer_options["on_chunk"] = on_text_chunk
+                answer = self.provider.answer(**answer_options)
                 clean_answer = self._clean_llm_answer(answer)
+                first_token = stream_timing.get("first_token_seconds")
+                if first_token is not None:
+                    self.logger.info(
+                        "LLM first-token timing: provider=ollama task=answer elapsed=%.3fs",
+                        first_token,
+                    )
                 if not clean_answer:
+                    self.logger.info(
+                        "LLM timing: provider=ollama task=answer result=empty elapsed=%.3fs",
+                        time.perf_counter() - started,
+                    )
                     return LLMResult(False, "Локальная модель не сформировала итоговый ответ.")
                 self._dialogue.extend([{"role": "user", "content": question}, {"role": "assistant", "content": clean_answer}])
                 self._dialogue = self._dialogue[-8:]
+                self.logger.info(
+                    "LLM timing: provider=ollama task=answer result=ok thinking_requested=%s elapsed=%.3fs",
+                    self.settings.ollama_thinking_enabled,
+                    time.perf_counter() - started,
+                )
                 return LLMResult(True, clean_answer)
+            except OllamaRequestCancelled:
+                self.logger.info(
+                    "Local model request cancelled: provider=ollama elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                return LLMResult(False, "Запрос отменён.")
+            except OllamaResponseTruncated as exc:
+                self.logger.info(
+                    "Local model response reached its token limit; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                if exc.thinking_channel_required:
+                    return LLMResult(
+                        False,
+                        "Локальная модель не завершила ответ: её рассуждения не удалось отключить. "
+                        "Выбери более быструю модель без обязательных рассуждений.",
+                    )
+                return LLMResult(
+                    False,
+                    "Локальная модель не завершила ответ в пределах лимита. "
+                    "Попробуй более короткий запрос.",
+                )
             except Exception:
-                self.logger.warning("Local model request failed; no cloud fallback")
+                self.logger.warning(
+                    "Local model request failed; no cloud fallback; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
                 return LLMResult(False, "Локальная модель недоступна или не успела ответить. Проверь Ollama и выбранную модель.")
 
-        if self._client is None:
+        if not self.provider.available:
             return LLMResult(
                 False,
                 "LLM API-ключ не настроен. Я могу выполнять локальные команды, "
@@ -105,64 +272,136 @@ class AIClient:
 
         system_prompt = self._build_answer_system_prompt()
         last_error_message = "Не удалось получить ответ от LLM."
+        share_dialogue = getattr(self.settings, "llm_cloud_dialogue_enabled", False) is True
+        with self._cloud_dialogue_lock:
+            cloud_generation = self._cloud_dialogue_generation
+            cloud_history = [entry.copy() for entry in self._cloud_dialogue] if share_dialogue else []
 
         for model in self._models_to_try():
+            started = time.perf_counter()
+            result_kind = "error"
+            stream_timing: dict[str, float | None] = {}
+            streamed_to_observer = False
+
+            def forward_streamed_chunk(chunk: str) -> None:
+                nonlocal streamed_to_observer
+                # Once output reaches a caller, a retry with another model
+                # would splice together two unrelated partial answers.
+                if chunk:
+                    streamed_to_observer = True
+                if on_text_chunk is not None:
+                    on_text_chunk(chunk)
+
+            def capture_stream_timing(values: dict[str, float | None]) -> None:
+                if not isinstance(values, dict):
+                    return
+                first_token = values.get("first_token_seconds")
+                elapsed = values.get("elapsed_seconds")
+                stream_timing["first_token_seconds"] = (
+                    float(first_token)
+                    if type(first_token) in (int, float) and first_token >= 0
+                    else None
+                )
+                stream_timing["elapsed_seconds"] = (
+                    float(elapsed)
+                    if type(elapsed) in (int, float) and elapsed >= 0
+                    else None
+                )
+
             try:
                 self.logger.info(
                     "LLM-запрос: provider=%s model=%s",
                     self.settings.llm_provider,
                     model,
                 )
-                response = self._client.chat.completions.create(
+                answer_options = dict(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": question},
-                    ],
-                    temperature=self.settings.llm_temperature,
+                    system=system_prompt,
+                    question=question,
                     max_tokens=self.settings.llm_max_tokens,
+                    temperature=self.settings.llm_temperature,
                 )
-
-                message = response.choices[0].message.content if response.choices else ""
+                if share_dialogue:
+                    answer_options["history"] = cloud_history
+                if on_text_chunk is not None:
+                    answer_options["on_chunk"] = forward_streamed_chunk
+                    answer_options["timing_callback"] = capture_stream_timing
+                if cancelled is not None:
+                    answer_options["cancelled"] = is_cancelled
+                message = self.provider.answer(**answer_options)
                 clean_message = self._clean_llm_answer(message or "")
                 if clean_message:
+                    if share_dialogue:
+                        with self._cloud_dialogue_lock:
+                            if cloud_generation == self._cloud_dialogue_generation:
+                                self._cloud_dialogue.extend([
+                                    {"role": "user", "content": question[:2000]},
+                                    {"role": "assistant", "content": clean_message[:2000]},
+                                ])
+                                self._cloud_dialogue = self._cloud_dialogue[-8:]
+                    result_kind = "ok"
                     return LLMResult(True, clean_message)
 
                 self.logger.warning("LLM модель %s вернула пустой ответ", model)
+                result_kind = "empty"
                 last_error_message = "Модель вернула пустой ответ."
+            except ProviderRequestCancelled:
+                result_kind = "cancelled"
+                return LLMResult(False, "Запрос отменён.")
+            except UnsupportedConversationModel as exc:
+                return LLMResult(False, str(exc))
             except APITimeoutError:
-                self.logger.warning("LLM timeout для модели %s", model, exc_info=True)
+                self.logger.warning("LLM timeout для модели %s", model)
                 last_error_message = "Не удалось получить ответ: превышено время ожидания."
             except APIConnectionError:
-                self.logger.warning("LLM connection error для модели %s", model, exc_info=True)
+                self.logger.warning("LLM connection error для модели %s", model)
                 last_error_message = "Не удалось подключиться к LLM. Проверь интернет."
             except APIStatusError as exc:
                 self.logger.warning(
                     "LLM ошибка модели %s: status=%s",
                     model,
                     exc.status_code,
-                    exc_info=True,
                 )
-                last_error_message = f"LLM вернула ошибку API: {exc.status_code}."
-            except OpenAIError:
+                last_error_message = _cloud_api_error_message(exc.status_code)
+            except OpenAIError as exc:
                 self.logger.warning(
-                    "LLM OpenAI-compatible error для модели %s",
+                    "LLM OpenAI-compatible error для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 last_error_message = "Не удалось получить ответ от LLM."
-            except Exception:
+            except Exception as exc:
                 self.logger.warning(
-                    "Unexpected LLM error для модели %s",
+                    "Unexpected LLM error для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 last_error_message = "Произошла непредвиденная ошибка LLM."
+            finally:
+                first_token = stream_timing.get("first_token_seconds")
+                if first_token is not None:
+                    self.logger.info(
+                        "LLM first-token timing: provider=%s task=answer model=%s elapsed=%.3fs",
+                        self.settings.llm_provider,
+                        model,
+                        first_token,
+                    )
+                self.logger.info(
+                    "LLM timing: provider=%s task=answer model=%s result=%s elapsed=%.3fs",
+                    self.settings.llm_provider,
+                    model,
+                    result_kind,
+                    time.perf_counter() - started,
+                )
+
+            if streamed_to_observer:
+                self.logger.info("LLM fallback skipped after partial response was delivered")
+                break
 
         return LLMResult(False, last_error_message)
 
     def _memory_context(self, question: str) -> str:
-        if not self.settings.personal_memory_enabled or self._local is None:
+        if not self.settings.personal_memory_enabled or not self.provider.is_local:
             return ""
         from src.personal_memory import PersonalMemory
         path = Path(self.settings.personal_memory_path) if self.settings.personal_memory_path else Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AstraVoiceAssistant" / "memory.sqlite"
@@ -186,7 +425,53 @@ class AIClient:
 
         LLM ничего не запускает сама. Она только возвращает намерение.
         """
-        if self._client is None:
+        if self.provider.is_local:
+            if not self.settings.llm_router_enabled:
+                return RouteResult(
+                    ok=False,
+                    action=AssistantAction(
+                        type=ActionType.UNKNOWN,
+                        text=user_text,
+                        confidence=0.0,
+                        source="llm_unavailable",
+                        reason="Local command routing is disabled.",
+                    ),
+                )
+            started = time.perf_counter()
+            try:
+                # Keep the local classifier on the already selected Ollama model.
+                # It gets no dialogue/memory, cannot call cloud APIs, and returns
+                # only an action that still passes the normal policy/dispatch gates.
+                raw_message = self.provider.classify(
+                    model=self.settings.llm_model,
+                    system=self._build_router_prompt(apps),
+                    request=user_text,
+                ).strip()
+                action = self._action_from_router_json(
+                    self._parse_json_object(raw_message), user_text
+                )
+                self.logger.info(
+                    "LLM timing: provider=ollama task=command_router result=ok thinking=false elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                return RouteResult(ok=True, action=action, raw_message=raw_message)
+            except Exception:
+                self.logger.warning(
+                    "Local LLM-router failed; no cloud fallback; elapsed=%.3fs",
+                    time.perf_counter() - started,
+                )
+                return RouteResult(
+                    ok=False,
+                    action=AssistantAction(
+                        type=ActionType.UNKNOWN,
+                        text=user_text,
+                        confidence=0.0,
+                        source="llm_error",
+                        reason="Local LLM router failed.",
+                    ),
+                )
+
+        if not self.provider.available:
             return RouteResult(
                 ok=False,
                 action=AssistantAction(
@@ -204,18 +489,13 @@ class AIClient:
         for model in self._models_to_try():
             try:
                 self.logger.info("LLM-router запрос: model=%s characters=%s", model, len(user_text))
-                response = self._client.chat.completions.create(
+                raw_message = self.provider.classify(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": user_text},
-                    ],
-                    temperature=0,
-                    max_tokens=500,
-                    response_format={"type": "json_object"},
+                    system=prompt,
+                    request=user_text,
+                    response_format=True,
                 )
-                message = response.choices[0].message.content if response.choices else ""
-                raw_message = (message or "").strip()
+                raw_message = (raw_message or "").strip()
                 last_raw_message = raw_message
                 data = self._parse_json_object(raw_message)
                 action = self._action_from_router_json(data, user_text)
@@ -233,11 +513,11 @@ class AIClient:
                 if result.ok:
                     return result
                 last_raw_message = result.raw_message
-            except Exception:
+            except Exception as exc:
                 self.logger.warning(
-                    "Ошибка LLM-router для модели %s",
+                    "Ошибка LLM-router для модели %s: type=%s",
                     model,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
         return RouteResult(
@@ -258,32 +538,28 @@ class AIClient:
         apps: dict[str, AppConfig],
         model: str,
     ) -> RouteResult:
-        if self._client is None:
+        if not self.provider.available:
             return RouteResult(
                 ok=False,
                 action=AssistantAction(type=ActionType.UNKNOWN, text=user_text),
             )
 
         try:
-            response = self._client.chat.completions.create(
+            raw_message = self.provider.classify(
                 model=model,
-                messages=[
-                    {"role": "system", "content": self._build_router_prompt(apps)},
-                    {"role": "user", "content": user_text},
-                ],
-                temperature=0,
-                max_tokens=500,
+                system=self._build_router_prompt(apps),
+                request=user_text,
+                response_format=False,
             )
-            message = response.choices[0].message.content if response.choices else ""
-            raw_message = (message or "").strip()
+            raw_message = (raw_message or "").strip()
             data = self._parse_json_object(raw_message)
             action = self._action_from_router_json(data, user_text)
             return RouteResult(ok=True, action=action, raw_message=raw_message)
-        except Exception:
+        except Exception as exc:
             self.logger.warning(
-                "Ошибка LLM-router без response_format для модели %s",
+                "Ошибка LLM-router без response_format для модели %s: type=%s",
                 model,
-                exc_info=True,
+                type(exc).__name__,
             )
             return RouteResult(
                 ok=False,
@@ -308,9 +584,12 @@ class AIClient:
         return models or ["gemini-3.5-flash"]
 
     def _build_answer_system_prompt(self) -> str:
+        from src.assistant_persona import character_instruction
+
         return (
-            f"Твоё имя ассистента — {getattr(self.settings, 'assistant_name', 'Астра')}.\n"
             f"{self.settings.llm_system_prompt}\n"
+            f"Твоё имя ассистента — {getattr(self.settings, 'assistant_name', 'Астра')}.\n"
+            f"{character_instruction(self.settings)}\n"
             "Отвечай только финальным ответом для пользователя.\n"
             "Запрещено выводить <thought>, <think>, Draft, Option, Analysis, "
             "черновики, внутренние рассуждения, проверки и служебные заметки.\n"

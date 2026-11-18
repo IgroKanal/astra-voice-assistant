@@ -12,6 +12,10 @@ venv/
 env/
 prototypes/**/.godot/
 
+# Generated previews
+/visual_previews/
+/visual_previews_qt/
+
 # Logs
 logs/*.log
 !logs/.gitkeep

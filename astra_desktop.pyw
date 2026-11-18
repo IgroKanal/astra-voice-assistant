@@ -12,6 +12,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
 from src.desktop_bridge import DesktopBridge
+from src.desktop_file_search import (
+    make_file_open_result,
+    make_file_question_result,
+    make_file_read_result,
+    make_search_result,
+    parse_file_request,
+    spoken_document_chunk,
+)
 from src.file_workspace import FileWorkspace
 from src.personal_memory import PersonalMemory
 from src.skill_executor import ActionPlan, SkillCall, SkillExecutor
@@ -28,21 +36,26 @@ from src.onboarding_state import OnboardingState
 from src.version import DISPLAY_VERSION
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-BG = "#101322"
-PANEL = "#191f34"
-TEXT = "#e9ecff"
-MUTED = "#a2abc9"
-ACCENT = "#9786ff"
+from src.desktop_theme import (
+    BG, PANEL, PANEL_ALT, FIELD, TEXT, MUTED, ACCENT, ACCENT_HOVER,
+    CYAN, BORDER, WARNING, ERROR, install_theme,
+)
 
 
 class AstraDesktop:
     def __init__(self, window: tk.Tk, reminder_store=None):
         self.window = window
         self.bridge = DesktopBridge(ROOT)
+        self.active_file_workspace = None
+        self.active_file_panel = None
+        self._file_search_lock = threading.RLock()
+        self._file_search_generation = 0
+        self._file_search_jobs = {}
         self.tray = None
         self.reminder_store = reminder_store
         self.reminder_worker = None
         self.assistant_name, self.avatar_id = self.load_assistant_profile()
+        self.ui_scale, self.reduced_motion, self.avatar_mode = self.load_visual_preferences()
         self.onboarding_state = OnboardingState()
         try:
             self.onboarding_available = not DesktopSettings().path.exists() and not self.onboarding_state.dismissed()
@@ -64,29 +77,47 @@ class AstraDesktop:
         self.closing_event = threading.Event()
         self.phase = 0.0
         window.title(f"{DISPLAY_VERSION} · персональный ассистент")
-        from src.desktop_theme import install_theme
+        if self.ui_scale != 100:
+            window.tk.call("tk", "scaling", float(window.tk.call("tk", "scaling")) * self.ui_scale / 100)
         install_theme(window)
         icon = ROOT / "assets" / "branding" / "astra.ico"
         if icon.is_file():
             window.iconbitmap(str(icon))
-        window.geometry("1040x720")
-        window.minsize(840, 680)
+        window.geometry(f"{1180 * self.ui_scale // 100}x{780 * self.ui_scale // 100}")
+        window.minsize(840 * self.ui_scale // 100, 680 * self.ui_scale // 100)
         window.configure(bg=BG)
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.status = tk.StringVar(value="Запуск · микрофон выключен")
+        self._last_voice_ui = None
         self._build()
         self.switch("text")
         self.poll()
         self.animate()
 
-    def button(self, parent, text, command):
-        control = tk.Button(parent, text=text, command=command, bg="#2b3454", fg=TEXT,
-                         activebackground=ACCENT, activeforeground=BG, relief="flat",
-                         font=("Segoe UI", 10), padx=16, pady=10, cursor="hand2", borderwidth=0,
-                         highlightthickness=1, highlightbackground="#3a4261", highlightcolor=ACCENT)
-        control.bind("<Enter>", lambda _event: control.configure(bg="#3a4264"))
-        control.bind("<Leave>", lambda _event: control.configure(bg="#2b3454"))
+    def button(self, parent, text, command, kind="secondary"):
+        primary = kind == "primary"
+        base = ACCENT if primary else FIELD
+        hover = ACCENT_HOVER if primary else PANEL_ALT
+        control = tk.Button(
+            parent, text=text, command=command, bg=base, fg=BG if primary else TEXT,
+            activebackground=hover, activeforeground=BG if primary else TEXT,
+            disabledforeground=MUTED, relief="flat", font=("Segoe UI", 10, "bold" if primary else "normal"),
+            padx=15, pady=9, cursor="hand2", borderwidth=0, takefocus=True,
+            highlightthickness=1, highlightbackground=base, highlightcolor=CYAN,
+        )
+        control.bind("<Enter>", lambda _event: control.configure(bg=hover, highlightbackground=hover))
+        control.bind("<Leave>", lambda _event: control.configure(bg=base, highlightbackground=base))
+        control.bind("<FocusIn>", lambda _event: control.configure(highlightbackground=CYAN), add="+")
+        control.bind("<FocusOut>", lambda _event: control.configure(highlightbackground=base), add="+")
         return control
+
+    @staticmethod
+    def load_visual_preferences():
+        try:
+            profile = DesktopSettings().load()
+            return profile.ui_scale, profile.reduced_motion, profile.avatar_mode
+        except Exception:
+            return 100, False, "2d"
 
     @staticmethod
     def load_assistant_profile():
@@ -99,6 +130,7 @@ class AstraDesktop:
 
     def apply_settings(self):
         self.assistant_name, self.avatar_id = self.load_assistant_profile()
+        self.ui_scale, self.reduced_motion, self.avatar_mode = self.load_visual_preferences()
         self.avatar_name_label.set(self.assistant_name)
         self.loaded_avatar_id = None
         if DesktopSettings().path.exists():
@@ -123,88 +155,101 @@ class AstraDesktop:
                 self.append("Система", "Не удалось сохранить выбор первого запуска: " + str(exc))
 
     def _build(self):
-        header = tk.Frame(self.window, bg=BG)
-        header.pack(fill="x", padx=28, pady=(22, 16))
+        header = tk.Frame(self.window, bg=BG, height=64)
+        header.pack(fill="x", padx=24, pady=(14, 12))
         brand_path = ROOT / "assets" / "branding" / "astra.png"
         if brand_path.is_file():
             self.brand_image = tk.PhotoImage(file=str(brand_path)).subsample(24, 24)
-            tk.Label(header, image=self.brand_image, bg=BG).pack(side="left", padx=(0, 12))
-        tk.Label(header, text="ASTRA", font=("Segoe UI", 24, "bold"), bg=BG, fg=TEXT).pack(side="left")
-        tk.Label(header, text=DISPLAY_VERSION.upper(), font=("Segoe UI", 9), bg=BG, fg=ACCENT).pack(side="left", padx=15)
-        self.button(header, "Диагностика", self.diagnose).pack(side="right")
+            tk.Label(header, image=self.brand_image, bg=BG).pack(side="left", padx=(0, 10))
+        tk.Label(header, text="Astra", font=("Segoe UI", 22, "bold"), bg=BG, fg=TEXT).pack(side="left")
+        tk.Label(header, text="ЛИЧНОЕ ПРОСТРАНСТВО", font=("Segoe UI", 8, "bold"), bg=BG, fg=CYAN).pack(side="left", padx=14, pady=(7, 0))
+        self.button(header, "Диагностика", self.diagnose).pack(side="right", padx=(8, 0))
         from src.action_audit_ui import open_action_audit
-        self.button(header, "Журнал", lambda: open_action_audit(self.window, self.button)).pack(side="right", padx=8)
-        toolbar = tk.Frame(self.window, bg=BG)
-        toolbar.pack(fill="x", padx=28, pady=(0, 12))
-        self.button(toolbar, "Файлы", self.open_files).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "Память", self.open_memory).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "Задачи", self.open_tasks).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "ИИ, голос и разрешения", self.open_ai_settings).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "В системный трей", self.hide_to_tray).pack(side="right")
+        self.button(header, "Журнал", lambda: open_action_audit(self.window, self.button)).pack(side="right")
+
         if self.onboarding_available:
-            self.onboarding_banner = tk.Frame(self.window, bg=PANEL, highlightbackground="#34304f", highlightthickness=1)
-            self.onboarding_banner.pack(fill="x", padx=28, pady=(0, 12))
-            onboarding_copy = tk.Frame(self.onboarding_banner, bg=PANEL)
-            onboarding_copy.pack(side="left", fill="x", expand=True, padx=16, pady=10)
-            tk.Label(onboarding_copy, text="Первый запуск Astra", font=("Segoe UI", 12, "bold"), bg=PANEL, fg=TEXT).pack(anchor="w")
-            tk.Label(
-                onboarding_copy,
-                text="Выбери персонажа, имя и голос по желанию. Можно начать с текста: микрофон не включается сам.",
-                wraplength=640, justify="left", bg=PANEL, fg=MUTED, font=("Segoe UI", 9),
-            ).pack(anchor="w", pady=(3, 0))
-            self.button(self.onboarding_banner, "Настроить", self.open_onboarding).pack(side="right", padx=(8, 8), pady=10)
-            self.button(self.onboarding_banner, "Пока пропустить", self.dismiss_onboarding).pack(side="right", padx=(0, 8), pady=10)
-        footer = tk.Frame(self.window, bg=BG)
-        footer.pack(side="bottom", fill="x", padx=28, pady=14)
-        for label, text in [("Время", "Астра, сколько времени"), ("Помощь", "Астра, помощь"), ("Дата", "Астра, какая сегодня дата")]:
-            self.button(footer, label, lambda value=text: self.fill(value)).pack(side="left", padx=(0, 8))
+            self.onboarding_banner = tk.Frame(self.window, bg=PANEL_ALT, highlightbackground=BORDER, highlightthickness=1)
+            self.onboarding_banner.pack(fill="x", padx=24, pady=(0, 12))
+            onboarding_copy = tk.Frame(self.onboarding_banner, bg=PANEL_ALT)
+            onboarding_copy.pack(side="left", fill="x", expand=True, padx=16, pady=8)
+            tk.Label(onboarding_copy, text="Начни с нескольких простых шагов", font=("Segoe UI", 11, "bold"), bg=PANEL_ALT, fg=TEXT).pack(anchor="w")
+            tk.Label(onboarding_copy, text="Персонаж, имя и приватность · микрофон останется выключен", wraplength=470, justify="left", bg=PANEL_ALT, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+            self.button(self.onboarding_banner, "Настроить", self.open_onboarding, "primary").pack(side="right", padx=6, pady=8)
+            self.button(self.onboarding_banner, "Пока пропустить", self.dismiss_onboarding).pack(side="right", padx=6, pady=8)
+
         body = tk.Frame(self.window, bg=BG)
-        body.pack(fill="both", expand=True, padx=28)
-        side = tk.Frame(body, bg=PANEL, width=270)
-        side.pack(side="left", fill="y", padx=(0, 18))
-        side.grid_propagate(False)
-        side.grid_columnconfigure(0, weight=1)
-        side.grid_rowconfigure(0, weight=1)
-        self.avatar = tk.Canvas(side, bg=PANEL, height=250, width=260, highlightthickness=0)
-        self.avatar.grid(row=0, column=0, sticky="nsew", pady=(8, 0))
+        body.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+
+        navigation = tk.Frame(body, bg=PANEL, width=164, highlightbackground=BORDER, highlightthickness=1)
+        navigation.pack(side="left", fill="y", padx=(0, 14))
+        navigation.pack_propagate(False)
+        tk.Label(navigation, text="РАЗДЕЛЫ", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=16, pady=(18, 8))
+        for title, callback in (
+            ("Диалог", lambda: self.entry.focus_set()), ("Файлы", self.open_files),
+            ("Задачи", self.open_tasks), ("Память", self.open_memory),
+            ("Команды", self.open_command_catalog), ("Настройки", self.open_ai_settings),
+        ):
+            self.button(navigation, title, callback).pack(fill="x", padx=10, pady=3)
+        tk.Frame(navigation, bg=BORDER, height=1).pack(fill="x", padx=14, pady=12)
+        tk.Label(navigation, text=DISPLAY_VERSION, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=16)
+        tk.Label(navigation, text="Локальный профиль\nЗащита Windows", bg=PANEL, fg=MUTED, justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=6)
+        self.button(navigation, "Скрыть в трей", self.hide_to_tray).pack(side="bottom", fill="x", padx=10, pady=12)
+
+        workspace = tk.Frame(body, bg=BG)
+        workspace.pack(side="left", fill="both", expand=True)
+        character = tk.Frame(workspace, bg=PANEL, width=210, highlightbackground=BORDER, highlightthickness=1)
+        character.pack(side="left", fill="y", padx=(0, 14))
+        character.pack_propagate(False)
+        tk.Label(character, text="ТВОЙ АССИСТЕНТ", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 0))
+        self.avatar = tk.Canvas(character, bg=PANEL, height=226, width=208, highlightthickness=0)
+        self.avatar.pack(fill="x", pady=(2, 0))
         self.avatar_name_label = tk.StringVar(value=self.assistant_name)
-        tk.Label(side, textvariable=self.avatar_name_label, font=("Segoe UI", 13, "bold"), bg=PANEL, fg=TEXT).grid(row=1, column=0, pady=3)
-        tk.Label(side, textvariable=self.status, wraplength=230, font=("Segoe UI", 10), bg=PANEL, fg=MUTED).grid(row=2, column=0, padx=15, pady=6)
-        self.button(side, "🎙  Голос · включить", lambda: self.switch("voice")).grid(row=3, column=0, sticky="ew", padx=12, pady=3)
-        self.button(side, "⌨  Текст · микрофон выкл.", lambda: self.switch("text")).grid(row=4, column=0, sticky="ew", padx=12, pady=3)
-        self.button(side, "Пауза", lambda: self.switch(None)).grid(row=5, column=0, sticky="ew", padx=12, pady=3)
-        tk.Label(side, text="Голос включается кнопкой.\nДля команд говори «Астра».", wraplength=230, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).grid(row=6, column=0, padx=12, pady=6)
-        right = tk.Frame(body, bg=BG)
+        tk.Label(character, textvariable=self.avatar_name_label, font=("Segoe UI", 15, "bold"), bg=PANEL, fg=TEXT).pack(pady=(0, 1))
+        tk.Label(character, text="2D · оригинальный образ", bg=PANEL, fg=ACCENT, font=("Segoe UI", 8)).pack()
+        self.mic_badge = tk.Label(character, text="●  Микрофон выключен", bg=PANEL_ALT, fg=MUTED, font=("Segoe UI", 9, "bold"), padx=8, pady=5)
+        self.mic_badge.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(character, textvariable=self.status, wraplength=180, height=3, font=("Segoe UI", 9), bg=PANEL, fg=MUTED).pack(padx=12)
+        self.voice_button = self.button(character, "Включить голос", lambda: self.switch("voice"), "primary")
+        self.voice_button.pack(fill="x", padx=12, pady=(5, 3))
+        self.button(character, "Текст · микрофон выкл.", lambda: self.switch("text")).pack(fill="x", padx=12, pady=3)
+        self.button(character, "Пауза", lambda: self.switch(None)).pack(fill="x", padx=12, pady=3)
+        tk.Label(character, text=f"Обращение: «{self.assistant_name}»", wraplength=180, bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(side="bottom", pady=8)
+
+        right = tk.Frame(workspace, bg=BG)
         right.pack(side="left", fill="both", expand=True)
-        conversation = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground="#303951")
+        conversation = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         conversation.pack(fill="both", expand=True)
         chat_header = tk.Frame(conversation, bg=PANEL)
-        chat_header.pack(fill="x", padx=18, pady=(14, 0))
-        tk.Label(chat_header, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(side="left")
-        tk.Label(chat_header, text="Твоё рабочее пространство", bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(side="right")
-        self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word",
-                            font=("Segoe UI", 11), padx=18, pady=18, state="disabled")
+        chat_header.pack(fill="x", padx=16, pady=(13, 0))
+        title_group = tk.Frame(chat_header, bg=PANEL)
+        title_group.pack(side="left")
+        tk.Label(title_group, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        tk.Label(title_group, text="Текст и голос в одном пространстве", bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
+        self.button(chat_header, "Новый диалог", self.new_dialogue).pack(side="right")
+        self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word", font=("Segoe UI", 11), padx=18, pady=12, state="disabled", spacing1=3)
         scrollbar = tk.Scrollbar(conversation, command=self.chat.yview)
         scrollbar.pack(side="right", fill="y")
         self.chat.configure(yscrollcommand=scrollbar.set)
         self.chat.pack(side="left", fill="both", expand=True)
-        self.chat.tag_configure("user", foreground="#b5a9ff")
-        self.chat.tag_configure("system", foreground=MUTED)
-        self.chat.tag_configure("assistant", foreground=TEXT)
-        self.chat.tag_configure("user_name", foreground="#c5b7ff", font=("Segoe UI", 10, "bold"), spacing1=12)
-        self.chat.tag_configure("assistant_name", foreground="#71d9d4", font=("Segoe UI", 10, "bold"), spacing1=12)
+        self.chat.tag_configure("user", foreground="#D2C9FF", background=PANEL_ALT, lmargin1=12, lmargin2=12, rmargin=12, spacing1=5, spacing3=10)
+        self.chat.tag_configure("system", foreground=MUTED, font=("Segoe UI", 9), spacing1=3, spacing3=8)
+        self.chat.tag_configure("assistant", foreground=TEXT, lmargin1=2, lmargin2=2, spacing1=5, spacing3=10)
+        self.chat.tag_configure("user_name", foreground=ACCENT, font=("Segoe UI", 9, "bold"), spacing1=12)
+        self.chat.tag_configure("assistant_name", foreground=CYAN, font=("Segoe UI", 9, "bold"), spacing1=12)
         self.chat.tag_configure("system_name", foreground=MUTED, font=("Segoe UI", 9, "bold"), spacing1=8)
-        self.chat.tag_configure("user", background="#252b48", lmargin1=12, lmargin2=12, rmargin=12, spacing1=5, spacing3=10)
-        self.chat.tag_configure("assistant", lmargin1=2, lmargin2=2, spacing1=5, spacing3=10)
-        self.chat.tag_configure("system", font=("Segoe UI", 9), spacing1=3, spacing3=8)
-        row = tk.Frame(right, bg=BG)
-        row.pack(side="bottom", before=conversation, fill="x", pady=(12, 0))
-        self.entry = tk.Entry(row, bg=PANEL, fg=TEXT, insertbackground=TEXT,
-                              relief="flat", font=("Segoe UI", 12))
-        self.entry.pack(side="left", fill="x", expand=True, ipady=12, padx=(0, 10))
+        quick = tk.Frame(right, bg=BG)
+        quick.pack(side="bottom", before=conversation, fill="x", pady=(8, 0))
+        self.button(quick, "Который час?", lambda: self.fill(f"{self.assistant_name}, сколько времени")).pack(side="left", padx=(0, 6))
+        self.button(quick, "Какая дата?", lambda: self.fill(f"{self.assistant_name}, какая сегодня дата")).pack(side="left", padx=6)
+        self.button(quick, "Все команды", self.open_command_catalog).pack(side="left", padx=6)
+        row = tk.Frame(right, bg=PANEL_ALT, highlightbackground=BORDER, highlightthickness=1)
+        row.pack(side="bottom", before=conversation, fill="x", pady=(8, 0))
+        self.entry = tk.Entry(row, bg=PANEL_ALT, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 11), highlightthickness=0)
+        self.entry.pack(side="left", fill="x", expand=True, ipady=10, padx=(12, 8), pady=5)
         self.entry.bind("<Return>", lambda _event: self.send())
-        self.button(row, "Отправить →", self.send).pack(side="right")
-        self.append(self.assistant_name, f"Привет! Я готова помочь. Обращайся по имени «{self.assistant_name}». Микрофон по умолчанию выключен.")
+        self.button(row, "Отправить", self.send, "primary").pack(side="right", padx=5, pady=4)
+        self.window.bind("<Control-k>", lambda _event: self.entry.focus_set())
+        self.append(self.assistant_name, f"Привет! Я рядом и готова помочь. Напиши сообщение или включи голос отдельной кнопкой. Обращение — «{self.assistant_name}».\n\nМикрофон сейчас выключен.")
 
     def append(self, who, text):
         self.chat.configure(state="normal")
@@ -220,6 +265,16 @@ class AstraDesktop:
         self.entry.delete(0, "end")
         self.entry.insert(0, value)
         self.entry.focus_set()
+
+    def open_command_catalog(self):
+        if self.closing:
+            return
+        from src.command_catalog_ui import open_command_catalog
+        return open_command_catalog(
+            self.window,
+            self.button,
+            lambda phrase: self.fill(f"{self.assistant_name}, {phrase}"),
+        )
 
     def hide_to_tray(self):
         if self.closing:
@@ -253,9 +308,36 @@ class AstraDesktop:
         self.append("Ты", text)
         self.entry.delete(0, "end")
 
+    def new_dialogue(self):
+        if self.closing:
+            return
+        if not self.bridge.running or self.bridge.mode != "text":
+            self.append(
+                "Система",
+                "Для кнопки переключись в текстовый режим. В голосовом режиме "
+                f"скажи: «{self.assistant_name}, начни новый диалог».",
+            )
+            return
+        confirmed = messagebox.askyesno(
+            "Astra · новый диалог",
+            "Начать новый диалог? Будет очищен контекст текущего разговора и "
+            "незавершённое уточнение. Сохранённые заметки и напоминания останутся.",
+            parent=self.window,
+        )
+        if not confirmed:
+            return
+        command = f"{self.assistant_name}, начни новый диалог"
+        try:
+            self.bridge.send(command)
+        except Exception as exc:
+            self.append("Система", str(exc))
+            return
+        self.append("Ты", command)
+
     def switch(self, mode):
         if self.closing:
             return
+        self._cancel_file_requests()
         if self.busy:
             self.pending_mode = mode
             self.mode_pending = True
@@ -413,6 +495,7 @@ class AstraDesktop:
         panel.protocol("WM_DELETE_WINDOW", close_files)
         def destroyed(event):
             if event.widget == panel:
+                self._revoke_file_workspace(panel)
                 generation[0] += 1
                 if drain_timer[0] is not None:
                     panel.after_cancel(drain_timer[0])
@@ -454,8 +537,259 @@ class AstraDesktop:
         panel.astra_open_selected = read
         query.bind("<Return>", lambda event: search())
         results.bind("<Double-Button-1>", read)
+        self._set_active_file_workspace(workspace, panel)
         search()
         drain()
+
+    def _set_active_file_workspace(self, workspace, panel):
+        with self._file_search_lock:
+            self._file_search_generation += 1
+            self._cancel_file_requests()
+            self._file_search_jobs.clear()
+            self.active_file_workspace = workspace
+            self.active_file_panel = panel
+
+    def _cancel_file_requests(self):
+        with self._file_search_lock:
+            for cancellation, _generation in self._file_search_jobs.values():
+                cancellation.set()
+
+    def _revoke_file_workspace(self, panel=None):
+        with self._file_search_lock:
+            if panel is not None and self.active_file_panel is not panel:
+                return
+            self._file_search_generation += 1
+            self.active_file_workspace = None
+            self.active_file_panel = None
+            self._cancel_file_requests()
+
+    def _handle_file_search_request(self, text):
+        self._handle_file_request(text, "search")
+
+    def _handle_file_open_request(self, text):
+        self._handle_file_request(text, "open")
+
+    def _handle_file_read_request(self, text):
+        self._handle_file_request(text, "read")
+
+    def _handle_file_question_request(self, text):
+        self._handle_file_request(text, "question")
+
+    def _handle_file_request(self, text, expected_operation):
+        try:
+            operation, request = parse_file_request(text)
+        except ValueError:
+            return
+        if operation != expected_operation:
+            return
+        request_id = request["request_id"]
+        query = request.get("filename", request.get("query", ""))
+        question = request.get("question", "")
+        read_offset = request.get("offset", 0)
+        requested_workspace_generation = request.get("workspace_generation", 0)
+        runtime_process = self.bridge.process
+        with self._file_search_lock:
+            workspace = self.active_file_workspace
+            panel = self.active_file_panel
+            generation = self._file_search_generation
+            if workspace is None or panel is None or not panel.winfo_exists():
+                result = (
+                    make_file_open_result(request_id, "no_workspace")
+                    if operation == "open"
+                    else make_file_read_result(request_id, "no_workspace")
+                    if operation == "read"
+                    else make_file_question_result(request_id, "no_workspace")
+                    if operation == "question"
+                    else make_search_result(request_id, "no_workspace")
+                )
+                self.bridge.reply_file_request(
+                    result,
+                    expected_process=runtime_process,
+                )
+                return
+            if operation == "read" and (read_offset > 0 or requested_workspace_generation > 0):
+                if not requested_workspace_generation or requested_workspace_generation != generation:
+                    self.bridge.reply_file_request(
+                        make_file_read_result(request_id, "cancelled"),
+                        expected_process=runtime_process,
+                    )
+                    return
+            cancellation = threading.Event()
+            self._file_search_jobs[request_id] = (cancellation, generation)
+
+        def work():
+            import time
+            from src.file_workspace import WorkspaceDenied
+
+            status = "ok"
+            entries = []
+            relative_path = ""
+            filename = ""
+            excerpt = ""
+            private_answer = ""
+            next_offset = 0
+            has_more = False
+            deadline = time.monotonic() + 8.0
+            try:
+                if operation == "question":
+                    from src.desktop_settings import DesktopSettings
+                    from src.file_rag import FileQuestionSession
+
+                    profile = DesktopSettings().load()
+                    if profile.provider != "ollama" or "ask_files" not in profile.allowed_scopes:
+                        status = "local_model_required"
+                    else:
+                        entries = workspace.find_exact_name(
+                            query,
+                            is_cancelled=cancellation.is_set,
+                            deadline=deadline,
+                        )
+                        if not entries:
+                            status = "not_found"
+                        elif len(entries) > 1:
+                            status = "ambiguous"
+                        else:
+                            relative_path = entries[0].path
+                            candidate = Path(relative_path)
+                            if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
+                                status = "unsafe_file"
+                            else:
+                                workspace.checked_readable_file(relative_path)
+                                timeout_cancelled = threading.Event()
+                                timeout_timer = threading.Timer(40.0, timeout_cancelled.set)
+                                timeout_timer.daemon = True
+                                timeout_timer.start()
+                                try:
+                                    answer = FileQuestionSession(workspace, relative_path).answer(
+                                        question,
+                                        profile,
+                                        cancelled=lambda: cancellation.is_set() or timeout_cancelled.is_set(),
+                                        timeout_seconds=40.0,
+                                    )
+                                    if timeout_cancelled.is_set():
+                                        status = "question_failed"
+                                    else:
+                                        citations = []
+                                        for passage in answer.passages[:3]:
+                                            source_name = Path(passage.file).name
+                                            citation = f"{source_name}, строки {passage.start_line}–{passage.end_line}"
+                                            if citation not in citations:
+                                                citations.append(citation)
+                                        private_answer = answer.text
+                                        if citations:
+                                            private_answer += " Источники: " + "; ".join(citations) + "."
+                                        filename = candidate.name
+                                finally:
+                                    timeout_timer.cancel()
+                elif operation == "search":
+                    entries = workspace.search(
+                        query,
+                        is_cancelled=cancellation.is_set,
+                        deadline=deadline,
+                    )
+                else:
+                    entries = workspace.find_exact_name(
+                        query,
+                        is_cancelled=cancellation.is_set,
+                        deadline=deadline,
+                    )
+                    if not entries:
+                        status = "not_found"
+                    elif len(entries) > 1:
+                        status = "ambiguous"
+                    elif operation == "open":
+                        relative_path = entries[0].path
+                    else:
+                        relative_path = entries[0].path
+                        candidate = Path(relative_path)
+                        if candidate.suffix.casefold() not in workspace.READABLE_SUFFIXES:
+                            status = "unsafe_file"
+                        else:
+                            workspace.checked_readable_file(relative_path)
+                            document_text = workspace.read_text(
+                                relative_path,
+                                is_cancelled=cancellation.is_set,
+                                deadline=deadline,
+                            )
+                            excerpt, next_offset, has_more = spoken_document_chunk(document_text, read_offset)
+                            filename = candidate.name
+                            del document_text
+            except WorkspaceDenied:
+                status = "cancelled" if cancellation.is_set() else "search_failed" if operation == "search" else "read_failed" if operation == "read" else "question_failed" if operation == "question" else "open_failed"
+            except Exception:
+                status = "search_failed" if operation == "search" else "read_failed" if operation == "read" else "question_failed" if operation == "question" else "open_failed"
+
+            with self._file_search_lock:
+                current = (
+                    generation == self._file_search_generation
+                    and workspace is self.active_file_workspace
+                    and panel is self.active_file_panel
+                    and not cancellation.is_set()
+                )
+                self._file_search_jobs.pop(request_id, None)
+                if not current:
+                    status = "cancelled"
+                    entries = []
+                    relative_path = ""
+                    filename = ""
+                    excerpt = ""
+                    private_answer = ""
+                    next_offset = 0
+                    has_more = False
+                elif operation == "open" and status == "ok":
+                    try:
+                        # Validate the complete reply before invoking the Windows file association.
+                        make_file_open_result(request_id, "ok", relative_path)
+                        path = workspace.checked_openable_file(relative_path)
+                        if cancellation.is_set():
+                            status = "cancelled"
+                            relative_path = ""
+                        else:
+                            import os
+                            start_file = getattr(os, "startfile", None)
+                            if not callable(start_file):
+                                status = "open_failed"
+                                relative_path = ""
+                            else:
+                                start_file(str(path))
+                    except (OSError, ValueError, WorkspaceDenied):
+                        candidate = Path(relative_path)
+                        status = "unsafe_file" if candidate.suffix.casefold() not in workspace.OPENABLE_SUFFIXES else "open_failed"
+                        relative_path = ""
+                    except Exception:
+                        status = "open_failed"
+                        relative_path = ""
+
+                try:
+                    if operation == "open":
+                        result = make_file_open_result(request_id, status, relative_path)
+                    elif operation == "read":
+                        result = make_file_read_result(
+                            request_id, status, filename, excerpt, next_offset, has_more,
+                            generation if status == "ok" else 0,
+                        )
+                    elif operation == "question":
+                        result = make_file_question_result(request_id, status, filename, private_answer)
+                    else:
+                        result = make_search_result(
+                            request_id,
+                            status,
+                            min(len(entries), 500),
+                            [entry.path for entry in entries[:3]],
+                        )
+                except (TypeError, ValueError):
+                    result = (
+                        make_file_open_result(request_id, "open_failed")
+                        if operation == "open"
+                        else make_file_read_result(request_id, "read_failed")
+                        if operation == "read"
+                        else make_file_question_result(request_id, "question_failed")
+                        if operation == "question"
+                        else make_search_result(request_id, "search_failed")
+                    )
+                self.bridge.reply_file_request(result, expected_process=runtime_process)
+
+        threading.Thread(target=work, name=f"astra-file-{operation}", daemon=True).start()
 
     def open_tasks(self):
         try:
@@ -681,6 +1015,18 @@ class AstraDesktop:
                 self._refresh_tray_tooltip()
             elif kind == "transcript":
                 self.append("Ты · голос", text)
+            elif kind == "conversation_reset":
+                self.chat.configure(state="normal")
+                self.chat.delete("1.0", "end")
+                self.chat.configure(state="disabled")
+            elif kind == "file_search_request":
+                self._handle_file_search_request(text)
+            elif kind == "file_open_request":
+                self._handle_file_open_request(text)
+            elif kind == "file_read_request":
+                self._handle_file_read_request(text)
+            elif kind == "file_question_request":
+                self._handle_file_question_request(text)
             elif kind == "reminder":
                 if not self.closing and self.reminder_store is not None:
                     try:
@@ -720,12 +1066,29 @@ class AstraDesktop:
         mode = self.bridge.mode if self.bridge.running else "text"
         self.tray.set_tooltip(microphone_tooltip(mode, self.status.get()))
 
+    def _sync_voice_ui(self):
+        state = self.avatar_state()
+        microphone_on = self.bridge.running and self.bridge.mode == "voice"
+        signature = (state, microphone_on, self.status.get())
+        if signature == self._last_voice_ui:
+            return
+        self._last_voice_ui = signature
+        colors = {"idle": MUTED, "listening": CYAN, "recognizing": WARNING, "speaking": ACCENT, "error": ERROR}
+        self.mic_badge.configure(
+            text="●  Микрофон включён" if microphone_on else "●  Микрофон выключен",
+            fg=CYAN if microphone_on else MUTED,
+        )
+        self.voice_button.configure(text="Голос включён" if microphone_on else "Включить голос")
+
     def animate(self):
-        self.phase += 0.055
+        if not self.reduced_motion:
+            self.phase += 0.055
+        self._sync_voice_ui()
         c = self.avatar
         c.delete("all")
-        y = 124 + math.sin(self.phase) * 5
-        color = ACCENT if self.bridge.running else MUTED
+        y = 124 + (0 if self.reduced_motion else math.sin(self.phase) * 5)
+        state = self.avatar_state()
+        color = {"idle": MUTED, "listening": CYAN, "recognizing": WARNING, "speaking": ACCENT, "error": ERROR}[state] if self.bridge.running else MUTED
         speaking = "Говорю" in self.status.get()
         thinking = "Распознаю" in self.status.get() or self.busy
         preview_session = self.avatar_preview_session

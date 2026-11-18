@@ -49,6 +49,15 @@ class PlanInterpreterTests(unittest.TestCase):
         self.assertEqual([step.name for step in plan.steps], ["files.rename", "files.create_folder"])
         self.assertTrue(all("временное разрешение записи" in step.required_capability for step in preview.steps))
 
+    def test_local_request_can_propose_recycle_bin_action_without_authorizing_it(self):
+        response = '{"steps":[{"name":"files.trash","arguments":{"path":"archive/old.txt"}}]}'
+        interpreter, _ = self.make_interpreter(response)
+        plan = interpreter.interpret("Перемести archive/old.txt в Корзину")
+        preview = SkillExecutor().simulate(plan)
+        self.assertEqual(plan.steps[0].name, "files.trash")
+        self.assertIn("отдельный trash scope", preview.steps[0].required_capability)
+        self.assertFalse(preview.execution_enabled)
+
     def test_rejects_cloud_provider_and_empty_requests(self):
         with self.assertRaises(PlanDenied):
             PlanInterpreter(AIProfile(provider="compatible", base_url="https://example.invalid"), Mock())
@@ -63,6 +72,7 @@ class PlanInterpreterTests(unittest.TestCase):
             "```json\n{\"steps\": []}\n```",
             '{"steps":[]}',
             '{"steps":[{"name":"shell","arguments":{"command":"dir"}}]}',
+            '{"steps":[{"name":"web.answer","arguments":{"query":"latest version"}}]}',
             '{"steps":[{"name":"files.read_text","arguments":{"path":"../secret.txt"}}]}',
             '{"steps":[{"name":"files.copy","arguments":{"source":"../secret.txt","destination":"safe.txt"}}]}',
             '{"steps":[{"name":"files.move","arguments":{"source":"safe.txt","destination":"C:\\\\outside.txt"}}]}',

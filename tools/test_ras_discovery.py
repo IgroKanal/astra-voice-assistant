@@ -37,6 +37,52 @@ class RasDiscoveryTests(unittest.TestCase):
         self.assertIsNone(discover_windows_ras_profile_names())
         native.assert_not_called()
 
+    def test_rasman_probe_queries_only_status_and_closes_service_handles(self):
+        from src import ras_discovery
+
+        calls = []
+        closed = []
+
+        class FakeFunction:
+            def __init__(self, handler):
+                self.handler = handler
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *args):
+                return self.handler(*args)
+
+        class FakeLibrary:
+            pass
+
+        def query_status(_service, status_pointer):
+            status = ctypes.cast(
+                status_pointer, ctypes.POINTER(ras_discovery._ServiceStatus)
+            ).contents
+            status.dwCurrentState = 4
+            calls.append(("query",))
+            return 1
+
+        library = FakeLibrary()
+        library.OpenSCManagerW = FakeFunction(
+            lambda *args: calls.append(("manager",) + args) or 10
+        )
+        library.OpenServiceW = FakeFunction(
+            lambda *args: calls.append(("service",) + args) or 20
+        )
+        library.QueryServiceStatus = FakeFunction(query_status)
+        library.CloseServiceHandle = FakeFunction(
+            lambda handle: closed.append(handle) or 1
+        )
+
+        with patch.object(ras_discovery.os, "name", "nt"), \
+             patch.object(ras_discovery.ctypes, "WinDLL", return_value=library, create=True):
+            self.assertTrue(ras_discovery._rasman_is_running())
+
+        self.assertEqual(calls[0], ("manager", None, None, 1))
+        self.assertEqual(calls[1], ("service", 10, "RasMan", 4))
+        self.assertEqual(closed, [20, 10])
+
     @unittest.skipUnless(ctypes.sizeof(ctypes.c_wchar) == 2, "Windows UTF-16 structure layout")
     @patch("src.ras_discovery._rasman_is_running", return_value=False)
     @patch("src.ras_discovery.ctypes.WinDLL")

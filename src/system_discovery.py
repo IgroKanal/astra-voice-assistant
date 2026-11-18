@@ -502,10 +502,19 @@ def discover_windows_browsers(
                     break
             else:
                 stem = Path(executable).stem.casefold()
-                # An unrecognized protocol handler is not promoted to an
-                # executable candidate merely because it owns the registry key.
                 if stem in _BROWSER_NAMES:
                     app = _browser_app(_BROWSER_NAMES[stem][0], executable)
+                    apps[app.name] = app
+                    default_browser = app.name
+                elif stem not in (_COMMAND_INTERPRETERS | {
+                    "explorer", "applicationframehost",
+                }):
+                    # UserChoice is the OS-selected HTTPS handler. If its
+                    # browser is absent from the vendor registry table and
+                    # StartMenuInternet, keep this exact existing executable
+                    # as a generic browser candidate. Never promote command
+                    # interpreters or Windows shell hosts this way.
+                    app = _browser_app(Path(executable).stem[:80], executable)
                     apps[app.name] = app
                     default_browser = app.name
 

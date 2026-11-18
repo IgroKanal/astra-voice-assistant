@@ -16,6 +16,11 @@ this computer. A per-user preference can be kept separately at
 versioned, size-limited, validated, and written atomically. It contains a
 preference, not a permission grant or a discovered system fact. Existing
 `BROWSER_PREFERRED` remains a compatibility fallback.
+If the HTTPS default browser is not in the built-in browser name table or
+`StartMenuInternet`, Astra now accepts its exact existing executable from the
+OS `UserChoice` registration as a generic browser candidate. Script hosts and
+Windows shell hosts are still excluded, and the handler command arguments are
+not retained.
 
 Discovery is read-only. It does not install software, change the Windows
 default, enable a capability, or grant access to user files. If registry access

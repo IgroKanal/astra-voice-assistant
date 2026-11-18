@@ -63,6 +63,38 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(missing.apps, {})
         self.assertEqual(missing.default_browser, '')
 
+    def test_unknown_os_default_browser_is_discovered_without_vendor_manifest(self):
+        choice = r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice'
+        executable = r'C:\Programs\UnlistedBrowser\orbit.exe'
+        values = {
+            ('user', choice, 'ProgId'): 'OrbitHTML',
+            ('classes', r'OrbitHTML\shell\open\command', ''): '"' + executable + '" "%1"',
+        }
+        registry = FakeRegistry(values, {})
+        result = discover_windows_browsers(
+            registry=registry,
+            file_exists=lambda path: path == executable,
+        )
+        self.assertEqual(result.default_browser, 'browser_orbit')
+        self.assertEqual(result.apps['browser_orbit'].open_command, [executable])
+        self.assertIn('orbit', result.apps['browser_orbit'].aliases)
+        self.assertIn('браузер', result.apps['browser_orbit'].aliases)
+        self.assertEqual(resolve_browser_preference('', '', result), 'browser_orbit')
+
+    def test_os_default_command_interpreter_is_not_promoted_to_browser(self):
+        choice = r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice'
+        executable = r'C:\Windows\System32\wscript.exe'
+        values = {
+            ('user', choice, 'ProgId'): 'ScriptHandler',
+            ('classes', r'ScriptHandler\shell\open\command', ''): '"' + executable + '" "%1"',
+        }
+        result = discover_windows_browsers(
+            registry=FakeRegistry(values, {}),
+            file_exists=lambda _path: True,
+        )
+        self.assertEqual(result.apps, {})
+        self.assertEqual(result.default_browser, '')
+
     def test_application_inventory_is_bounded_and_prefers_user_registration(self):
         base = r'Software\Microsoft\Windows\CurrentVersion\App Paths'
         user_path = r'C:\Users\Example\Programs\Editor\editor.exe'

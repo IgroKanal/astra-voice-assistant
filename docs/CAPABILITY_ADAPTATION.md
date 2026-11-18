@@ -43,12 +43,17 @@ Wake-only voice mode supports up to three consecutive follow-ups, so an open
 request, application name and confirmation can be spoken in separate turns.
 Timeout or failed recognition cancels the pending request.
 
-For VPN status, when the configured tunnel service is absent, Astra can inspect
-the names of registered AmneziaWG and WireGuard tunnel services. Exactly one
-match can be queried; multiple matches are reported as ambiguous. This is a
-read-only fallback. Connect and disconnect still use the configured service;
-automatic selection, user choice and confirmation for changing a connection
-remain open. No VPN state was changed during automated tests.
+At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
+An explicit per-user choice wins when that service is still present; otherwise
+an explicit `.env` choice is kept when present, and exactly one discovered
+tunnel is selected automatically. If several candidates remain, the resolver
+does not choose one. This selected service is then used by the existing VPN
+controller, whose connect/disconnect operations now require a one-time
+confirmation. The user choice is stored in the versioned per-user override
+file, separate from `.env`; version 1 preference files remain readable. The
+current detector still recognizes only AmneziaWG/WireGuard tunnel services and
+does not detect every commercial or Windows-native VPN client. No VPN state
+was changed during automated tests.
 
 When a user saves a microphone selection, the encrypted per-user profile stores
 a SHA-256 fingerprint of its normalized device name and host API, not the raw
@@ -77,8 +82,10 @@ enabled as specific low-risk actions when user overrides load successfully.
 `disabled_auto_scopes` in `capability_overrides.json` can disable either
 automatic action (`browser`, `system`). Invalid overrides disable automatic
 mode. Screenshots, URL opening, file access and other actions are not granted
-by this mode. The remaining transition away from scope checkbox state and
-general confirmation for sensitive operations is still open.
+by this mode. Runtime confirmation now covers closing an application,
+connecting/disconnecting VPN and closing Yandex Music. Replacing the remaining
+fixed scope catalog and reviewing risk classification for every action are
+still open.
 
 The runtime separately marks closing an application, connecting/disconnecting
 VPN, and closing Yandex Music as actions that need one-time confirmation. The
@@ -100,11 +107,12 @@ spoken “yes” must not create a lasting permission.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.
-4. Replace fixed VPN service names with discovered client identities plus
-   explicit choice and confirmation. Microphone selection now uses a per-user
-   hashed name/host-API fingerprint and refuses to guess when duplicate devices
-   match; Windows Core Audio endpoint IDs remain a stronger option for
-   identical devices.
+4. Expand VPN discovery to additional client adapters and a voice-friendly
+   choice flow. The current AmneziaWG/WireGuard resolver honors a valid
+   per-user preference and auto-selects only a unique discovered tunnel.
+   Microphone selection uses a per-user hashed name/host-API fingerprint and
+   refuses to guess when duplicate devices match; Windows Core Audio endpoint
+   IDs remain a stronger option for identical devices.
 5. Keep voice state events as the source of character animation state. The Qt
    scene and current 2D art are preserved; production layered art or a real VRM/
    Live2D-compatible model is still required before attempting polished new

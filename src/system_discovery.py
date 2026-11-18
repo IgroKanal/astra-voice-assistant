@@ -24,6 +24,7 @@ _START_MENU_INTERNET = r"Software\Clients\StartMenuInternet"
 _HTTPS_USER_CHOICE = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
 _SERVICE_REGISTRY = r"SYSTEM\CurrentControlSet\Services"
 _VPN_TUNNEL_PREFIXES = ("amneziawgtunnel$", "wireguardtunnel$")
+_VPN_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_$.-]{1,256}$")
 _COMMAND_INTERPRETERS = frozenset({
     "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta",
     "bash", "sh", "zsh", "wsl", "python", "pythonw", "py", "node",
@@ -231,8 +232,32 @@ def discover_vpn_tunnel_services(*, registry: Any | None = None) -> tuple[str, .
         return ()
     services = _registry_subkeys(registry, root, _SERVICE_REGISTRY, max_entries=8192)
     return tuple(name for name in services
-                 if name.casefold().startswith(_VPN_TUNNEL_PREFIXES)
-                 and len(name) <= 256 and not any(ord(char) < 32 for char in name))
+                 if isinstance(name, str)
+                 and name.casefold().startswith(_VPN_TUNNEL_PREFIXES)
+                 and _VPN_SERVICE_NAME_RE.fullmatch(name))
+
+
+def resolve_vpn_service_preference(
+    configured_preference: str,
+    override_preference: str,
+    discovered_services: tuple[str, ...],
+) -> str:
+    """Resolve only to a currently discovered service; never guess among several."""
+    candidates: dict[str, str] = {}
+    for service in discovered_services:
+        if isinstance(service, str) and _VPN_SERVICE_NAME_RE.fullmatch(service):
+            candidates.setdefault(service.casefold(), service)
+    for preference in (override_preference, configured_preference):
+        if not isinstance(preference, str):
+            continue
+        clean = preference.strip()
+        if clean and _VPN_SERVICE_NAME_RE.fullmatch(clean):
+            match = candidates.get(clean.casefold())
+            if match:
+                return match
+    if len(candidates) == 1:
+        return next(iter(candidates.values()))
+    return ""
 
 
 def discover_registered_applications(*, registry: Any | None = None,

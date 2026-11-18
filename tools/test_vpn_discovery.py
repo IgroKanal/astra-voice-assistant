@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from src.config_loader import Settings
-from src.system_discovery import discover_vpn_tunnel_services
+from src.system_discovery import discover_vpn_tunnel_services, resolve_vpn_service_preference
 from src.vpn_controller import VpnController
 from tools.test_system_discovery import FakeRegistry
 
@@ -11,9 +11,30 @@ class VpnDiscoveryTests(unittest.TestCase):
     def test_inventory_selects_only_supported_tunnel_services(self):
         base = r'SYSTEM\CurrentControlSet\Services'
         registry = FakeRegistry({}, {('machine', base): [
-            'AmneziaWGTunnel$work', 'WireGuardTunnel$home', 'WireGuardManager', 'random']})
+            'AmneziaWGTunnel$work', 'WireGuardTunnel$home', 'WireGuardManager', 'random',
+            'WireGuardTunnel$bad*name', 'AmneziaWGTunnel$bad name', None]})
         self.assertEqual(discover_vpn_tunnel_services(registry=registry),
                          ('AmneziaWGTunnel$work', 'WireGuardTunnel$home'))
+
+    def test_preference_uses_current_explicit_choice_or_only_unambiguous_candidate(self):
+        discovered = ('WireGuardTunnel$home', 'AmneziaWGTunnel$work')
+        self.assertEqual(
+            resolve_vpn_service_preference('', 'wireguardtunnel$HOME', discovered),
+            'WireGuardTunnel$home',
+        )
+        self.assertEqual(
+            resolve_vpn_service_preference('AmneziaWGTunnel$work', '', discovered),
+            'AmneziaWGTunnel$work',
+        )
+        self.assertEqual(resolve_vpn_service_preference('', '', discovered), '')
+        self.assertEqual(
+            resolve_vpn_service_preference('stale', '', ('WireGuardTunnel$home',)),
+            'WireGuardTunnel$home',
+        )
+        self.assertEqual(
+            resolve_vpn_service_preference('', 'WireGuardTunnel$bad*name', discovered),
+            '',
+        )
 
     @patch('src.vpn_controller.discover_vpn_tunnel_services')
     def test_status_uses_unique_discovery_only_when_configured_service_missing(self, discover):

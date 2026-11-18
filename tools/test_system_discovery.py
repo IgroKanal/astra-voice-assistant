@@ -185,14 +185,28 @@ class DiscoveryTests(unittest.TestCase):
     def test_overrides_round_trip_and_reject_paths(self):
         with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
             store = CapabilityOverrideStore(Path(root) / 'preferences.json')
-            store.save(CapabilityOverrides('Chrome'))
+            store.save(CapabilityOverrides('Chrome', vpn_service_preferred='WireGuardTunnel$home'))
             self.assertEqual(store.load().browser_preferred, 'chrome')
+            self.assertEqual(store.load().vpn_service_preferred, 'WireGuardTunnel$home')
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides('C:\\evil.exe'))
             store.save(CapabilityOverrides('chrome', ('browser',)))
             self.assertEqual(store.load().disabled_auto_scopes, ('browser',))
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides(disabled_auto_scopes=({},)))
+            with self.assertRaises(ValueError):
+                store.save(CapabilityOverrides(vpn_service_preferred='WireGuardTunnel$home*'))
+
+    def test_legacy_override_file_loads_without_vpn_choice(self):
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+            path = Path(root) / 'preferences.json'
+            path.write_text(
+                '{"version":1,"browser_preferred":"chrome","disabled_auto_scopes":[]}',
+                encoding='utf-8',
+            )
+            loaded = CapabilityOverrideStore(path).load()
+            self.assertEqual(loaded.browser_preferred, 'chrome')
+            self.assertEqual(loaded.vpn_service_preferred, '')
 
 
 if __name__ == '__main__':

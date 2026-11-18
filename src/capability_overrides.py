@@ -9,9 +9,10 @@ import re
 import secrets
 
 
-_VERSION = 1
+_VERSION = 2
 _MAX_BYTES = 16_384
 _PREFERENCE_RE = re.compile(r"^[\w.-]{1,80}$", re.UNICODE)
+_VPN_SERVICE_RE = re.compile(r"^[A-Za-z0-9_$.-]{1,256}$")
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class CapabilityOverrides:
 
     browser_preferred: str = ""
     disabled_auto_scopes: tuple[str, ...] = ()
+    vpn_service_preferred: str = ""
 
     def validate(self) -> "CapabilityOverrides":
         if not isinstance(self.browser_preferred, str):
@@ -27,12 +29,18 @@ class CapabilityOverrides:
         value = self.browser_preferred.strip()
         if value and not _PREFERENCE_RE.fullmatch(value):
             raise ValueError("В выборе браузера допустимо только имя приложения")
+        if not isinstance(self.vpn_service_preferred, str):
+            raise ValueError("Некорректное имя службы VPN")
+        vpn_service = self.vpn_service_preferred.strip()
+        if vpn_service and not _VPN_SERVICE_RE.fullmatch(vpn_service):
+            raise ValueError("Некорректное имя службы VPN")
         if not isinstance(self.disabled_auto_scopes, (tuple, list)) or any(
             not isinstance(scope, str) or scope not in {"browser", "system"} for scope in self.disabled_auto_scopes
         ):
             raise ValueError("Неизвестное ограничение автоматических возможностей")
         return CapabilityOverrides(browser_preferred=value.casefold(),
-                                   disabled_auto_scopes=tuple(sorted(set(self.disabled_auto_scopes))))
+                                   disabled_auto_scopes=tuple(sorted(set(self.disabled_auto_scopes))),
+                                   vpn_service_preferred=vpn_service)
 
 
 class CapabilityOverrideStore:
@@ -51,12 +59,17 @@ class CapabilityOverrideStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError("Не удалось прочитать пользовательские предпочтения Astra") from exc
-        if not isinstance(data, dict) or data.get("version") != _VERSION:
+        version = data.get("version") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or type(version) is not int or version not in {1, _VERSION}:
             raise ValueError("Неподдерживаемый формат пользовательских предпочтений Astra")
-        if set(data) - {"version", "browser_preferred", "disabled_auto_scopes"}:
+        allowed_keys = {"version", "browser_preferred", "disabled_auto_scopes"}
+        if version >= 2:
+            allowed_keys.add("vpn_service_preferred")
+        if set(data) - allowed_keys:
             raise ValueError("В пользовательских предпочтениях есть неизвестные поля")
         return CapabilityOverrides(browser_preferred=data.get("browser_preferred", ""),
-                                   disabled_auto_scopes=data.get("disabled_auto_scopes", ())).validate()
+                                   disabled_auto_scopes=data.get("disabled_auto_scopes", ()),
+                                   vpn_service_preferred=data.get("vpn_service_preferred", "")).validate()
 
     def save(self, overrides: CapabilityOverrides) -> None:
         clean = overrides.validate()
@@ -66,7 +79,8 @@ class CapabilityOverrideStore:
             raise ValueError("Путь пользовательских предпочтений подменён ссылкой")
         encoded = json.dumps(
             {"version": _VERSION, "browser_preferred": clean.browser_preferred,
-             "disabled_auto_scopes": clean.disabled_auto_scopes},
+             "disabled_auto_scopes": clean.disabled_auto_scopes,
+             "vpn_service_preferred": clean.vpn_service_preferred},
             ensure_ascii=False,
             separators=(",", ":"),
         ).encode("utf-8")

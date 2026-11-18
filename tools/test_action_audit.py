@@ -14,7 +14,7 @@ from src.file_transactions import FileTransactions
 
 class AuditTests(unittest.TestCase):
     def test_direct_file_actions_and_undo_are_audited_without_content(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             root = Path(temp)
             audit = ActionAudit(root / "audit.sqlite")
             transactions = FileTransactions(FileWorkspace(root), audit=audit.record)
@@ -30,7 +30,7 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(audit.recent()[0][2], "failed")
 
     def test_audit_failure_does_not_turn_committed_file_action_into_failure(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             root = Path(temp)
             def unavailable(*args):
                 raise OSError("unavailable")
@@ -41,7 +41,7 @@ class AuditTests(unittest.TestCase):
             self.assertEqual((root / "test.txt").read_text(), "data")
 
     def test_reopen_retention_and_no_arbitrary_content(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             path = Path(temp) / "audit.sqlite"
             audit = ActionAudit(path)
             audit.MAX_ROWS = 2
@@ -62,7 +62,7 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(rows[0][1:3], ("close_app", "confirmation_requested"))
 
     def test_clear_overwrites_event_data_and_is_repeatable(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             path = Path(temp) / "audit.sqlite"
             audit = ActionAudit(path)
             audit.record("files.copy", "succeeded")
@@ -76,7 +76,7 @@ class AuditTests(unittest.TestCase):
             self.assertNotIn(b"succeeded", raw)
 
     def test_future_schema_is_preserved(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             path = Path(temp) / "future.sqlite"
             with closing(sqlite3.connect(path)) as db:
                 db.execute("PRAGMA user_version=99")
@@ -86,7 +86,7 @@ class AuditTests(unittest.TestCase):
                 self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 99)
 
     def test_plan_results_share_correlation_without_paths_or_content(self):
-        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             root = Path(temp)
             (root / "private.txt").write_text("private document secret", encoding="utf-8")
             audit = ActionAudit(root / "audit.sqlite")

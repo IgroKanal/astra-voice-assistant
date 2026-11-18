@@ -63,9 +63,11 @@ from src.system_controller import SystemController
 from src.system_discovery import (
     BrowserDiscovery,
     discover_registered_applications,
+    discover_vpn_tunnel_services,
     discover_windows_browsers,
     merge_discovered_browsers,
     resolve_browser_preference,
+    resolve_vpn_service_preference,
 )
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
@@ -2804,6 +2806,21 @@ def main() -> int:
     if capability_overrides is not None:
         settings = replace(settings, automatic_safe_actions=True,
                            denied_auto_scopes=capability_overrides.disabled_auto_scopes)
+    try:
+        vpn_services = discover_vpn_tunnel_services()
+    except (OSError, ValueError):
+        logger.warning("Не удалось обнаружить совместимые VPN-службы Windows.")
+        vpn_services = ()
+    vpn_preferred = resolve_vpn_service_preference(
+        settings.vpn_tunnel_service_name,
+        capability_overrides.vpn_service_preferred if capability_overrides else "",
+        vpn_services,
+    )
+    if vpn_preferred:
+        # Use only a service present in the fresh read-only inventory. A single
+        # discovered tunnel adapts automatically; ambiguity never selects a new one.
+        settings = replace(settings, vpn_tunnel_service_name=vpn_preferred)
+    logger.info("System discovery: supported_vpn_tunnel_services=%d", len(vpn_services))
     browser_preferred = resolve_browser_preference(
         settings.browser_preferred,
         capability_overrides.browser_preferred if capability_overrides else "",

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import base64
 import logging
-import subprocess
-import time
 from dataclasses import dataclass, replace
 from typing import Literal
 
 from src.capability_overrides import CapabilityOverrideStore
 from src.config_loader import Settings
 from src.system_discovery import discover_vpn_tunnel_services, is_supported_vpn_tunnel_service
+from src.windows_service_control import (
+    ServiceControl,
+    WindowsServiceControl,
+    WindowsServiceError,
+)
 
 
 @dataclass(frozen=True)
@@ -38,13 +40,20 @@ class VpnController:
         logger: logging.Logger | None = None,
         *,
         override_store: CapabilityOverrideStore | None = None,
+        service_control: ServiceControl | None = None,
     ) -> None:
         self.settings = settings
         self.logger = logger or logging.getLogger(__name__)
         self.override_store = override_store
         self.tunnel_service = settings.vpn_tunnel_service_name.strip()
         self.manager_service = settings.vpn_manager_service_name.strip()
-        self.timeout_seconds = max(3.0, settings.vpn_command_timeout_seconds)
+        self.timeout_seconds = min(60.0, max(3.0, settings.vpn_command_timeout_seconds))
+        self._service_control = service_control
+
+    def _services(self) -> ServiceControl:
+        if self._service_control is None:
+            self._service_control = WindowsServiceControl()
+        return self._service_control
 
     def available_tunnel_services(self) -> tuple[str, ...]:
         """Return a fresh read-only inventory for voice disambiguation."""
@@ -163,151 +172,80 @@ class VpnController:
             return VpnActionResult(True, "VPN выключен.", "stopped")
         return result
 
-    def _clean_powershell_stream(self, value: str) -> str:
-        clean = (value or "").strip()
-        if not clean:
-            return ""
-
-        # PowerShell can write CLIXML progress records to stderr even when
-        # the command succeeds. That noise makes logs huge and unreadable.
-        if clean.startswith("#< CLIXML"):
-            return ""
-
-        return clean
-
     def _get_service_status(self, service_name: str) -> str:
-        script = self._service_status_script(service_name)
-        result = self._run_powershell(script, timeout=5)
-        output = self._clean_powershell_stream(result.stdout).lower()
-        error = self._clean_powershell_stream(result.stderr)
-
-        if result.returncode != 0:
+        try:
+            return self._services().query_status(service_name)
+        except WindowsServiceError as exc:
             self.logger.warning(
-                "VPN status query failed: service=%s code=%s stdout=%r stderr=%r",
-                service_name,
-                result.returncode,
-                output,
-                error,
+                "VPN status query failed: code=%s",
+                exc.error_code,
             )
-            if "cannot find" in error.lower() or "не удается найти" in error.lower():
+            if exc.error_code == WindowsServiceControl.ERROR_SERVICE_DOES_NOT_EXIST:
                 return "not_found"
             return "unknown"
-
-        if output in {"running", "stopped", "startpending", "stoppending", "paused"}:
-            return output
-        return output or "unknown"
+        except (OSError, ValueError):
+            self.logger.warning("VPN status query failed")
+            return "unknown"
 
     def _set_service_state(
         self,
         service_name: str,
         desired: Literal["running", "stopped"],
     ) -> VpnActionResult:
-        script = self._service_set_state_script(
-            service_name=service_name,
-            desired=desired,
-            timeout_seconds=self.timeout_seconds,
-        )
-        result = self._run_powershell(script, timeout=int(self.timeout_seconds) + 5)
-        output = self._clean_powershell_stream(result.stdout).lower()
-        error = self._clean_powershell_stream(result.stderr)
-
-        if result.returncode == 0 and output == desired:
-            self.logger.info(
-                "VPN service state change: service=%s desired=%s result=%s",
-                service_name,
-                desired,
-                output,
+        try:
+            output = self._services().set_state(
+                service_name=service_name,
+                desired=desired,
+                timeout_seconds=self.timeout_seconds,
             )
-        else:
+        except WindowsServiceError as exc:
             self.logger.warning(
-                "VPN service state change failed: service=%s desired=%s code=%s stdout=%r stderr=%r",
-                service_name,
+                "VPN service state change failed: desired=%s code=%s",
                 desired,
-                result.returncode,
+                exc.error_code,
+            )
+            if exc.error_code == WindowsServiceControl.ERROR_ACCESS_DENIED:
+                return VpnActionResult(
+                    False,
+                    "Не удалось изменить VPN. Запусти Астру от имени администратора.",
+                    "access_denied",
+                )
+            if exc.error_code == WindowsServiceControl.ERROR_SERVICE_DOES_NOT_EXIST:
+                return VpnActionResult(
+                    False,
+                    "Служба VPN не найдена. Проверь VPN_TUNNEL_SERVICE_NAME в .env.",
+                    "not_found",
+                )
+            return VpnActionResult(
+                False,
+                "Не удалось изменить VPN. Подробности смотри в logs/app.log.",
+                "unknown",
+            )
+        except (OSError, ValueError):
+            self.logger.warning(
+                "VPN service state change failed: desired=%s",
+                desired,
+            )
+            return VpnActionResult(
+                False,
+                "Не удалось изменить VPN. Подробности смотри в logs/app.log.",
+                "unknown",
+            )
+
+        if output == desired:
+            self.logger.info(
+                "VPN service state change: desired=%s result=%s",
+                desired,
                 output,
-                error,
             )
-
-        if result.returncode == 0 and output == desired:
             return VpnActionResult(True, "Готово.", desired)
-
-        if "access" in error.lower() or "denied" in error.lower() or "отказано" in error.lower():
-            return VpnActionResult(
-                False,
-                "Не удалось изменить VPN. Запусти Астру от имени администратора.",
-                "access_denied",
-            )
-
-        if "cannot find" in error.lower() or "не удается найти" in error.lower():
-            return VpnActionResult(
-                False,
-                "Служба VPN не найдена. Проверь VPN_TUNNEL_SERVICE_NAME в .env.",
-                "not_found",
-            )
-
+        self.logger.warning(
+            "VPN service state transition incomplete: desired=%s result=%s",
+            desired,
+            output,
+        )
         return VpnActionResult(
             False,
             "Не удалось изменить VPN. Подробности смотри в logs/app.log.",
             output or "unknown",
         )
-
-    def _run_powershell(self, script: str, timeout: int) -> subprocess.CompletedProcess[str]:
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            encoded,
-        ]
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-
-    def _service_status_script(self, service_name: str) -> str:
-        encoded_name = base64.b64encode(service_name.encode("utf-8")).decode("ascii")
-        return f"""
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$name = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded_name}'))
-$svc = Get-Service -Name $name -ErrorAction Stop
-[Console]::Write($svc.Status.ToString())
-"""
-
-    def _service_set_state_script(
-        self,
-        service_name: str,
-        desired: Literal["running", "stopped"],
-        timeout_seconds: float,
-    ) -> str:
-        encoded_name = base64.b64encode(service_name.encode("utf-8")).decode("ascii")
-        action = "Start-Service" if desired == "running" else "Stop-Service"
-        return f"""
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$name = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded_name}'))
-$desired = '{desired}'
-$svc = Get-Service -Name $name -ErrorAction Stop
-if ($desired -eq 'running') {{
-    if ($svc.Status -ne 'Running') {{ Start-Service -Name $name -ErrorAction Stop }}
-}} else {{
-    if ($svc.Status -ne 'Stopped') {{ Stop-Service -Name $name -ErrorAction Stop }}
-}}
-$deadline = (Get-Date).AddSeconds({timeout_seconds})
-do {{
-    Start-Sleep -Milliseconds 300
-    $svc = Get-Service -Name $name -ErrorAction Stop
-    $current = $svc.Status.ToString().ToLowerInvariant()
-}} while ($current -ne $desired -and (Get-Date) -lt $deadline)
-[Console]::Write($current)
-"""

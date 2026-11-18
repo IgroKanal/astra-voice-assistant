@@ -76,6 +76,14 @@ capture uses `GetSystemMetrics` plus Pillow. These core actions no longer start
 PowerShell. Screenshot output is limited to the primary display, bounded by a
 pixel-count limit, and reported successful only when a non-empty PNG exists.
 
+VPN service status and transitions now use the typed Windows Service Control
+Manager API. The service name is passed as a service identifier, never composed
+into a shell command. Reads request query access only; start and stop request
+only the matching operation rights. State changes poll for at most 60 seconds,
+and the existing voice confirmation and exact-service revalidation still run
+before a transition. This changes the adapter implementation, not which VPNs
+are detected or which operations are authorized.
+
 At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
 An explicit per-user choice wins when that service is still present; otherwise
 an explicit `.env` choice is kept when present. A stale AmneziaWG/WireGuard

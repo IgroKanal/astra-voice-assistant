@@ -20,6 +20,14 @@ class AudioInputDevice:
     identity: str
 
 
+@dataclass(frozen=True)
+class AudioOutputDevice:
+    """A current PortAudio index paired with a stable metadata fingerprint."""
+
+    index: int
+    identity: str
+
+
 def _normalize_label(value: Any) -> str:
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
@@ -39,11 +47,25 @@ def audio_input_identity(name: Any, host_api_name: Any = "") -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def discover_audio_inputs(pyaudio_module: Any | None = None) -> tuple[AudioInputDevice, ...]:
+def audio_output_identity(name: Any, host_api_name: Any = "") -> str:
+    """Hash output labels separately from input labels; never persist raw names."""
+    clean_name = _normalize_label(name)
+    if not clean_name:
+        return ""
+    clean_host = _normalize_label(host_api_name)
+    payload = ("astra-audio-output-v1\0" + clean_name + "\0" + clean_host).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def discover_audio_inputs(
+    pyaudio_module: Any | None = None, *, strict: bool = False
+) -> tuple[AudioInputDevice, ...]:
     """Enumerate input metadata without opening a recording stream.
 
     ``pyaudio_module`` is injectable so tests do not touch physical devices.
-    Failures return an empty snapshot; callers then use the OS default input.
+    Failures return an empty snapshot by default; callers then use the OS
+    default input. Inventory callers may request strict errors to distinguish
+    an unavailable backend from a computer with no input endpoints.
     """
     audio = None
     try:
@@ -59,6 +81,8 @@ def discover_audio_inputs(pyaudio_module: Any | None = None) -> tuple[AudioInput
                 audio.terminate()
             except Exception:
                 pass
+        if strict:
+            raise
         return ()
 
     devices: list[AudioInputDevice] = []
@@ -83,6 +107,60 @@ def discover_audio_inputs(pyaudio_module: Any | None = None) -> tuple[AudioInput
                 identity = audio_input_identity(info.get("name", ""), host_api_name)
                 if identity:
                     devices.append(AudioInputDevice(index=index, identity=identity))
+            except (OSError, TypeError, ValueError, OverflowError):
+                continue
+    finally:
+        try:
+            audio.terminate()
+        except Exception:
+            pass
+    return tuple(devices)
+
+
+def discover_audio_outputs(
+    pyaudio_module: Any | None = None, *, strict: bool = False
+) -> tuple[AudioOutputDevice, ...]:
+    """Enumerate output metadata without opening a playback stream."""
+    audio = None
+    try:
+        if pyaudio_module is None:
+            from speech_recognition import Microphone
+
+            pyaudio_module = Microphone.get_pyaudio()
+        audio = pyaudio_module.PyAudio()
+        count = max(0, min(int(audio.get_device_count()), _MAX_AUDIO_DEVICES))
+    except Exception:
+        if audio is not None:
+            try:
+                audio.terminate()
+            except Exception:
+                pass
+        if strict:
+            raise
+        return ()
+
+    devices: list[AudioOutputDevice] = []
+    try:
+        for fallback_index in range(count):
+            try:
+                info = audio.get_device_info_by_index(fallback_index)
+                if not isinstance(info, dict) or int(info.get("maxOutputChannels", 0)) <= 0:
+                    continue
+                index = int(info.get("index", fallback_index))
+                if not 0 <= index < _MAX_AUDIO_DEVICES:
+                    continue
+                host_api_name = ""
+                host_api_index = info.get("hostApi")
+                if host_api_index is not None:
+                    try:
+                        host_info = audio.get_host_api_info_by_index(int(host_api_index))
+                        if isinstance(host_info, dict):
+                            host_api_name = host_info.get("name", "")
+                    except Exception:
+                        pass
+                identity = audio_output_identity(info.get("name", ""), host_api_name)
+                if identity:
+                    devices.append(AudioOutputDevice(index=index, identity=identity))
             except (OSError, TypeError, ValueError, OverflowError):
                 continue
     finally:

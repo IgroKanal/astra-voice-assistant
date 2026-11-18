@@ -18,13 +18,15 @@ class CapabilityInventoryTests(unittest.TestCase):
         with patch("src.capability_inventory.discover_registered_applications", return_value=installed), \
              patch("src.capability_inventory.discover_windows_browsers", return_value=BrowserDiscovery({"browser_orbit": browser}, "browser_orbit")), \
              patch("src.capability_inventory.discover_audio_inputs", return_value=devices), \
+             patch("src.capability_inventory.discover_audio_outputs", return_value=(object(), object(), object())), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=("WireGuardTunnel$private",)):
             inventory = discover_capability_inventory()
 
-        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 1))
+        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 1))
         summary = inventory.describe()
         self.assertIn("приложений для запуска обнаружено: 1", summary)
         self.assertIn("входных аудиоустройств обнаружено: 2", summary)
+        self.assertIn("выходных аудиоустройств обнаружено: 3", summary)
         self.assertIn("системный браузер по умолчанию найден", summary)
         self.assertNotIn("Private editor", summary)
         self.assertNotIn("private.exe", summary)
@@ -35,6 +37,7 @@ class CapabilityInventoryTests(unittest.TestCase):
         with patch("src.capability_inventory.discover_registered_applications", side_effect=OSError), \
              patch("src.capability_inventory.discover_windows_browsers", side_effect=OSError), \
              patch("src.capability_inventory.discover_audio_inputs", return_value=()), \
+             patch("src.capability_inventory.discover_audio_outputs", side_effect=OSError), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()):
             inventory = discover_capability_inventory()
 
@@ -42,6 +45,8 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertIsNone(inventory.browsers)
         self.assertIsNone(inventory.system_default_browser)
         self.assertEqual(inventory.audio_inputs, 0)
+        self.assertIsNone(inventory.audio_outputs)
+        self.assertIn("устройств вывода звука прочитать не удалось", inventory.describe())
         self.assertEqual(inventory.supported_vpn_tunnels, 0)
         self.assertIn("список браузеров прочитать не удалось", inventory.describe())
 

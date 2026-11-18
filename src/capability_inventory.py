@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from src.audio_device_discovery import discover_audio_inputs
+from src.audio_device_discovery import discover_audio_inputs, discover_audio_outputs
 from src.system_discovery import (
     BrowserDiscovery,
     discover_registered_applications,
@@ -21,6 +21,7 @@ class CapabilityInventory:
     browsers: int | None
     system_default_browser: bool | None
     audio_inputs: int | None
+    audio_outputs: int | None
     supported_vpn_tunnels: int | None
 
     def describe(self) -> str:
@@ -46,6 +47,13 @@ class CapabilityInventory:
             parts.append(f"входных аудиоустройств обнаружено: {self.audio_inputs}")
         else:
             parts.append("входные аудиоустройства не обнаружены")
+
+        if self.audio_outputs is None:
+            parts.append("список устройств вывода звука прочитать не удалось")
+        elif self.audio_outputs:
+            parts.append(f"выходных аудиоустройств обнаружено: {self.audio_outputs}")
+        else:
+            parts.append("выходные аудиоустройства не обнаружены")
 
         if self.supported_vpn_tunnels is None:
             parts.append("список поддерживаемых VPN-туннелей прочитать не удалось")
@@ -94,12 +102,18 @@ def discover_capability_inventory() -> CapabilityInventory:
              and browser_snapshot.default_browser in browser_snapshot.apps)
         if browser_snapshot is not None else None
     )
-    audio_count = _read_count(discover_audio_inputs, lambda items: len(items))
+    audio_count = _read_count(
+        lambda: discover_audio_inputs(strict=True), lambda items: len(items)
+    )
+    audio_output_count = _read_count(
+        lambda: discover_audio_outputs(strict=True), lambda items: len(items)
+    )
     vpn_count = _read_count(discover_vpn_tunnel_services, lambda items: len(items))
     return CapabilityInventory(
         registered_applications=application_count,
         browsers=browser_count,
         system_default_browser=default_browser,
         audio_inputs=audio_count,
+        audio_outputs=audio_output_count,
         supported_vpn_tunnels=vpn_count,
     )

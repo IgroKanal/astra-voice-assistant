@@ -18,7 +18,7 @@ from typing import Callable
 from src.ai_client import AIClient, LLMResult
 from src.assistant_persona import character_phrase
 from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
-from src.action_policy import ActionPolicy
+from src.action_policy import ActionPolicy, action_confirmation_prompt
 from src.action_audit import record_action
 from src.capability_overrides import CapabilityOverrideStore
 from src.audio_io import ListenResult, VoiceIO
@@ -157,6 +157,7 @@ class TurnState:
     microphone_failed: bool = False
     pending_kind: str = ""
     pending_created_at: float = 0.0
+    pending_confirmation_action: AssistantAction | None = None
     pending_discovered_app: object | None = None
     pending_app_identity: tuple[int, int, int, int] | None = None
     last_context_kind: str = ""
@@ -417,6 +418,7 @@ def shorten_voice_response(message: str, settings: Settings) -> str:
 def clear_pending(state: TurnState) -> None:
     state.pending_kind = ""
     state.pending_created_at = 0.0
+    state.pending_confirmation_action = None
     state.pending_discovered_app = None
     state.pending_app_identity = None
 
@@ -1219,18 +1221,55 @@ def _registered_app_matches(item: object, target: str) -> bool:
     return any(isinstance(name, str) and normalize_text(name) == target for name in names)
 
 
-def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
+def handle_action(
+    action: AssistantAction,
+    ctx: TurnContext,
+    *,
+    confirmation_accepted: bool = False,
+) -> bool:
     """
     Выполняет безопасное действие.
 
     Возвращает False, если нужно завершить приложение.
     """
     decision = ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(action)
+    close_target = action.target or action.query
+    is_non_action_close_sentinel = (
+        action.type == ActionType.CLOSE_APP
+        and close_target in {
+            UNSUPPORTED_CLOSE_TARGET,
+            UNRESOLVED_CONTEXT_TARGET,
+            MIXED_COMMAND_TARGET,
+        }
+    )
+    confirmation_required = (
+        decision.requires_confirmation
+        and not confirmation_accepted
+        and not is_non_action_close_sentinel
+    )
     if getattr(ctx, "audit", None) is not None:
-        ctx.audit(getattr(action.type, "value", "unknown"), "dispatch_allowed" if decision.allowed else "blocked")
-    ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
+        if not decision.allowed:
+            audit_outcome = "blocked"
+        elif confirmation_required:
+            audit_outcome = "confirmation_requested"
+        else:
+            audit_outcome = "dispatch_allowed"
+        ctx.audit(getattr(action.type, "value", "unknown"), audit_outcome)
+    ctx.logger.info(
+        "policy action=%s source=%s allowed=%s confirmation=%s scope=%s",
+        getattr(action.type, "value", "invalid"),
+        action.source,
+        decision.allowed,
+        confirmation_required,
+        decision.scope,
+    )
     if not decision.allowed:
         ctx.respond(decision.reason)
+        return True
+    if confirmation_required:
+        set_pending(ctx.state, "action_confirmation")
+        ctx.state.pending_confirmation_action = action
+        ctx.respond(action_confirmation_prompt(action))
         return True
 
     if action.type == ActionType.FILE_MUTATION:
@@ -2103,6 +2142,10 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             ctx.respond("Файловое действие отменено или время подтверждения истекло.")
             return True
     if not raw_text:
+        if ctx.state.pending_kind == "action_confirmation":
+            clear_pending(ctx.state)
+            ctx.respond("Подтверждение не распознано. Действие отменено.")
+            return True
         ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
@@ -2141,6 +2184,36 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             return True
         remember_context(ctx, "app", candidate.name)
         ctx.respond("Открываю.")
+        return True
+
+    if ctx.state.pending_kind == "action_confirmation":
+        active = pending_is_active(ctx.state)
+        pending_action = ctx.state.pending_confirmation_action
+        answer = normalize_text(_strip_wake_prefix_for_follow_up(raw_text, ctx.settings))
+        clear_pending(ctx.state)
+        if answer in {"нет", "отмена", "отмени", "не надо"}:
+            ctx.respond("Действие отменено.")
+            return True
+        if answer not in {"да", "подтверждаю", "выполняй"}:
+            return process_turn(raw_text, ctx)
+        if not active:
+            ctx.respond("Время подтверждения истекло. Повтори команду.")
+            return True
+        if pending_action is None:
+            ctx.respond("Действие отменено.")
+            return True
+        decision = ActionPolicy(
+            ctx.settings.action_permissions,
+            automatic_safe_actions=ctx.settings.automatic_safe_actions,
+            denied_auto_scopes=ctx.settings.denied_auto_scopes,
+        ).check(pending_action)
+        if not decision.allowed:
+            ctx.respond(decision.reason)
+            return True
+        if not decision.requires_confirmation:
+            ctx.respond("Действие изменилось. Повтори команду.")
+            return True
+        handle_action(pending_action, ctx, confirmation_accepted=True)
         return True
 
     pending_action = resolve_pending_follow_up(raw_text, ctx)
@@ -2375,6 +2448,7 @@ def _listen_pending_voice_follow_up(
         if not follow_up.ok:
             logger.info("Pending command session timeout/unknown: %s", follow_up.error)
             file_confirmation = ctx.state.pending_kind == "file_mutation_confirmation"
+            action_confirmation = ctx.state.pending_kind == "action_confirmation"
             if file_confirmation and ctx.file_mutation is not None:
                 ctx.file_mutation.cancel()
             clear_pending(ctx.state)
@@ -2382,6 +2456,8 @@ def _listen_pending_voice_follow_up(
                 return False
             if file_confirmation:
                 ctx.respond("Подтверждение не распознано. Файловое действие отменено.")
+            elif action_confirmation:
+                ctx.respond("Подтверждение не распознано. Действие отменено.")
             else:
                 ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
             return True

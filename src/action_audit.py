@@ -13,7 +13,14 @@ ACTIONS = frozenset(item.value for item in ActionType) | frozenset({
     "files.search", "files.read_text", "files.copy", "files.move", "files.rename", "files.create_folder",
     "files.create", "files.replace", "files.trash", "files.undo", "files.recover", "files.execute",
 })
-OUTCOMES = frozenset({"dispatch_allowed", "blocked", "succeeded", "failed", "cancelled"})
+OUTCOMES = frozenset({
+    "dispatch_allowed",
+    "confirmation_requested",
+    "blocked",
+    "succeeded",
+    "failed",
+    "cancelled",
+})
 
 
 class ActionAudit:

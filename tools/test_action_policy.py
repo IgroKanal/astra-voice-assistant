@@ -4,7 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.action_policy import ALL_SCOPES, CAPABILITY_CATALOG, DEFAULT_SCOPES, ActionPolicy, capability_catalog
+from src.action_policy import ALL_SCOPES, CAPABILITY_CATALOG, DEFAULT_SCOPES, ActionPolicy, action_requires_confirmation, capability_catalog
 from src.task_router import ActionType, AssistantAction
 
 
@@ -123,6 +123,24 @@ class ActionPolicyTests(unittest.TestCase):
     def test_media_cannot_bypass_app_permission(self):
         for target in ("open_play_local", "shutdown_yandex_music"):
             self.assertFalse(ActionPolicy(("media",)).check(AssistantAction(ActionType.MEDIA_CONTROL, target=target)).allowed)
+
+    def test_confirmation_is_attached_to_specific_state_changing_actions(self):
+        cases = (
+            (AssistantAction(ActionType.CLOSE_APP, target="telegram"), True),
+            (AssistantAction(ActionType.CLOSE_APP, target="__context_unavailable__"), False),
+            (AssistantAction(ActionType.VPN_CONTROL, target="connect"), True),
+            (AssistantAction(ActionType.VPN_CONTROL, target="disconnect"), True),
+            (AssistantAction(ActionType.VPN_CONTROL, target="status"), False),
+            (AssistantAction(ActionType.MEDIA_CONTROL, target="shutdown_yandex_music"), True),
+            (AssistantAction(ActionType.MEDIA_CONTROL, target="media_next"), False),
+            (AssistantAction(ActionType.OPEN_APP, target="telegram"), False),
+        )
+        for action, required in cases:
+            with self.subTest(action=action):
+                decision = ActionPolicy().check(action)
+                self.assertTrue(decision.allowed)
+                self.assertEqual(decision.requires_confirmation, required)
+                self.assertEqual(action_requires_confirmation(action), required)
 
     def test_routine_steps_respect_revoked_app_permission(self):
         from tools.smoke_test_v11_daily_workflow import make_context

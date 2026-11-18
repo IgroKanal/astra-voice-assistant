@@ -80,6 +80,14 @@ mode. Screenshots, URL opening, file access and other actions are not granted
 by this mode. The remaining transition away from scope checkbox state and
 general confirmation for sensitive operations is still open.
 
+The runtime separately marks closing an application, connecting/disconnecting
+VPN, and closing Yandex Music as actions that need one-time confirmation. The
+exact typed action is held for at most 20 seconds; a changed command cancels
+the pending request, and the action scope is checked again when the user says
+yes. VPN status and ordinary media transport controls remain read-only or
+reversible and do not ask for confirmation. File changes keep their existing
+separate preview-and-confirm transaction.
+
 Do not treat a discovered VPN service, device, executable, or file as an
 authorization. Those require their own adapters and risk classification. A
 confirmation must be bound to the exact pending action and expire; a general

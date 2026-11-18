@@ -53,6 +53,14 @@ class AuditTests(unittest.TestCase):
                 audit.record("api_key=secret-value", "succeeded")
             self.assertNotIn(b"secret-value", path.read_bytes())
 
+    def test_confirmation_request_is_a_valid_metadata_outcome(self):
+        with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
+            audit = ActionAudit(Path(temp) / "audit.sqlite")
+            audit.record("close_app", "confirmation_requested")
+            rows = audit.recent()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][1:3], ("close_app", "confirmation_requested"))
+
     def test_clear_overwrites_event_data_and_is_repeatable(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as temp:
             path = Path(temp) / "audit.sqlite"

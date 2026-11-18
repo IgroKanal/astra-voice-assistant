@@ -75,6 +75,35 @@ class PolicyDecision:
     allowed: bool
     reason: str = ""
     scope: str = ""
+    requires_confirmation: bool = False
+
+
+def action_requires_confirmation(action: AssistantAction) -> bool:
+    """Classify reversible-looking commands that can cause an unwanted state change."""
+    if action.type == ActionType.CLOSE_APP:
+        target = (action.target or action.query).strip()
+        return bool(target and not (target.startswith("__") and target.endswith("__")))
+    if action.type == ActionType.VPN_CONTROL:
+        return (action.target or action.query).strip().casefold() in {"connect", "disconnect"}
+    if action.type == ActionType.MEDIA_CONTROL:
+        return (action.target or action.query).split(":", 1)[0].strip().casefold() == "shutdown_yandex_music"
+    return False
+
+
+def action_confirmation_prompt(action: AssistantAction) -> str:
+    """Describe the exact high-impact action without speaking arbitrary paths."""
+    if action.type == ActionType.CLOSE_APP:
+        target = " ".join((action.target or action.query).split())[:64]
+        if not target or any(char in target for char in "\\/:"):
+            target = "выбранное приложение"
+        return f"Подтверди закрытие приложения «{target}». Скажи да или нет."
+    if action.type == ActionType.VPN_CONTROL:
+        operation = (action.target or action.query).strip().casefold()
+        verb = "подключение" if operation == "connect" else "отключение"
+        return f"Подтверди {verb} VPN. Скажи да или нет."
+    if action.type == ActionType.MEDIA_CONTROL:
+        return "Подтверди закрытие Яндекс Музыки. Скажи да или нет."
+    return "Подтверди это действие. Скажи да или нет."
 
 
 class ActionPolicy:
@@ -131,4 +160,8 @@ class ActionPolicy:
             return PolicyDecision(False, "Этот навык отключён в разрешениях Astra", scope)
         if action.type == ActionType.MEDIA_CONTROL and (action.target or action.query).split(":", 1)[0] in {"open_play_local", "shutdown_yandex_music"} and "apps" not in self.allowed:
             return PolicyDecision(False, "Открытие/закрытие приложений отключено в разрешениях Astra", "apps")
-        return PolicyDecision(True, scope=scope)
+        return PolicyDecision(
+            True,
+            scope=scope,
+            requires_confirmation=action_requires_confirmation(action),
+        )

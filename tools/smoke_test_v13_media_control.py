@@ -163,6 +163,8 @@ def test_no_wake_does_not_execute() -> None:
     assert ai.route_calls == 0 and ai.ask_calls == 0
 
     astra_main.process_turn("Астра, выключи музыку", ctx)
+    assert ctx.state.pending_kind == "action_confirmation"
+    astra_main.process_turn("да", ctx)
     assert keyboard.media_calls == [("media_stop", "yandex", 1)], keyboard.media_calls
     assert apps.closed == ["яндекс музыка"], apps.closed
     assert responses[-1] == "Музыка остановлена. Яндекс Музыка закрыта.", responses

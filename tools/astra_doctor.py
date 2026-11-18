@@ -51,14 +51,14 @@ REQUIRED_FILES = (
     "tools/validate_v12_config.py",
     "tools/validate_v13_config.py",
     "tools/validate_package.py",
-    "BETA_CHECKLIST.md",
-    "KNOWN_LIMITATIONS.md",
-    "README_PATCH.md",
-    "RELEASE_NOTES_v1.0-beta.md",
-    "RELEASE_NOTES_v1.0.1.md",
-    "RELEASE_NOTES_v1.1.md",
-    "RELEASE_NOTES_v1.2.md",
-    "RELEASE_NOTES_v1.3.md",
+    "docs/BETA_CHECKLIST.md",
+    "docs/KNOWN_LIMITATIONS.md",
+    "docs/archive/README_PATCH.md",
+    "docs/releases/v1.0-beta.md",
+    "docs/releases/v1.0.1.md",
+    "docs/releases/v1.1.md",
+    "docs/releases/v1.2.md",
+    "docs/releases/v1.3.md",
 )
 
 

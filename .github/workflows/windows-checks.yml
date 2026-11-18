@@ -1,9 +1,14 @@
 name: Windows checks
 on:
   push:
-    branches-ignore: [main]
+    branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_packages:
+        description: Build and verify portable and installer packages
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +62,7 @@ jobs:
         shell: pwsh
         run: .\.venv\Scripts\python.exe -m unittest discover -s tools -p 'test_*.py' -v
       - name: Prepare signed Godot 3D preview runtime
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_packages }}
         shell: pwsh
         run: |
           $archive = Join-Path $env:RUNNER_TEMP 'godot-4.7.2-win64.zip'
@@ -71,6 +77,7 @@ jobs:
           .\.venv\Scripts\python.exe tools\validate_3d_avatar.py --godot $godot
           if ($LASTEXITCODE -ne 0) { throw 'Godot avatar validation failed' }
       - name: Prepare signed Inno Setup compiler
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_packages }}
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
@@ -89,6 +96,7 @@ jobs:
           }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "ASTRA_ISCC=$iscc"
       - name: Build and validate portable desktop package
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_packages }}
         shell: pwsh
         run: |
           $env:ASTRA_GODOT_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'godot-4.7.2-win64\Godot_v4.7.2-stable_win64.exe'

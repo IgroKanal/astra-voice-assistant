@@ -23,7 +23,7 @@ from tools.build_paths import cleanup_build_work, configure_temp_directory, reso
 
 
 def build() -> Path:
-    inputs = [ROOT / name for name in ("main.py", "astra_desktop_qt.py", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", "QT_LGPL_LICENSE.txt", "QT_GPL_LICENSE.txt", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
+    inputs = [ROOT / name for name in ("main.py", "astra_desktop_qt.py", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "docs/DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", "licenses/QT_LGPL_LICENSE.txt", "licenses/QT_GPL_LICENSE.txt", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
     inputs += list((ROOT / "src").glob("*.py")) + list((ROOT / "config").glob("*.json")) + list((ROOT / "assets" / "avatars").glob("*.png"))
     avatar_project = ROOT / "prototypes" / "3d_avatar"
     icon = ROOT / "assets" / "branding" / "astra.ico"
@@ -44,7 +44,7 @@ def build() -> Path:
                                       capture_output=True, text=True, timeout=30)
     if signature_result.returncode != 0:
         raise RuntimeError("Godot Authenticode signature is invalid or not from Prehensile Tales B.V.")
-    inputs += [ROOT / "GODOT_LICENSE.txt", ROOT / "GODOT_COPYRIGHT.txt", godot_executable]
+    inputs += [ROOT / "licenses/GODOT_LICENSE.txt", ROOT / "licenses/GODOT_COPYRIGHT.txt", godot_executable]
     pyside_version = importlib.metadata.version("PySide6-Essentials")
     pyside_parts = tuple(int(value) for value in pyside_version.split(".")[:2])
     if not (6, 9) <= pyside_parts < (7, 0):
@@ -119,8 +119,8 @@ def build() -> Path:
     third_party_licenses.mkdir(parents=True, exist_ok=True)
     third_party_sources.mkdir(parents=True, exist_ok=True)
     shutil.copy2(edge_tts_license, third_party_licenses / "edge-tts-LICENSE.txt")
-    shutil.copy2(ROOT / "QT_LGPL_LICENSE.txt", third_party_licenses / "Qt-LGPL-3.0-only.txt")
-    shutil.copy2(ROOT / "QT_GPL_LICENSE.txt", third_party_licenses / "Qt-GPL-3.0-only.txt")
+    shutil.copy2(ROOT / "licenses/QT_LGPL_LICENSE.txt", third_party_licenses / "Qt-LGPL-3.0-only.txt")
+    shutil.copy2(ROOT / "licenses/QT_GPL_LICENSE.txt", third_party_licenses / "Qt-GPL-3.0-only.txt")
     shutil.copytree(edge_tts_package, third_party_sources / "edge_tts", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(edge_playback_package, third_party_sources / "edge_playback", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(ROOT / "config", output / "config")
@@ -129,10 +129,10 @@ def build() -> Path:
     godot_target = output / "third_party" / "godot" / "Godot_v4.7.2-stable_win64.exe"
     godot_target.parent.mkdir(parents=True)
     shutil.copy2(godot_executable, godot_target)
-    shutil.copy2(ROOT / "GODOT_LICENSE.txt", output / "GODOT_LICENSE.txt")
-    shutil.copy2(ROOT / "GODOT_COPYRIGHT.txt", output / "GODOT_COPYRIGHT.txt")
+    shutil.copy2(ROOT / "licenses/GODOT_LICENSE.txt", output / "GODOT_LICENSE.txt")
+    shutil.copy2(ROOT / "licenses/GODOT_COPYRIGHT.txt", output / "GODOT_COPYRIGHT.txt")
     shutil.copy2(ROOT / ".env.example", output / ".env.example")
-    shutil.copy2(ROOT / "DESKTOP_PREVIEW.md", output / "README.md")
+    shutil.copy2(ROOT / "docs/DESKTOP_PREVIEW.md", output / "README.md")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
     for path in inputs:
         if hashlib.sha256(path.read_bytes()).hexdigest() != fingerprint[input_key(path)]:

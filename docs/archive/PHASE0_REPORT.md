@@ -50,7 +50,7 @@ cd C:\Projects\astra-voice-assistant
 ## Добавлено Codex
 
 - AGENTS.md — инструкции репозитория.
-- PLANS.md — принятая дорожная карта до v5.0 Beta.
+- [Дорожная карта до v5.0 Beta](../ROADMAP.md).
 - tools/run_current_gate.ps1 — единая команда существующего автоматического gate.
 - Этот отчёт.
 

@@ -24,7 +24,7 @@ The full LGPLv3 and GPLv3 texts are bundled as `third_party_licenses/Qt-LGPL-3.0
 
 ## Godot Engine 4.7.2
 
-The portable desktop preview bundles the official signed Godot 4.7.2 Windows x86_64 engine to open the optional 3D avatar preview. Godot is available under the MIT license. The required notice is in `GODOT_LICENSE.txt`; third-party component notices for the engine are in `GODOT_COPYRIGHT.txt`. Official project: https://godotengine.org/.
+The portable desktop preview bundles the official signed Godot 4.7.2 Windows x86_64 engine for the 3D prototype. The repository includes the [Godot license](licenses/GODOT_LICENSE.txt) and [third-party copyright notices](licenses/GODOT_COPYRIGHT.txt).
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are

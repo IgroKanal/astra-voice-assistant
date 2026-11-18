@@ -23,7 +23,7 @@ from tools.build_paths import cleanup_build_work, configure_temp_directory, reso
 
 
 def build() -> Path:
-    inputs = [ROOT / name for name in ("main.py", "astra_desktop.pyw", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
+    inputs = [ROOT / name for name in ("main.py", "astra_desktop_qt.py", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", "QT_LGPL_LICENSE.txt", "QT_GPL_LICENSE.txt", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
     inputs += list((ROOT / "src").glob("*.py")) + list((ROOT / "config").glob("*.json")) + list((ROOT / "assets" / "avatars").glob("*.png"))
     avatar_project = ROOT / "prototypes" / "3d_avatar"
     icon = ROOT / "assets" / "branding" / "astra.ico"
@@ -45,6 +45,10 @@ def build() -> Path:
     if signature_result.returncode != 0:
         raise RuntimeError("Godot Authenticode signature is invalid or not from Prehensile Tales B.V.")
     inputs += [ROOT / "GODOT_LICENSE.txt", ROOT / "GODOT_COPYRIGHT.txt", godot_executable]
+    pyside_version = importlib.metadata.version("PySide6-Essentials")
+    pyside_parts = tuple(int(value) for value in pyside_version.split(".")[:2])
+    if not (6, 9) <= pyside_parts < (7, 0):
+        raise RuntimeError("The Qt desktop requires PySide6-Essentials 6.9 or newer within Qt 6")
     edge_tts_version = importlib.metadata.version("edge-tts")
     version_parts = tuple(int(value) for value in edge_tts_version.split(".")[:3])
     if version_parts < (7, 3, 1):
@@ -96,7 +100,7 @@ def build() -> Path:
     pyinstaller_config.mkdir()
     os.environ["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_config)
     common = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--noupx", "--clean", "--specpath", str(work), "--icon", str(icon)]
-    subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", str(ROOT / "astra_desktop.pyw")], cwd=ROOT, check=True)
+    subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", str(ROOT / "astra_desktop_qt.py")], cwd=ROOT, check=True)
     subprocess.run(common + ["--name", "AstraRuntime", "--onedir", "--console", "--distpath", str(output / "runtime"), "--workpath", str(work / "runtime"), "--collect-submodules", "pyttsx3.drivers", "--add-data", str(ROOT / "config") + ":config", str(ROOT / "astra_runtime.py")], cwd=ROOT, check=True)
     runtime_dir = output / "runtime" / "AstraRuntime"
     subprocess.run(common + ["--name", "edge-tts", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-tts"), "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_tts_entry.py")], cwd=ROOT, check=True)
@@ -115,6 +119,8 @@ def build() -> Path:
     third_party_licenses.mkdir(parents=True, exist_ok=True)
     third_party_sources.mkdir(parents=True, exist_ok=True)
     shutil.copy2(edge_tts_license, third_party_licenses / "edge-tts-LICENSE.txt")
+    shutil.copy2(ROOT / "QT_LGPL_LICENSE.txt", third_party_licenses / "Qt-LGPL-3.0-only.txt")
+    shutil.copy2(ROOT / "QT_GPL_LICENSE.txt", third_party_licenses / "Qt-GPL-3.0-only.txt")
     shutil.copytree(edge_tts_package, third_party_sources / "edge_tts", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(edge_playback_package, third_party_sources / "edge_playback", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(ROOT / "config", output / "config")
@@ -132,7 +138,7 @@ def build() -> Path:
         if hashlib.sha256(path.read_bytes()).hexdigest() != fingerprint[input_key(path)]:
             raise RuntimeError("Source or Godot runtime changed during build; discard this preview and rebuild")
     from src.version import PRODUCT_VERSION
-    manifest = {"product": "Astra Desktop", "version": PRODUCT_VERSION, "built_at": datetime.now().isoformat(), "python": sys.version.split()[0], "bundled_dependencies": {"edge-tts": edge_tts_version}, "source_sha256": fingerprint, "contains_personal_env": False}
+    manifest = {"product": "Astra Desktop", "version": PRODUCT_VERSION, "built_at": datetime.now().isoformat(), "python": sys.version.split()[0], "bundled_dependencies": {"edge-tts": edge_tts_version, "PySide6-Essentials": pyside_version}, "source_sha256": fingerprint, "contains_personal_env": False}
     (output / "build_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         cleanup_state["archive_created"] = True

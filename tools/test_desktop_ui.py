@@ -917,13 +917,19 @@ class DesktopUITests(unittest.TestCase):
                 window.update_idletasks()
                 return app.avatar_photo
 
-            sample = [(x, y) for y in range(105, 165, 3) for x in range(95, 160, 3)]
             for avatar_id, profile in AVATAR_PROFILES.items():
                 with self.subTest(avatar_id=avatar_id):
                     app.avatar_id = avatar_id
                     app.status.set("Ожидаю команду")
                     idle = render()
                     self.assertIsNotNone(idle)
+                    face_center_x = idle.width() // 2
+                    face_top = max(0, int(idle.height() * 0.10))
+                    sample = [
+                        (x, y)
+                        for y in range(face_top, min(idle.height(), face_top + 54), 3)
+                        for x in range(max(0, face_center_x - 36), min(idle.width(), face_center_x + 36), 3)
+                    ]
                     app.status.set("Говорю")
                     app.phase = 0.2
                     speaking = render()

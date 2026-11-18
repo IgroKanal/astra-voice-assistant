@@ -4,3 +4,4 @@ send2trash==2.1.0
 pypdf==7.0.1
 cryptography>=46.0.0
 Pillow>=11.3.0
+PySide6-Essentials>=6.9,<7

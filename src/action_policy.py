@@ -67,6 +67,7 @@ TRUSTED_LOCAL = {
     "wake_required_guard", "router_unknown_guard", "conversation_fallback", "fallback",
 }
 BROWSER_KEYS = {"close_tab", "new_tab", "reopen_tab", "next_tab", "previous_tab", "address_bar", "find_on_page", "refresh", "browser_back", "browser_forward", "incognito", "fullscreen", "browser_new_window", "browser_downloads", "browser_history"}
+AUTOMATIC_SAFE_ACTIONS = frozenset({ActionType.WEB_SEARCH, ActionType.SYSTEM_INFO})
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ class PolicyDecision:
 
 
 class ActionPolicy:
-    def __init__(self, allowed_scopes=DEFAULT_SCOPES):
+    def __init__(self, allowed_scopes=DEFAULT_SCOPES, *, automatic_safe_actions=False, denied_auto_scopes=()):
         if isinstance(allowed_scopes, (str, bytes)) or not isinstance(
             allowed_scopes, (tuple, list, set, frozenset)
         ):
@@ -92,6 +93,8 @@ class ActionPolicy:
             for scope in self.allowed
         ):
             raise ValueError("Неизвестное разрешение навыка")
+        self.automatic_safe_actions = automatic_safe_actions
+        self.denied_auto_scopes = frozenset(denied_auto_scopes)
 
     def check(self, action: AssistantAction) -> PolicyDecision:
         if not isinstance(action, AssistantAction) or not isinstance(action.type, ActionType):
@@ -118,7 +121,13 @@ class ActionPolicy:
         if action.type == ActionType.KEYBOARD_SHORTCUT:
             name = action.target or action.query
             scope = "media" if name.startswith(("media_", "volume_")) else "browser" if name in BROWSER_KEYS else "windows" if name == "show_desktop" else "typing"
-        if scope and scope not in self.allowed:
+        if scope and action.source not in TRUSTED_LOCAL and action.source != "llm_router":
+            return PolicyDecision(False, "Недоверенный источник действия", scope)
+        if self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS and scope in self.denied_auto_scopes:
+            return PolicyDecision(False, "Это действие отключено пользователем", scope)
+        auto_allowed = (self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS
+                        and scope not in self.denied_auto_scopes)
+        if scope and scope not in self.allowed and not auto_allowed:
             return PolicyDecision(False, "Этот навык отключён в разрешениях Astra", scope)
         if action.type == ActionType.MEDIA_CONTROL and (action.target or action.query).split(":", 1)[0] in {"open_play_local", "shutdown_yandex_music"} and "apps" not in self.allowed:
             return PolicyDecision(False, "Открытие/закрытие приложений отключено в разрешениях Astra", "apps")

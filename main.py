@@ -6,10 +6,11 @@ import json
 import os
 import platform
 import re
+import subprocess
 import sys
 import time
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,7 @@ from src.assistant_persona import character_phrase
 from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy
 from src.action_audit import record_action
+from src.capability_overrides import CapabilityOverrideStore
 from src.audio_io import ListenResult, VoiceIO
 from src.command_parser import (
     CommandType,
@@ -55,9 +57,16 @@ from src.config_loader import AppConfig, ConfigError, Settings, load_apps_config
 from src.folder_controller import FolderController
 from src.keyboard_controller import KeyboardController
 from src.media_controller import MediaController
-from src.runtime_events import emit_activity, emit_event
+from src.runtime_events import emit_activity, emit_assistant_profile, emit_event
 from src.routine_controller import RoutineConfigError, RoutineController, RoutineDefinition
 from src.system_controller import SystemController
+from src.system_discovery import (
+    BrowserDiscovery,
+    discover_registered_applications,
+    discover_windows_browsers,
+    merge_discovered_browsers,
+    resolve_browser_preference,
+)
 from src.vpn_controller import VpnController
 from src.window_controller import WindowController
 from src.streaming_speech import EarlySpeechCoordinator, FirstSentenceBuffer
@@ -148,6 +157,8 @@ class TurnState:
     microphone_failed: bool = False
     pending_kind: str = ""
     pending_created_at: float = 0.0
+    pending_discovered_app: object | None = None
+    pending_app_identity: tuple[int, int, int, int] | None = None
     last_context_kind: str = ""
     last_context_target: str = ""
     last_context_at: float = 0.0
@@ -406,6 +417,8 @@ def shorten_voice_response(message: str, settings: Settings) -> str:
 def clear_pending(state: TurnState) -> None:
     state.pending_kind = ""
     state.pending_created_at = 0.0
+    state.pending_discovered_app = None
+    state.pending_app_identity = None
 
 
 def set_pending(state: TurnState, kind: str) -> None:
@@ -929,7 +942,7 @@ def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int,
         ok = False
         detail = ""
         step_type = {"open_app": ActionType.OPEN_APP, "open_url": ActionType.OPEN_URL, "open_folder": ActionType.OPEN_FOLDER}.get(step.action)
-        if step_type is None or not ActionPolicy(ctx.settings.action_permissions).check(AssistantAction(type=step_type, target=step.target, source="routine")).allowed:
+        if step_type is None or not ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(AssistantAction(type=step_type, target=step.target, source="routine")).allowed:
             ctx.logger.info("policy routine step denied: action=%s", step.action)
             continue
 
@@ -1181,13 +1194,30 @@ def _publish_web_sources(citations: tuple) -> None:
         print(f"Астра: {message}")
 
 
+def _assistant_form(ctx: TurnContext, female: str, male: str) -> str:
+    return male if getattr(ctx.settings, "assistant_gender", "female") == "male" else female
+
+
+def _controller_message(ctx: TurnContext, message: str) -> str:
+    """Adapt only fixed controller phrases, never model or document text."""
+    if getattr(ctx.settings, "assistant_gender", "female") == "male":
+        return message
+    for male, female in (("Не нашёл ", "Не нашла "),
+                         ("Не понял, какую клавишу", "Не поняла, какую клавишу")):
+        if message.startswith(male):
+            return female + message[len(male):]
+    if message == "Открытых окон не нашёл.":
+        return "Открытых окон не нашла."
+    return message
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
 
     Возвращает False, если нужно завершить приложение.
     """
-    decision = ActionPolicy(ctx.settings.action_permissions).check(action)
+    decision = ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(action)
     if getattr(ctx, "audit", None) is not None:
         ctx.audit(getattr(action.type, "value", "unknown"), "dispatch_allowed" if decision.allowed else "blocked")
     ctx.logger.info("policy action=%s source=%s allowed=%s scope=%s", getattr(action.type, "value", "invalid"), action.source, decision.allowed, decision.scope)
@@ -1706,10 +1736,34 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             ctx.respond("Смешанные команды отключены.")
             return True
         app = ctx.app_manager.find_app(action.target)
+        if app is None and action.source in {"local", "local_parser", "pending_followup"}:
+            target = normalize_text(action.target).removesuffix(".exe")
+            matches = [item for item in getattr(ctx.app_manager, "registered_apps", ())
+                       if normalize_text(item.name) == target]
+            if not matches:
+                try:
+                    ctx.app_manager.registered_apps = discover_registered_applications()
+                    matches = [item for item in ctx.app_manager.registered_apps
+                               if normalize_text(item.name) == target]
+                except (OSError, ValueError):
+                    ctx.logger.warning("Не удалось обновить список зарегистрированных приложений.")
+            if len(matches) == 1:
+                candidate = matches[0]
+                try:
+                    stat = os.stat(candidate.executable)
+                    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                except OSError:
+                    ctx.respond("Приложение больше недоступно. Попробуй ещё раз.")
+                    return True
+                set_pending(ctx.state, "confirm_discovered_app")
+                ctx.state.pending_discovered_app = candidate
+                ctx.state.pending_app_identity = identity
+                ctx.respond(f"Найдено приложение {candidate.name}. Запустить? Скажи да или нет.")
+                return True
         result = ctx.app_manager.open_app(action.target)
         if result.ok and app is not None:
             remember_context(ctx, "app", app.name)
-        ctx.respond(result.message)
+        ctx.respond(_controller_message(ctx, result.message))
         return True
 
     if action.type == ActionType.CLOSE_APP:
@@ -1729,7 +1783,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         result = ctx.app_manager.close_app(action.target)
         if result.ok and context_is_active(ctx) and ctx.state.last_context_kind == "app":
             clear_context(ctx.state)
-        ctx.respond(result.message)
+        ctx.respond(_controller_message(ctx, result.message))
         return True
 
     if action.type == ActionType.OPEN_URL:
@@ -1779,7 +1833,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             media_target = (action.target or action.query).split(":", 1)[0]
             if media_target == "open_play_local":
                 result = ctx.app_manager.open_app("медиаплеер")
-                ctx.respond(result.message)
+                ctx.respond(_controller_message(ctx, result.message))
                 return True
             fallback = {
                 "play_pause": "media_play_pause",
@@ -1790,12 +1844,12 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             }.get(media_target)
             if fallback:
                 result = ctx.keyboard.send_shortcut(fallback)
-                ctx.respond(result.message)
+                ctx.respond(_controller_message(ctx, result.message))
             else:
                 ctx.respond("Управление музыкой недоступно.")
             return True
         result = ctx.media.execute(action.target or action.query)
-        ctx.respond(result.message)
+        ctx.respond(_controller_message(ctx, result.message))
         return True
 
     if action.type == ActionType.KEYBOARD_SHORTCUT:
@@ -1812,7 +1866,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
             result = ctx.media.execute(media_map[target])
         else:
             result = ctx.keyboard.send_shortcut(target)
-        ctx.respond(result.message)
+        ctx.respond(_controller_message(ctx, result.message))
         return True
 
     if action.type == ActionType.TYPE_TEXT:
@@ -1896,7 +1950,7 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
                 remember_context(ctx, "window", focus_target)
         else:
             result = ctx.windows.describe_open_windows()
-        ctx.respond(result.message)
+        ctx.respond(_controller_message(ctx, result.message))
         return True
 
     if action.type == ActionType.ROUTINE:
@@ -2042,6 +2096,43 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             return True
     if not raw_text:
         ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
+        return True
+
+    if ctx.state.pending_kind == "confirm_discovered_app":
+        active = pending_is_active(ctx.state)
+        candidate = ctx.state.pending_discovered_app
+        identity = ctx.state.pending_app_identity
+        answer = normalize_text(_strip_wake_prefix_for_follow_up(raw_text, ctx.settings))
+        clear_pending(ctx.state)
+        if answer in {"нет", "отмена", "отмени", "не надо"}:
+            ctx.respond("Запуск отменён.")
+            return True
+        if answer not in {"да", "запусти", "подтверждаю"}:
+            # A new request cancels the old proposal and goes through the
+            # normal wake and action checks; it is not a confirmation.
+            return process_turn(raw_text, ctx)
+        if not active:
+            ctx.respond("Запуск отменён." if active else "Время подтверждения истекло.")
+            return True
+        if candidate is None or not ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(
+            AssistantAction(ActionType.OPEN_APP, target=candidate.name, source="local")
+        ).allowed:
+            ctx.respond("Запуск приложения недоступен.")
+            return True
+        try:
+            stat = os.stat(candidate.executable)
+            current = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            if current != identity or candidate not in discover_registered_applications():
+                ctx.respond("Приложение изменилось. Повтори запрос на запуск.")
+                return True
+            subprocess.Popen([candidate.executable], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError:
+            ctx.respond("Не удалось запустить приложение.")
+            return True
+        remember_context(ctx, "app", candidate.name)
+        ctx.respond("Открываю.")
         return True
 
     pending_action = resolve_pending_follow_up(raw_text, ctx)
@@ -2257,37 +2348,46 @@ def _listen_pending_voice_follow_up(
     settings: Settings,
     logger: logging.Logger,
 ) -> bool:
-    """Даёт один короткий follow-up turn после уточняющего вопроса Астры.
+    """Обрабатывает ограниченную цепочку уточнений после вопроса Астры.
 
     Это сохраняет удобный UX в wake-only режиме: после "Астра, открой" и ответа
     "Что открыть?" пользователь может сказать "ютуб" без повторного wake phrase.
     Окно follow-up существует только если предыдущее действие явно выставило pending.
     """
-    if not pending_is_active(ctx.state):
-        return True
+    for _ in range(3):
+        if not pending_is_active(ctx.state):
+            clear_pending(ctx.state)
+            return True
 
-    follow_up = voice.listen_once(
-        timeout_seconds=settings.command_listen_timeout_seconds,
-        phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
-        prompt="Слушаю уточнение...",
-    )
+        follow_up = voice.listen_once(
+            timeout_seconds=settings.command_listen_timeout_seconds,
+            phrase_time_limit_seconds=settings.command_phrase_time_limit_seconds,
+            prompt="Слушаю уточнение...",
+        )
+        if not follow_up.ok:
+            logger.info("Pending command session timeout/unknown: %s", follow_up.error)
+            file_confirmation = ctx.state.pending_kind == "file_mutation_confirmation"
+            if file_confirmation and ctx.file_mutation is not None:
+                ctx.file_mutation.cancel()
+            clear_pending(ctx.state)
+            if _stop_after_microphone_failure(follow_up, logger):
+                return False
+            if file_confirmation:
+                ctx.respond("Подтверждение не распознано. Файловое действие отменено.")
+            else:
+                ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
+            return True
 
-    if not follow_up.ok:
-        logger.info("Pending command session timeout/unknown: %s", follow_up.error)
-        file_confirmation = ctx.state.pending_kind == "file_mutation_confirmation"
-        if file_confirmation and ctx.file_mutation is not None:
+        logger.info("pending_command_session characters=%s", len(follow_up.text))
+        if not process_turn(follow_up.text, ctx):
+            return False
+
+    if ctx.state.pending_kind:
+        if ctx.state.pending_kind == "file_mutation_confirmation" and ctx.file_mutation is not None:
             ctx.file_mutation.cancel()
         clear_pending(ctx.state)
-        if _stop_after_microphone_failure(follow_up, logger):
-            return False
-        if file_confirmation:
-            ctx.respond("Подтверждение не распознано. Файловое действие отменено.")
-            return True
-        ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
-        return True
-
-    logger.info("pending_command_session characters=%s", len(follow_up.text))
-    return process_turn(follow_up.text, ctx)
+        ctx.respond("Уточнений слишком много. Повтори команду целиком.")
+    return True
 
 
 def _run_voice_mode_impl(
@@ -2603,6 +2703,48 @@ def main() -> int:
         print(f"Ошибка конфигурации: {exc}")
         return 1
 
+    try:
+        browser_discovery = discover_windows_browsers()
+    except (OSError, ValueError):
+        logger.warning("Не удалось обнаружить браузеры Windows; использую конфигурацию Astra.")
+        browser_discovery = BrowserDiscovery({})
+    apps = merge_discovered_browsers(apps, browser_discovery)
+
+    try:
+        capability_overrides = CapabilityOverrideStore().load()
+    except (OSError, ValueError):
+        # A damaged preference file must not prevent the voice runtime from
+        # starting; the current Windows default remains available.
+        logger.warning("Пользовательские предпочтения возможностей недоступны; использую системный выбор.")
+        capability_overrides = None
+    if capability_overrides is not None:
+        settings = replace(settings, automatic_safe_actions=True,
+                           denied_auto_scopes=capability_overrides.disabled_auto_scopes)
+    browser_preferred = resolve_browser_preference(
+        settings.browser_preferred,
+        capability_overrides.browser_preferred if capability_overrides else "",
+        browser_discovery,
+    )
+    browser_app = browser_discovery.apps.get(browser_preferred)
+    # Window targeting uses executable process names (e.g. msedge.exe),
+    # whereas app routing uses the friendly discovered name (edge).
+    browser_process = Path(browser_app.process_name).stem if browser_app else browser_preferred
+    logger.info(
+        "System discovery: browsers=%s default=%s",
+        ",".join(sorted(browser_discovery.apps)) or "none",
+        browser_discovery.default_browser or "none",
+    )
+    registered_apps = ()
+    try:
+        registered_apps = discover_registered_applications()
+        # Counts only: installed app names and paths remain local and are not
+        # turned into permission grants or executable actions.
+        logger.info("System discovery: registered_applications=%d", len(registered_apps))
+    except (OSError, ValueError):
+        logger.warning("Не удалось получить список зарегистрированных приложений Windows.")
+
+    emit_assistant_profile(settings)
+
     routine_path = Path(settings.routines_config_path)
     if not routine_path.is_absolute():
         routine_path = Path(__file__).resolve().parent / routine_path
@@ -2620,11 +2762,12 @@ def main() -> int:
     app_manager = WindowsAppManager(
         apps=apps,
         logger=logger,
-        browser_preferred=settings.browser_preferred,
+        browser_preferred=browser_preferred,
     )
+    app_manager.registered_apps = registered_apps
     keyboard = KeyboardController(
         logger=logger,
-        browser_preferred=settings.browser_preferred,
+        browser_preferred=browser_process,
         browser_focus_missing_timeout_seconds=settings.browser_focus_missing_timeout_seconds,
     )
     folders = FolderController(logger=logger)
@@ -2632,7 +2775,7 @@ def main() -> int:
     vpn = VpnController(settings=settings, logger=logger)
     windows = WindowController(
         logger=logger,
-        browser_preferred=settings.browser_preferred,
+        browser_preferred=browser_process,
     )
     ai_client = AIClient(settings=settings, logger=logger)
     media = MediaController(keyboard=keyboard, app_manager=app_manager, logger=logger)

@@ -72,8 +72,11 @@ def main() -> None:
     if (avatar_source.count('"gender": "female"') != 2 or
             avatar_source.count('"gender": "male"') != 2 or
             '"shoulder_width"' not in avatar_source or '"eye_scale"' not in avatar_source or
-            "blink_weight := clampf" not in avatar_source or "astra_eye_base_y" not in avatar_source):
-        raise ValueError("Expected four gender-profiled procedural models and bounded eye-blink animation")
+            "blink_weight := clampf" not in avatar_source or "astra_eye_base_y" not in avatar_source or
+            "CharacterAccentLight" not in avatar_source or "JacketPanel" not in avatar_source or
+            "CoatPanel" not in avatar_source or "BootToe" not in avatar_source or
+            '"--fullscreen"' not in avatar_source or "KEY_F11" not in avatar_source or "KEY_ESCAPE" not in avatar_source):
+        raise ValueError("Expected four gender-profiled procedural models, full-body details and bounded eye-blink animation")
     print("AVATAR_GENDER_VARIANTS_PASS: two male and two female silhouettes, eye proportions and blink animation")
     godot = args.godot.resolve(strict=True)
     if not godot.is_file():

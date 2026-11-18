@@ -27,6 +27,8 @@ def main():
     assert tts_version.returncode == 0 and tts_version.stdout.strip().startswith("edge-tts 7.3."), "Packaged Edge TTS helper failed"
     assert playback_help.returncode == 0 and "Speak text" in (playback_help.stdout + playback_help.stderr), "Packaged Edge playback helper failed"
     assert (root / "third_party_licenses" / "edge-tts-LICENSE.txt").is_file(), "Bundled Edge TTS license missing"
+    assert (root / "third_party_licenses" / "Qt-LGPL-3.0-only.txt").is_file(), "Bundled Qt LGPL license missing"
+    assert (root / "third_party_licenses" / "Qt-GPL-3.0-only.txt").is_file(), "Bundled Qt GPL license missing"
     edge_source_root = root / "third_party_sources" / ("edge-tts-" + tts_version.stdout.strip().split()[-1])
     assert (edge_source_root / "edge_tts" / "__main__.py").is_file(), "Corresponding Edge TTS source missing"
     assert (edge_source_root / "edge_playback" / "__main__.py").is_file(), "Corresponding Edge playback source missing"

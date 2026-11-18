@@ -89,6 +89,9 @@ def validate(installer: Path) -> None:
             raise RuntimeError("Installed Edge playback helper failed its local help check")
         if not (install_root / "third_party_licenses" / "edge-tts-LICENSE.txt").is_file():
             raise RuntimeError("Installer did not place the bundled Edge TTS license")
+        for name in ("Qt-LGPL-3.0-only.txt", "Qt-GPL-3.0-only.txt"):
+            if not (install_root / "third_party_licenses" / name).is_file():
+                raise RuntimeError("Installer did not place the bundled Qt license: " + name)
 
         runtime_env = dict(
             env,

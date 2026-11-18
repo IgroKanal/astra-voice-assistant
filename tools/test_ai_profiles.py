@@ -119,6 +119,7 @@ class AIProfileTests(unittest.TestCase):
 
             self.assertEqual(settings.assistant_name, "Кай")
             self.assertEqual(settings.assistant_gender, "male")
+            self.assertEqual(settings.assistant_avatar_id, "male_kai")
             self.assertEqual(settings.tts_voice_name, "male-voice-id")
             self.assertIn("кай", settings.wake_phrases)
 

@@ -14,10 +14,10 @@ from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
 
 AVATAR_PROFILES = {
-    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "gender": "female", "asset": "anime_female.png", "speaking_asset": "anime_female_speaking.png"},
-    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "gender": "male", "asset": "anime_male.png", "speaking_asset": "anime_male_speaking.png"},
-    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "gender": "female", "asset": "anime_female_saya.png", "speaking_asset": "anime_female_saya_speaking.png"},
-    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "gender": "male", "asset": "anime_male_kai.png", "speaking_asset": "anime_male_kai_speaking.png"},
+    "female_miku": {"label": "Мику · женский образ", "default_name": "Мику", "gender": "female", "asset": "full_female.png", "speaking_asset": "full_female_speaking.png"},
+    "male_ren": {"label": "Рэн · мужской образ", "default_name": "Рэн", "gender": "male", "asset": "full_male.png", "speaking_asset": "full_male_speaking.png"},
+    "female_saya": {"label": "Сая · женский образ", "default_name": "Сая", "gender": "female", "asset": "full_female_saya.png", "speaking_asset": "full_female_saya_speaking.png"},
+    "male_kai": {"label": "Кай · мужской образ", "default_name": "Кай", "gender": "male", "asset": "full_male_kai.png", "speaking_asset": "full_male_kai_speaking.png"},
 }
 DEFAULT_AVATAR_ID = "female_miku"
 COMMAND_LIKE_NAMES = ("открой", "закрой", "сверни", "разверни", "покажи", "включи", "выключи", "напомни", "следующий", "предыдущий", "обнови", "найди", "поищи", "переключи", "нажми", "напиши", "громче", "тише", "стоп")
@@ -40,6 +40,9 @@ class AIProfile:
     voice_volume: float = 1.0
     avatar_id: str = DEFAULT_AVATAR_ID
     character_profiles: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    avatar_mode: str = "2d"
+    ui_scale: int = 100
+    reduced_motion: bool = False
 
     def validate(self):
         if self.provider not in {"env", "disabled", "ollama", "gemini", "compatible"}:
@@ -82,6 +85,12 @@ class AIProfile:
             raise ValueError("Скорость голоса должна быть от 80 до 300")
         if type(self.voice_volume) not in (int, float) or not 0 <= self.voice_volume <= 1:
             raise ValueError("Громкость голоса должна быть от 0 до 1")
+        if self.avatar_mode not in {"2d", "3d"}:
+            raise ValueError("Режим персонажа должен быть 2D или 3D")
+        if type(self.ui_scale) is not int or self.ui_scale not in {100, 110, 125, 150}:
+            raise ValueError("Масштаб интерфейса должен быть 100, 110, 125 или 150%")
+        if not isinstance(self.reduced_motion, bool):
+            raise ValueError("Некорректная настройка анимации")
         if self.provider == "ollama":
             url = urlsplit(self.base_url)
             if url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"} or url.username or url.password or url.path not in {"", "/"} or url.query or url.fragment:
@@ -141,7 +150,7 @@ class DesktopSettings:
             # Empty means automatic voice selection for the character's gender.
             voice_id = character["voice_id"]
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

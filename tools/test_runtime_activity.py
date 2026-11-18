@@ -8,13 +8,46 @@ from unittest.mock import MagicMock, Mock, call, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.audio_io import VoiceIO
 from src.config_loader import Settings
-from src.runtime_events import PREFIX, emit_activity, parse_event_record
+from src.runtime_events import PREFIX, emit_activity, emit_assistant_profile, parse_event_record
 from main import handle_action
 from src.task_router import ActionType, AssistantAction
 from tools.smoke_test_v11_daily_workflow import make_context
 
 
 class RuntimeActivityTests(unittest.TestCase):
+    def test_active_character_profile_is_typed_and_opt_in(self):
+        settings = Settings(
+            assistant_name="Кайто",
+            assistant_gender="male",
+            assistant_avatar_id="male_kai",
+        )
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "0"}), patch("builtins.print") as output:
+            self.assertFalse(emit_assistant_profile(settings))
+            output.assert_not_called()
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1"}), patch("builtins.print") as output:
+            self.assertTrue(emit_assistant_profile(settings))
+            event = parse_event_record(output.call_args.args[0])
+        self.assertEqual((event.kind, event.text), ("profile", ""))
+        self.assertEqual(event.data, {
+            "kind": "assistant_profile",
+            "avatar_id": "male_kai",
+            "name": "Кайто",
+            "gender": "male",
+        })
+
+    def test_profile_event_rejects_unsafe_or_unknown_values(self):
+        from src.runtime_events import emit_event
+
+        invalid = (
+            {"kind": "assistant_profile", "avatar_id": "../avatar", "name": "Кай", "gender": "male"},
+            {"kind": "assistant_profile", "avatar_id": "male_kai", "name": "Кай\nто", "gender": "male"},
+            {"kind": "assistant_profile", "avatar_id": "male_kai", "name": "Кай", "gender": "unknown"},
+            {"kind": "assistant_profile", "avatar_id": "male_kai", "name": "Кай", "gender": "male", "voice_id": "private-id"},
+        )
+        for data in invalid:
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                emit_event("profile", "", data=data)
+
     def test_activity_is_opt_in_and_has_bounded_payload(self):
         with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1", "ASTRA_ACTIVITY_EVENTS": "0"}), patch("builtins.print") as output:
             self.assertFalse(emit_activity("thinking", True))

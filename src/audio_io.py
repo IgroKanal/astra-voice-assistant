@@ -117,18 +117,28 @@ class VoiceIO:
         )
 
     def _init_microphone(self) -> None:
-        try:
-            device_index = getattr(self.settings, "stt_device_index", None)
-            self.microphone = sr.Microphone(device_index=device_index)
-            with self.microphone as source:
-                self.recognizer.adjust_for_ambient_noise(
-                    source,
-                    duration=self.settings.ambient_noise_duration_seconds,
-                )
-            self.logger.info("Микрофон инициализирован")
-        except Exception:
-            self.microphone = None
-            self.logger.exception("Не удалось инициализировать микрофон")
+        device_index = getattr(self.settings, "stt_device_index", None)
+        candidates = (device_index, None) if device_index is not None else (None,)
+        self.microphone = None
+        for candidate in candidates:
+            try:
+                microphone = sr.Microphone(device_index=candidate)
+                with microphone as source:
+                    self.recognizer.adjust_for_ambient_noise(
+                        source,
+                        duration=self.settings.ambient_noise_duration_seconds,
+                    )
+                self.microphone = microphone
+                if candidate is None and device_index is not None:
+                    message = "Выбранный микрофон недоступен; используется микрофон Windows по умолчанию."
+                    self.logger.warning(message)
+                    print(message)
+                    emit_event("state", message)
+                else:
+                    self.logger.info("Микрофон инициализирован")
+                return
+            except Exception:
+                self.logger.warning("Не удалось инициализировать микрофон%s", " по умолчанию" if candidate is None else " из настроек", exc_info=True)
 
     def _init_tts(self) -> None:
         if not self.settings.tts_enabled:

@@ -47,6 +47,19 @@ class ActionPolicyTests(unittest.TestCase):
         )
         self.assertFalse(ActionPolicy(scopes).check(routed).allowed)
 
+
+    def test_adaptive_mode_enables_only_specific_low_risk_actions(self):
+        policy = ActionPolicy((), automatic_safe_actions=True)
+        self.assertTrue(policy.check(AssistantAction(ActionType.WEB_SEARCH, query='погода')).allowed)
+        self.assertTrue(policy.check(AssistantAction(ActionType.SYSTEM_INFO, target='memory')).allowed)
+        for kind in (ActionType.OPEN_URL, ActionType.SCREENSHOT, ActionType.FILE_READ, ActionType.VPN_CONTROL):
+            self.assertFalse(policy.check(AssistantAction(kind)).allowed)
+        self.assertFalse(policy.check(AssistantAction(ActionType.SYSTEM_INFO, source='webpage')).allowed)
+
+    def test_explicit_automatic_override_denies_even_with_legacy_scope(self):
+        policy = ActionPolicy(('browser',), automatic_safe_actions=True, denied_auto_scopes=('browser',))
+        self.assertFalse(policy.check(AssistantAction(ActionType.WEB_SEARCH, query='погода')).allowed)
+        self.assertTrue(policy.check(AssistantAction(ActionType.OPEN_URL, target='example.org')).allowed)
     def test_revoked_capabilities_block_every_mapped_action(self):
         policy = ActionPolicy(())
         for action_type in (ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.TYPE_TEXT, ActionType.WINDOW_CONTROL, ActionType.VPN_CONTROL, ActionType.MEDIA_CONTROL, ActionType.ROUTINE, ActionType.MEMORY_NOTE, ActionType.FILE_SEARCH, ActionType.FILE_OPEN, ActionType.FILE_READ, ActionType.FILE_QUESTION):

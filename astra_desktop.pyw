@@ -36,11 +36,10 @@ from src.onboarding_state import OnboardingState
 from src.version import DISPLAY_VERSION
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-BG = "#101322"
-PANEL = "#191f34"
-TEXT = "#e9ecff"
-MUTED = "#a2abc9"
-ACCENT = "#9786ff"
+from src.desktop_theme import (
+    BG, PANEL, PANEL_ALT, FIELD, TEXT, MUTED, ACCENT, ACCENT_HOVER,
+    CYAN, BORDER, WARNING, ERROR, install_theme,
+)
 
 
 class AstraDesktop:
@@ -56,6 +55,7 @@ class AstraDesktop:
         self.reminder_store = reminder_store
         self.reminder_worker = None
         self.assistant_name, self.avatar_id = self.load_assistant_profile()
+        self.ui_scale, self.reduced_motion, self.avatar_mode = self.load_visual_preferences()
         self.onboarding_state = OnboardingState()
         try:
             self.onboarding_available = not DesktopSettings().path.exists() and not self.onboarding_state.dismissed()
@@ -77,29 +77,47 @@ class AstraDesktop:
         self.closing_event = threading.Event()
         self.phase = 0.0
         window.title(f"{DISPLAY_VERSION} · персональный ассистент")
-        from src.desktop_theme import install_theme
+        if self.ui_scale != 100:
+            window.tk.call("tk", "scaling", float(window.tk.call("tk", "scaling")) * self.ui_scale / 100)
         install_theme(window)
         icon = ROOT / "assets" / "branding" / "astra.ico"
         if icon.is_file():
             window.iconbitmap(str(icon))
-        window.geometry("1040x720")
-        window.minsize(840, 680)
+        window.geometry(f"{1180 * self.ui_scale // 100}x{780 * self.ui_scale // 100}")
+        window.minsize(840 * self.ui_scale // 100, 680 * self.ui_scale // 100)
         window.configure(bg=BG)
         window.protocol("WM_DELETE_WINDOW", self.close)
         self.status = tk.StringVar(value="Запуск · микрофон выключен")
+        self._last_voice_ui = None
         self._build()
         self.switch("text")
         self.poll()
         self.animate()
 
-    def button(self, parent, text, command):
-        control = tk.Button(parent, text=text, command=command, bg="#2b3454", fg=TEXT,
-                         activebackground=ACCENT, activeforeground=BG, relief="flat",
-                         font=("Segoe UI", 10), padx=16, pady=10, cursor="hand2", borderwidth=0,
-                         highlightthickness=1, highlightbackground="#3a4261", highlightcolor=ACCENT)
-        control.bind("<Enter>", lambda _event: control.configure(bg="#3a4264"))
-        control.bind("<Leave>", lambda _event: control.configure(bg="#2b3454"))
+    def button(self, parent, text, command, kind="secondary"):
+        primary = kind == "primary"
+        base = ACCENT if primary else FIELD
+        hover = ACCENT_HOVER if primary else PANEL_ALT
+        control = tk.Button(
+            parent, text=text, command=command, bg=base, fg=BG if primary else TEXT,
+            activebackground=hover, activeforeground=BG if primary else TEXT,
+            disabledforeground=MUTED, relief="flat", font=("Segoe UI", 10, "bold" if primary else "normal"),
+            padx=15, pady=9, cursor="hand2", borderwidth=0, takefocus=True,
+            highlightthickness=1, highlightbackground=base, highlightcolor=CYAN,
+        )
+        control.bind("<Enter>", lambda _event: control.configure(bg=hover, highlightbackground=hover))
+        control.bind("<Leave>", lambda _event: control.configure(bg=base, highlightbackground=base))
+        control.bind("<FocusIn>", lambda _event: control.configure(highlightbackground=CYAN), add="+")
+        control.bind("<FocusOut>", lambda _event: control.configure(highlightbackground=base), add="+")
         return control
+
+    @staticmethod
+    def load_visual_preferences():
+        try:
+            profile = DesktopSettings().load()
+            return profile.ui_scale, profile.reduced_motion, profile.avatar_mode
+        except Exception:
+            return 100, False, "2d"
 
     @staticmethod
     def load_assistant_profile():
@@ -112,6 +130,7 @@ class AstraDesktop:
 
     def apply_settings(self):
         self.assistant_name, self.avatar_id = self.load_assistant_profile()
+        self.ui_scale, self.reduced_motion, self.avatar_mode = self.load_visual_preferences()
         self.avatar_name_label.set(self.assistant_name)
         self.loaded_avatar_id = None
         if DesktopSettings().path.exists():
@@ -136,89 +155,101 @@ class AstraDesktop:
                 self.append("Система", "Не удалось сохранить выбор первого запуска: " + str(exc))
 
     def _build(self):
-        header = tk.Frame(self.window, bg=BG)
-        header.pack(fill="x", padx=28, pady=(22, 16))
+        header = tk.Frame(self.window, bg=BG, height=64)
+        header.pack(fill="x", padx=24, pady=(14, 12))
         brand_path = ROOT / "assets" / "branding" / "astra.png"
         if brand_path.is_file():
             self.brand_image = tk.PhotoImage(file=str(brand_path)).subsample(24, 24)
-            tk.Label(header, image=self.brand_image, bg=BG).pack(side="left", padx=(0, 12))
-        tk.Label(header, text="ASTRA", font=("Segoe UI", 24, "bold"), bg=BG, fg=TEXT).pack(side="left")
-        tk.Label(header, text=DISPLAY_VERSION.upper(), font=("Segoe UI", 9), bg=BG, fg=ACCENT).pack(side="left", padx=15)
-        self.button(header, "Диагностика", self.diagnose).pack(side="right")
+            tk.Label(header, image=self.brand_image, bg=BG).pack(side="left", padx=(0, 10))
+        tk.Label(header, text="Astra", font=("Segoe UI", 22, "bold"), bg=BG, fg=TEXT).pack(side="left")
+        tk.Label(header, text="ЛИЧНОЕ ПРОСТРАНСТВО", font=("Segoe UI", 8, "bold"), bg=BG, fg=CYAN).pack(side="left", padx=14, pady=(7, 0))
+        self.button(header, "Диагностика", self.diagnose).pack(side="right", padx=(8, 0))
         from src.action_audit_ui import open_action_audit
-        self.button(header, "Журнал", lambda: open_action_audit(self.window, self.button)).pack(side="right", padx=8)
-        toolbar = tk.Frame(self.window, bg=BG)
-        toolbar.pack(fill="x", padx=28, pady=(0, 12))
-        self.button(toolbar, "Файлы", self.open_files).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "Память", self.open_memory).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "Задачи", self.open_tasks).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "ИИ, голос и разрешения", self.open_ai_settings).pack(side="left", padx=(0, 8))
-        self.button(toolbar, "В системный трей", self.hide_to_tray).pack(side="right")
+        self.button(header, "Журнал", lambda: open_action_audit(self.window, self.button)).pack(side="right")
+
         if self.onboarding_available:
-            self.onboarding_banner = tk.Frame(self.window, bg=PANEL, highlightbackground="#34304f", highlightthickness=1)
-            self.onboarding_banner.pack(fill="x", padx=28, pady=(0, 12))
-            onboarding_copy = tk.Frame(self.onboarding_banner, bg=PANEL)
-            onboarding_copy.pack(side="left", fill="x", expand=True, padx=16, pady=10)
-            tk.Label(onboarding_copy, text="Первый запуск Astra", font=("Segoe UI", 12, "bold"), bg=PANEL, fg=TEXT).pack(anchor="w")
-            tk.Label(
-                onboarding_copy,
-                text="Выбери персонажа, имя и голос по желанию. Можно начать с текста: микрофон не включается сам.",
-                wraplength=640, justify="left", bg=PANEL, fg=MUTED, font=("Segoe UI", 9),
-            ).pack(anchor="w", pady=(3, 0))
-            self.button(self.onboarding_banner, "Настроить", self.open_onboarding).pack(side="right", padx=(8, 8), pady=10)
-            self.button(self.onboarding_banner, "Пока пропустить", self.dismiss_onboarding).pack(side="right", padx=(0, 8), pady=10)
-        footer = tk.Frame(self.window, bg=BG)
-        footer.pack(side="bottom", fill="x", padx=28, pady=14)
-        self.button(footer, "Время", lambda: self.fill(f"{self.assistant_name}, сколько времени")).pack(side="left", padx=(0, 8))
-        self.button(footer, "Команды", self.open_command_catalog).pack(side="left", padx=(0, 8))
-        self.button(footer, "Дата", lambda: self.fill(f"{self.assistant_name}, какая сегодня дата")).pack(side="left", padx=(0, 8))
+            self.onboarding_banner = tk.Frame(self.window, bg=PANEL_ALT, highlightbackground=BORDER, highlightthickness=1)
+            self.onboarding_banner.pack(fill="x", padx=24, pady=(0, 12))
+            onboarding_copy = tk.Frame(self.onboarding_banner, bg=PANEL_ALT)
+            onboarding_copy.pack(side="left", fill="x", expand=True, padx=16, pady=8)
+            tk.Label(onboarding_copy, text="Начни с нескольких простых шагов", font=("Segoe UI", 11, "bold"), bg=PANEL_ALT, fg=TEXT).pack(anchor="w")
+            tk.Label(onboarding_copy, text="Персонаж, имя и приватность · микрофон останется выключен", wraplength=470, justify="left", bg=PANEL_ALT, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+            self.button(self.onboarding_banner, "Настроить", self.open_onboarding, "primary").pack(side="right", padx=6, pady=8)
+            self.button(self.onboarding_banner, "Пока пропустить", self.dismiss_onboarding).pack(side="right", padx=6, pady=8)
+
         body = tk.Frame(self.window, bg=BG)
-        body.pack(fill="both", expand=True, padx=28)
-        side = tk.Frame(body, bg=PANEL, width=270)
-        side.pack(side="left", fill="y", padx=(0, 18))
-        side.grid_propagate(False)
-        side.grid_columnconfigure(0, weight=1)
-        side.grid_rowconfigure(0, weight=1)
-        self.avatar = tk.Canvas(side, bg=PANEL, height=250, width=260, highlightthickness=0)
-        self.avatar.grid(row=0, column=0, sticky="nsew", pady=(8, 0))
+        body.pack(fill="both", expand=True, padx=24, pady=(0, 20))
+
+        navigation = tk.Frame(body, bg=PANEL, width=164, highlightbackground=BORDER, highlightthickness=1)
+        navigation.pack(side="left", fill="y", padx=(0, 14))
+        navigation.pack_propagate(False)
+        tk.Label(navigation, text="РАЗДЕЛЫ", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=16, pady=(18, 8))
+        for title, callback in (
+            ("Диалог", lambda: self.entry.focus_set()), ("Файлы", self.open_files),
+            ("Задачи", self.open_tasks), ("Память", self.open_memory),
+            ("Команды", self.open_command_catalog), ("Настройки", self.open_ai_settings),
+        ):
+            self.button(navigation, title, callback).pack(fill="x", padx=10, pady=3)
+        tk.Frame(navigation, bg=BORDER, height=1).pack(fill="x", padx=14, pady=12)
+        tk.Label(navigation, text=DISPLAY_VERSION, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=16)
+        tk.Label(navigation, text="Локальный профиль\nЗащита Windows", bg=PANEL, fg=MUTED, justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=16, pady=6)
+        self.button(navigation, "Скрыть в трей", self.hide_to_tray).pack(side="bottom", fill="x", padx=10, pady=12)
+
+        workspace = tk.Frame(body, bg=BG)
+        workspace.pack(side="left", fill="both", expand=True)
+        character = tk.Frame(workspace, bg=PANEL, width=210, highlightbackground=BORDER, highlightthickness=1)
+        character.pack(side="left", fill="y", padx=(0, 14))
+        character.pack_propagate(False)
+        tk.Label(character, text="ТВОЙ АССИСТЕНТ", bg=PANEL, fg=MUTED, font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=14, pady=(14, 0))
+        self.avatar = tk.Canvas(character, bg=PANEL, height=226, width=208, highlightthickness=0)
+        self.avatar.pack(fill="x", pady=(2, 0))
         self.avatar_name_label = tk.StringVar(value=self.assistant_name)
-        tk.Label(side, textvariable=self.avatar_name_label, font=("Segoe UI", 13, "bold"), bg=PANEL, fg=TEXT).grid(row=1, column=0, pady=3)
-        tk.Label(side, textvariable=self.status, wraplength=230, font=("Segoe UI", 10), bg=PANEL, fg=MUTED).grid(row=2, column=0, padx=15, pady=6)
-        self.button(side, "🎙  Голос · включить", lambda: self.switch("voice")).grid(row=3, column=0, sticky="ew", padx=12, pady=3)
-        self.button(side, "⌨  Текст · микрофон выкл.", lambda: self.switch("text")).grid(row=4, column=0, sticky="ew", padx=12, pady=3)
-        self.button(side, "Пауза", lambda: self.switch(None)).grid(row=5, column=0, sticky="ew", padx=12, pady=3)
-        tk.Label(side, text="Голос включается кнопкой.\nДля команд говори «Астра».", wraplength=230, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).grid(row=6, column=0, padx=12, pady=6)
-        right = tk.Frame(body, bg=BG)
+        tk.Label(character, textvariable=self.avatar_name_label, font=("Segoe UI", 15, "bold"), bg=PANEL, fg=TEXT).pack(pady=(0, 1))
+        tk.Label(character, text="2D · оригинальный образ", bg=PANEL, fg=ACCENT, font=("Segoe UI", 8)).pack()
+        self.mic_badge = tk.Label(character, text="●  Микрофон выключен", bg=PANEL_ALT, fg=MUTED, font=("Segoe UI", 9, "bold"), padx=8, pady=5)
+        self.mic_badge.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(character, textvariable=self.status, wraplength=180, height=3, font=("Segoe UI", 9), bg=PANEL, fg=MUTED).pack(padx=12)
+        self.voice_button = self.button(character, "Включить голос", lambda: self.switch("voice"), "primary")
+        self.voice_button.pack(fill="x", padx=12, pady=(5, 3))
+        self.button(character, "Текст · микрофон выкл.", lambda: self.switch("text")).pack(fill="x", padx=12, pady=3)
+        self.button(character, "Пауза", lambda: self.switch(None)).pack(fill="x", padx=12, pady=3)
+        tk.Label(character, text=f"Обращение: «{self.assistant_name}»", wraplength=180, bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(side="bottom", pady=8)
+
+        right = tk.Frame(workspace, bg=BG)
         right.pack(side="left", fill="both", expand=True)
-        conversation = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground="#303951")
+        conversation = tk.Frame(right, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
         conversation.pack(fill="both", expand=True)
         chat_header = tk.Frame(conversation, bg=PANEL)
-        chat_header.pack(fill="x", padx=18, pady=(14, 0))
-        tk.Label(chat_header, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(side="left")
+        chat_header.pack(fill="x", padx=16, pady=(13, 0))
+        title_group = tk.Frame(chat_header, bg=PANEL)
+        title_group.pack(side="left")
+        tk.Label(title_group, text="Диалог", bg=PANEL, fg=TEXT, font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        tk.Label(title_group, text="Текст и голос в одном пространстве", bg=PANEL, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
         self.button(chat_header, "Новый диалог", self.new_dialogue).pack(side="right")
-        self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word",
-                            font=("Segoe UI", 11), padx=18, pady=18, state="disabled")
+        self.chat = tk.Text(conversation, bg=PANEL, fg=TEXT, relief="flat", wrap="word", font=("Segoe UI", 11), padx=18, pady=12, state="disabled", spacing1=3)
         scrollbar = tk.Scrollbar(conversation, command=self.chat.yview)
         scrollbar.pack(side="right", fill="y")
         self.chat.configure(yscrollcommand=scrollbar.set)
         self.chat.pack(side="left", fill="both", expand=True)
-        self.chat.tag_configure("user", foreground="#b5a9ff")
-        self.chat.tag_configure("system", foreground=MUTED)
-        self.chat.tag_configure("assistant", foreground=TEXT)
-        self.chat.tag_configure("user_name", foreground="#c5b7ff", font=("Segoe UI", 10, "bold"), spacing1=12)
-        self.chat.tag_configure("assistant_name", foreground="#71d9d4", font=("Segoe UI", 10, "bold"), spacing1=12)
+        self.chat.tag_configure("user", foreground="#D2C9FF", background=PANEL_ALT, lmargin1=12, lmargin2=12, rmargin=12, spacing1=5, spacing3=10)
+        self.chat.tag_configure("system", foreground=MUTED, font=("Segoe UI", 9), spacing1=3, spacing3=8)
+        self.chat.tag_configure("assistant", foreground=TEXT, lmargin1=2, lmargin2=2, spacing1=5, spacing3=10)
+        self.chat.tag_configure("user_name", foreground=ACCENT, font=("Segoe UI", 9, "bold"), spacing1=12)
+        self.chat.tag_configure("assistant_name", foreground=CYAN, font=("Segoe UI", 9, "bold"), spacing1=12)
         self.chat.tag_configure("system_name", foreground=MUTED, font=("Segoe UI", 9, "bold"), spacing1=8)
-        self.chat.tag_configure("user", background="#252b48", lmargin1=12, lmargin2=12, rmargin=12, spacing1=5, spacing3=10)
-        self.chat.tag_configure("assistant", lmargin1=2, lmargin2=2, spacing1=5, spacing3=10)
-        self.chat.tag_configure("system", font=("Segoe UI", 9), spacing1=3, spacing3=8)
-        row = tk.Frame(right, bg=BG)
-        row.pack(side="bottom", before=conversation, fill="x", pady=(12, 0))
-        self.entry = tk.Entry(row, bg=PANEL, fg=TEXT, insertbackground=TEXT,
-                              relief="flat", font=("Segoe UI", 12))
-        self.entry.pack(side="left", fill="x", expand=True, ipady=12, padx=(0, 10))
+        quick = tk.Frame(right, bg=BG)
+        quick.pack(side="bottom", before=conversation, fill="x", pady=(8, 0))
+        self.button(quick, "Который час?", lambda: self.fill(f"{self.assistant_name}, сколько времени")).pack(side="left", padx=(0, 6))
+        self.button(quick, "Какая дата?", lambda: self.fill(f"{self.assistant_name}, какая сегодня дата")).pack(side="left", padx=6)
+        self.button(quick, "Все команды", self.open_command_catalog).pack(side="left", padx=6)
+        row = tk.Frame(right, bg=PANEL_ALT, highlightbackground=BORDER, highlightthickness=1)
+        row.pack(side="bottom", before=conversation, fill="x", pady=(8, 0))
+        self.entry = tk.Entry(row, bg=PANEL_ALT, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 11), highlightthickness=0)
+        self.entry.pack(side="left", fill="x", expand=True, ipady=10, padx=(12, 8), pady=5)
         self.entry.bind("<Return>", lambda _event: self.send())
-        self.button(row, "Отправить →", self.send).pack(side="right")
-        self.append(self.assistant_name, f"Привет! Я готова помочь. Обращайся по имени «{self.assistant_name}». Микрофон по умолчанию выключен.")
+        self.button(row, "Отправить", self.send, "primary").pack(side="right", padx=5, pady=4)
+        self.window.bind("<Control-k>", lambda _event: self.entry.focus_set())
+        self.append(self.assistant_name, f"Привет! Я рядом и готова помочь. Напиши сообщение или включи голос отдельной кнопкой. Обращение — «{self.assistant_name}».\n\nМикрофон сейчас выключен.")
 
     def append(self, who, text):
         self.chat.configure(state="normal")
@@ -1035,12 +1066,29 @@ class AstraDesktop:
         mode = self.bridge.mode if self.bridge.running else "text"
         self.tray.set_tooltip(microphone_tooltip(mode, self.status.get()))
 
+    def _sync_voice_ui(self):
+        state = self.avatar_state()
+        microphone_on = self.bridge.running and self.bridge.mode == "voice"
+        signature = (state, microphone_on, self.status.get())
+        if signature == self._last_voice_ui:
+            return
+        self._last_voice_ui = signature
+        colors = {"idle": MUTED, "listening": CYAN, "recognizing": WARNING, "speaking": ACCENT, "error": ERROR}
+        self.mic_badge.configure(
+            text="●  Микрофон включён" if microphone_on else "●  Микрофон выключен",
+            fg=CYAN if microphone_on else MUTED,
+        )
+        self.voice_button.configure(text="Голос включён" if microphone_on else "Включить голос")
+
     def animate(self):
-        self.phase += 0.055
+        if not self.reduced_motion:
+            self.phase += 0.055
+        self._sync_voice_ui()
         c = self.avatar
         c.delete("all")
-        y = 124 + math.sin(self.phase) * 5
-        color = ACCENT if self.bridge.running else MUTED
+        y = 124 + (0 if self.reduced_motion else math.sin(self.phase) * 5)
+        state = self.avatar_state()
+        color = {"idle": MUTED, "listening": CYAN, "recognizing": WARNING, "speaking": ACCENT, "error": ERROR}[state] if self.bridge.running else MUTED
         speaking = "Говорю" in self.status.get()
         thinking = "Распознаю" in self.status.get() or self.busy
         preview_session = self.avatar_preview_session

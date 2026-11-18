@@ -4,15 +4,17 @@ from __future__ import annotations
 import json
 import ipaddress
 import os
+import re
 import threading
 import unicodedata
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 PREFIX = "@ASTRA_EVENT "
-KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request", "file_read_request", "file_question_request", "activity"})
+KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request", "file_read_request", "file_question_request", "activity", "profile"})
 ACTIVITY_NAMES = frozenset({"listening", "recognizing", "thinking", "speaking"})
 ACTIVITY_VALUES = frozenset(f"{name}:{phase}" for name in ACTIVITY_NAMES for phase in ("start", "stop"))
+_AVATAR_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 MAX_WEB_SOURCES = 3
 MAX_EVENT_TEXT = 100_000
 _EVENT_WRITE_LOCK = threading.Lock()
@@ -69,6 +71,20 @@ def _clean_web_sources_data(data: object) -> dict[str, object]:
     return {"kind": "web_sources", "sources": clean_sources}
 
 
+def _clean_assistant_profile_data(data: object) -> dict[str, object]:
+    if not isinstance(data, dict) or set(data) != {"kind", "avatar_id", "name", "gender"}:
+        raise ValueError("Invalid assistant profile fields")
+    avatar_id, name, gender = data["avatar_id"], data["name"], data["gender"]
+    if not isinstance(avatar_id, str) or _AVATAR_ID.fullmatch(avatar_id) is None:
+        raise ValueError("Invalid assistant avatar identity")
+    if (not isinstance(name, str) or not 1 <= len(name.strip()) <= 64
+            or any(unicodedata.category(char).startswith("C") for char in name)):
+        raise ValueError("Invalid assistant display name")
+    if not isinstance(gender, str) or gender not in {"female", "male"}:
+        raise ValueError("Invalid assistant grammatical gender")
+    return {"kind": "assistant_profile", "avatar_id": avatar_id, "name": name.strip(), "gender": gender}
+
+
 def emit_event(kind: str, text: str, *, data: dict[str, object] | None = None) -> bool:
     if not isinstance(kind, str) or kind not in KINDS:
         raise ValueError("Unsupported runtime event")
@@ -78,9 +94,12 @@ def emit_event(kind: str, text: str, *, data: dict[str, object] | None = None) -
         raise ValueError("Unsupported runtime activity")
     payload = {"version": 1, "type": kind, "text": text}
     if data is not None:
-        if kind != "assistant":
-            raise ValueError("Structured data is supported only on assistant events")
-        payload["data"] = _clean_web_sources_data(data)
+        if kind == "assistant":
+            payload["data"] = _clean_web_sources_data(data)
+        elif kind == "profile" and text == "":
+            payload["data"] = _clean_assistant_profile_data(data)
+        else:
+            raise ValueError("Structured data is supported only on typed assistant or profile events")
     if os.environ.get("ASTRA_DESKTOP_EVENTS") != "1":
         return False
     with _EVENT_WRITE_LOCK:
@@ -95,6 +114,23 @@ def emit_activity(name: str, active: bool) -> bool:
     if os.environ.get("ASTRA_ACTIVITY_EVENTS") != "1":
         return False
     return emit_event("activity", f"{name}:{'start' if active else 'stop'}")
+
+
+def emit_assistant_profile(settings) -> bool:
+    """Publish safe active-character metadata for an opted-in local client."""
+    avatar_id = getattr(settings, "assistant_avatar_id", "")
+    if not isinstance(avatar_id, str) or not avatar_id:
+        return False
+    return emit_event(
+        "profile",
+        "",
+        data={
+            "kind": "assistant_profile",
+            "avatar_id": avatar_id,
+            "name": getattr(settings, "assistant_name", ""),
+            "gender": getattr(settings, "assistant_gender", ""),
+        },
+    )
 
 
 def parse_event_record(line: str) -> RuntimeEvent | None:
@@ -118,10 +154,13 @@ def parse_event_record(line: str) -> RuntimeEvent | None:
     if event["type"] == "activity" and event["text"] not in ACTIVITY_VALUES:
         return None
     if "data" in event:
-        if event["type"] != "assistant":
-            return None
         try:
-            data = _clean_web_sources_data(event["data"])
+            if event["type"] == "assistant":
+                data = _clean_web_sources_data(event["data"])
+            elif event["type"] == "profile" and event["text"] == "":
+                data = _clean_assistant_profile_data(event["data"])
+            else:
+                return None
         except (TypeError, ValueError):
             return None
     return RuntimeEvent(event["type"], event["text"], data)

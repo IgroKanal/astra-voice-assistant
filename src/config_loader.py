@@ -19,6 +19,8 @@ class Settings:
     assistant_name: str = "Астра"
     # Grammatical gender of the active character, independent of their name.
     assistant_gender: str = "female"
+    # Stable profile identity for clients that need to render the selected character.
+    assistant_avatar_id: str = ""
     wake_phrases: list[str] = field(
         default_factory=lambda: ["астра", "эй астра", "привет астра"]
     )
@@ -154,6 +156,8 @@ class Settings:
     personal_memory_enabled: bool = False
     personal_memory_path: str = ""
     action_permissions: tuple[str, ...] = DEFAULT_SCOPES
+    automatic_safe_actions: bool = False
+    denied_auto_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -14,6 +14,14 @@ Some contributions copyright (c) 2014, Steve Witham <switham_github@mac-guyver.c
 
 All rights reserved.
 
+## Qt 6 and PySide6 6
+
+The Qt desktop interface uses PySide6 and dynamically linked Qt libraries under the GNU Lesser General Public License, version 3. Qt and PySide6 are copyrighted by The Qt Company Ltd. and other contributors. Astra does not modify their upstream source code.
+
+The complete corresponding upstream sources are published by The Qt Company at https://download.qt.io/official_releases/qt/ and https://download.qt.io/official_releases/QtForPython/pyside6/. The exact PySide6-Essentials version is recorded in `build_manifest.json`; Qt and PySide6 source archives with the same version can be obtained from those directories. The application source and build scripts remain available in the Astra source distribution so that the application can be rebuilt with a compatible modified library.
+
+The full LGPLv3 and GPLv3 texts are bundled as `third_party_licenses/Qt-LGPL-3.0-only.txt` and `third_party_licenses/Qt-GPL-3.0-only.txt`. These notices do not replace the license terms or limit any rights granted by them. Projects: https://www.qt.io/ and https://www.qt.io/qt-for-python/.
+
 ## Godot Engine 4.7.2
 
 The portable desktop preview bundles the official signed Godot 4.7.2 Windows x86_64 engine to open the optional 3D avatar preview. Godot is available under the MIT license. The required notice is in `GODOT_LICENSE.txt`; third-party component notices for the engine are in `GODOT_COPYRIGHT.txt`. Official project: https://godotengine.org/.

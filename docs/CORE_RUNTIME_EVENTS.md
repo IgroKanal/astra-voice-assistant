@@ -1,6 +1,6 @@
 # Core runtime event contract for the Kimi desktop client
 
-This document describes the local stdout event contract between Astra's core runtime and a desktop client. It adds web-source metadata without changing the existing human-readable event path.
+This document describes the local stdout event contract between Astra's core runtime and a desktop client. Typed web-source and active-character metadata do not change the existing human-readable chat path.
 
 ## Event framing
 
@@ -10,7 +10,7 @@ Each event is one UTF-8 JSON line prefixed with `@ASTRA_EVENT `:
 {"version":1,"type":"assistant","text":"Источники: [1] Документация — https://docs.example/page","data":{"kind":"web_sources","sources":[{"index":1,"title":"Документация","url":"https://docs.example/page"}]}}
 ```
 
-`version`, `type`, and `text` retain their existing meanings. The optional `data` object is currently supported only for `type: "assistant"` with `kind: "web_sources"`. Source entries contain consecutive integer indices, display titles, and HTTPS URLs. The parser rejects credentials, loopback/private/reserved IPs, local hostnames, controls, malformed links, and extra fields.
+`version`, `type`, and `text` retain their existing meanings. The optional `data` object is supported for `type: "assistant"` with `kind: "web_sources"`, and for `type: "profile"` with `kind: "assistant_profile"`. Source entries contain consecutive integer indices, display titles, and HTTPS URLs. Profile entries contain only a safe avatar identifier, display name, and grammatical gender. The parser rejects credentials, loopback/private/reserved IPs, local hostnames, controls, malformed links, unknown profile values, and extra fields.
 
 ## Core APIs
 
@@ -20,6 +20,8 @@ Each event is one UTF-8 JSON line prefixed with `@ASTRA_EVENT `:
 - `DesktopBridge.typed_events` is a bounded queue of metadata-bearing `RuntimeEvent` records (64 entries). Poll it promptly. If it fills, Astra drops the typed copy while retaining the readable text event in the legacy queue.
 
 The `web_sources` metadata is display data only. A client may render it as a source card and open a link only after the user clicks it; it must never treat a citation as a command or auto-open the URL.
+
+An opted-in core emits one `profile` event at startup after applying the encrypted desktop profile. It identifies the active character so a new client can keep its portrait, displayed name, and grammatical gender aligned with core speech. `DesktopBridge` places this event only in `typed_events`; it does not show an empty profile event in the legacy chat queue. Profile changes take effect after the runtime restarts. The event contains no API keys, TTS voice identifiers, or file paths.
 
 ## Web research disclosure
 
@@ -35,7 +37,7 @@ The core's `Settings.assistant_name` and `Settings.assistant_gender` are separat
 
 Human-readable state events remain unchanged. A new client may explicitly set both `ASTRA_DESKTOP_EVENTS=1` and `ASTRA_ACTIVITY_EVENTS=1` when it starts the runtime to opt in to machine-readable events such as `{"version":1,"type":"activity","text":"speaking:start"}` and `speaking:stop`. The allowed activity names are `listening`, `recognizing`, `thinking` and `speaking`; each has `start` and `stop` phases. Activities may overlap (streamed speech can begin while a model is still generating), so track each activity independently rather than treating them as a single exclusive state. Clear all active indicators when the runtime process exits or its connection is lost. The speech activity covers the TTS attempt, including synthesis and possible playback failure; it does not promise audible sound. This protocol does not provide phonemes, lip sync, emotions, animation assets or window lifecycle controls. Without the explicit opt-in, older clients receive no new activity events. Do not infer that a model has performed an action from its text. File and Windows actions remain subject to the core's typed action policy.
 
-`DesktopBridge.events` forwards these opt-in `("activity", "name:phase")` tuples. They do not appear in `DesktopBridge.typed_events`, which currently carries events with structured `data` only. A client reading runtime stdout directly can use `parse_event_record`.
+`DesktopBridge.events` forwards these opt-in `("activity", "name:phase")` tuples. Structured assistant/profile metadata appears only in `DesktopBridge.typed_events`; activity events do not appear there. A client reading runtime stdout directly can use `parse_event_record`.
 
 OpenRouter conversation configuration uses the existing `compatible` provider, `https://openrouter.ai/api/v1` and `openai/gpt-6-luna`. The core requests `reasoning.effort=none` for this exact endpoint and model. `openai/gpt-6-luna-decisions` uses a different decision endpoint and is not a conversational model. No key is included here; cloud requests require an independently configured key and send the current user question and system prompt to the selected provider. Local notes and local dialogue history are never sent. Optional `LLM_CLOUD_DIALOGUE_ENABLED=true` additionally sends up to four previous question/answer pairs from this cloud session, each entry capped at 2,000 characters; this is off by default. The new client should explain that enabling it sends previous dialogue to the selected provider. A new dialogue clears this in-memory history; the provider may retain data under its own policy. This setup has only mock coverage until a real key and network test are available.
 

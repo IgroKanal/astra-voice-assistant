@@ -30,7 +30,7 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
       - name: Compile
         shell: pwsh
-        run: .\.venv\Scripts\python.exe -m compileall main.py astra_desktop.pyw astra_runtime.py src tools
+        run: .\.venv\Scripts\python.exe -m compileall main.py astra_desktop.pyw astra_desktop_qt.py astra_runtime.py src tools
       - name: Existing regression tests
         shell: pwsh
         run: |

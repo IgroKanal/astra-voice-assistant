@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 from src.runtime_events import RuntimeEvent, parse_event_record
 from src.desktop_file_search import encode_file_result
@@ -53,7 +54,13 @@ class DesktopBridge:
         else:
             python = self.root / ".venv" / "Scripts" / "python.exe"
             if not python.is_file():
-                raise FileNotFoundError("Не найден runtime Astra или Python в .venv.")
+                # A source handoff may be started with an existing Python
+                # environment before a project-local .venv has been created.
+                # Frozen apps must never treat their own executable as Python.
+                current_python = Path(sys.executable)
+                if getattr(sys, "frozen", False) or not current_python.is_file():
+                    raise FileNotFoundError("Не найден runtime Astra или Python в .venv.")
+                python = current_python
             command = [str(python), "-u", str(self.root / "main.py")]
         if mode == "text":
             command.append("--text")
@@ -75,7 +82,10 @@ class DesktopBridge:
             for line in process.stdout:
                 event = parse_event_record(line.rstrip())
                 if event:
-                    self.emit(event.kind, event.text)
+                    # Profile metadata is available only through the typed
+                    # queue; keep it out of the legacy chat/event stream.
+                    if event.kind != "profile":
+                        self.emit(event.kind, event.text)
                     if event.data is not None:
                         try:
                             self.typed_events.put_nowait(event)

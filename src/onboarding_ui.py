@@ -11,11 +11,7 @@ from src.action_policy import ALL_SCOPES
 from src.desktop_settings import AIProfile, AVATAR_PROFILES, DEFAULT_AVATAR_ID, DesktopSettings
 
 
-BG = "#101322"
-PANEL = "#191f34"
-TEXT = "#e9ecff"
-MUTED = "#a2abc9"
-ACCENT = "#9786ff"
+from src.desktop_theme import BG, PANEL, PANEL_ALT, TEXT, MUTED, ACCENT, CYAN, BORDER
 OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_MODEL = "qwen3:4b"
 
@@ -34,20 +30,22 @@ def open_onboarding(owner, button, on_saved, store: DesktopSettings | None = Non
 
     panel = tk.Toplevel(owner)
     panel.title("Astra · первый запуск")
-    panel.geometry("720x560")
-    panel.minsize(680, 520)
+    panel.geometry("860x650")
+    panel.minsize(760, 580)
     panel.configure(bg=BG)
     panel.transient(owner)
 
-    tk.Label(panel, text="Давайте настроим Astra", bg=BG, fg=TEXT,
-             font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=28, pady=(22, 2))
-    tk.Label(panel, text="Настройки сохраняются только после нажатия «Готово».",
-             bg=BG, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w", padx=30, pady=(0, 12))
-    step_title = tk.StringVar(master=panel, value="Шаг 1 из 3 · персонаж")
-    tk.Label(panel, textvariable=step_title, bg=BG, fg=ACCENT,
-             font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=30, pady=(0, 8))
-    pages = tk.Frame(panel, bg=BG)
-    pages.pack(fill="both", expand=True, padx=28)
+    tk.Label(panel, text="Добро пожаловать в Astra", bg=BG, fg=TEXT,
+             font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=32, pady=(24, 2))
+    tk.Label(panel, text="Три спокойных шага. Ничего не сохранится до нажатия «Готово».",
+             bg=BG, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w", padx=32, pady=(0, 14))
+    step_title = tk.StringVar(master=panel, value="01  /  03     Персонаж")
+    tk.Label(panel, textvariable=step_title, bg=BG, fg=CYAN,
+             font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=32, pady=(0, 8))
+    progress = ttk.Progressbar(panel, maximum=3, value=1, style="Astra.Horizontal.TProgressbar")
+    progress.pack(fill="x", padx=32, pady=(0, 14))
+    pages = tk.Frame(panel, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+    pages.pack(fill="both", expand=True, padx=32)
 
     identity = initial.avatar_id if initial.avatar_id in AVATAR_PROFILES else DEFAULT_AVATAR_ID
     character_profiles = {key: dict(value) for key, value in initial.character_profiles.items()}
@@ -80,12 +78,14 @@ def open_onboarding(owner, button, on_saved, store: DesktopSettings | None = Non
     name_entry = tk.Entry(copy, textvariable=name_var, bg=PANEL, fg=TEXT,
                           insertbackground=TEXT, relief="flat", font=("Segoe UI", 12))
     name_entry.pack(fill="x", pady=(3, 12), ipady=8)
-    preview = tk.Label(page_character, text="2D", bg=PANEL, fg=MUTED,
-                       width=24, height=14, compound="top")
-    preview.pack(side="right", fill="y", padx=(0, 8), pady=8)
+    preview_card = tk.Frame(page_character, bg=PANEL_ALT, width=250, highlightbackground=BORDER, highlightthickness=1)
+    preview_card.pack(side="right", fill="y", padx=18, pady=18)
+    preview_card.pack_propagate(False)
+    preview = tk.Label(preview_card, text="2D", bg=PANEL_ALT, fg=MUTED, compound="top")
+    preview.pack(fill="both", expand=True, padx=12, pady=(16, 0))
     preview_name = tk.StringVar(master=panel, value=name_var.get())
-    tk.Label(page_character, textvariable=preview_name, bg=BG, fg=TEXT,
-             font=("Segoe UI", 12, "bold")).pack(side="right", padx=(0, 8))
+    tk.Label(preview_card, textvariable=preview_name, bg=PANEL_ALT, fg=TEXT,
+             font=("Segoe UI", 13, "bold")).pack(side="bottom", pady=16)
 
     def refresh_preview(*_args):
         selected = avatar_labels.get(avatar_var.get(), DEFAULT_AVATAR_ID)
@@ -170,10 +170,11 @@ def open_onboarding(owner, button, on_saved, store: DesktopSettings | None = Non
             page.pack_forget()
         page_frames[index].pack(fill="both", expand=True)
         step_title.set((
-            "Шаг 1 из 3 · персонаж",
-            "Шаг 2 из 3 · ИИ",
-            "Шаг 3 из 3 · запуск и приватность",
+            "01  /  03     Персонаж",
+            "02  /  03     Искусственный интеллект",
+            "03  /  03     Запуск и приватность",
         )[index])
+        progress.configure(value=index + 1)
         back_button.configure(state="normal" if index else "disabled")
         next_button.configure(text="Готово" if index == 2 else "Далее →")
         if index == 2:
@@ -233,7 +234,7 @@ def open_onboarding(owner, button, on_saved, store: DesktopSettings | None = Non
     back_button.pack(side="left")
     cancel_button = button(nav, "Закрыть", panel.destroy)
     cancel_button.pack(side="right", padx=(8, 0))
-    next_button = button(nav, "Далее →", next_step)
+    next_button = button(nav, "Далее →", next_step, "primary")
     next_button.pack(side="right")
     show_step(0)
 

@@ -771,6 +771,33 @@ class DesktopIntegrationTests(unittest.TestCase):
         self.assertEqual(event.data, data)
         self.assertEqual(bridge.events.get_nowait(), ("exit", "0"))
 
+    def test_desktop_bridge_routes_active_profile_only_to_typed_queue(self):
+        from src.config_loader import Settings
+        from src.runtime_events import emit_assistant_profile
+
+        settings = Settings(
+            assistant_name="Сая",
+            assistant_gender="female",
+            assistant_avatar_id="female_saya",
+        )
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1"}), patch("builtins.print") as output:
+            emit_assistant_profile(settings)
+        process = Mock()
+        process.stdout = StringIO(output.call_args.args[0] + "\n")
+        process.wait.return_value = 0
+        bridge = DesktopBridge(ROOT)
+        bridge._read(process)
+
+        event = bridge.typed_events.get_nowait()
+        self.assertEqual(event.kind, "profile")
+        self.assertEqual(event.data, {
+            "kind": "assistant_profile",
+            "avatar_id": "female_saya",
+            "name": "Сая",
+            "gender": "female",
+        })
+        self.assertEqual(bridge.events.get_nowait(), ("exit", "0"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

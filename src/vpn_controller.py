@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from src.config_loader import Settings
+from src.system_discovery import discover_vpn_tunnel_services
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,17 @@ class VpnController:
             return VpnActionResult(False, "VPN-команды отключены в настройках.", "disabled")
 
         state = self._get_service_status(self.tunnel_service)
+        if state == "not_found":
+            # Inventory helps status adapt to a new PC. It does not select a
+            # service for connect/disconnect, which can interrupt connectivity.
+            try:
+                candidates = discover_vpn_tunnel_services()
+            except (OSError, ValueError):
+                candidates = ()
+            if len(candidates) == 1:
+                state = self._get_service_status(candidates[0])
+            elif len(candidates) > 1:
+                return VpnActionResult(False, "Найдено несколько VPN-подключений. Уточни нужное в настройках.", "ambiguous")
         if state == "running":
             return VpnActionResult(True, "VPN включён.", state)
         if state == "stopped":

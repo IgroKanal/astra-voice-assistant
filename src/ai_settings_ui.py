@@ -17,39 +17,41 @@ from src.scroll_section import scroll_section
 def open_ai_settings(owner, button, on_saved, app=None):
     store = DesktopSettings()
     panel = tk.Toplevel(owner)
-    panel.title("Astra · настройки ИИ")
-    panel.geometry(f"780x{min(820, max(560, owner.winfo_screenheight() - 100))}")
-    panel.minsize(680, 520)
-    panel.configure(bg="#101322")
+    panel.title("Astra · настройки")
+    panel.geometry(f"900x{min(820, max(560, owner.winfo_screenheight() - 100))}")
+    panel.minsize(760, 560)
+    panel.configure(bg="#0B1020")
     tabs = ttk.Notebook(panel)
-    tabs.pack(fill="both", expand=True, padx=12, pady=12)
+    tabs.pack(fill="both", expand=True, padx=12, pady=(12, 4))
     content_page, content = scroll_section(tabs)
     voice_page, voice_tab = scroll_section(tabs)
     permissions, permission_content = scroll_section(tabs)
+    appearance_page, appearance_tab = scroll_section(tabs)
     tabs.add(content_page, text="ИИ и память")
-    tabs.add(voice_page, text="Голос и микрофон")
-    tabs.add(permissions, text="Разрешения навыков")
+    tabs.add(voice_page, text="Студия персонажа")
+    tabs.add(permissions, text="Разрешения")
+    tabs.add(appearance_page, text="Внешний вид")
     profile_load_failed = False
     try:
         profile = store.load()
     except Exception:
         profile = AIProfile()
         profile_load_failed = True
-    tk.Label(voice_tab, text=f"{DISPLAY_VERSION} · голос Windows", bg="#101322", fg="#e9ecff", font=("Segoe UI", 17)).pack(pady=18)
-    tk.Label(voice_tab, text="2D-образ ассистента · персонажа можно просмотреть до сохранения", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
+    tk.Label(voice_tab, text="Студия персонажа", bg="#101322", fg="#e9ecff", font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=24, pady=(18, 2))
+    tk.Label(voice_tab, text="Образ, имя и голос · изменения применятся только после сохранения", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24, pady=(0, 10))
     avatar_labels = {item["label"]: identity for identity, item in AVATAR_PROFILES.items()}
     initial_avatar = profile.avatar_id if profile.avatar_id in AVATAR_PROFILES else DEFAULT_AVATAR_ID
     avatar_row = tk.Frame(voice_tab, bg="#101322")
     avatar_row.pack(fill="x", padx=24, pady=(2, 6))
     avatar = ttk.Combobox(avatar_row, values=tuple(avatar_labels), state="readonly", font=("Segoe UI", 11))
     avatar.pack(side="left", fill="x", expand=True, padx=(0, 12))
-    preview_card = tk.Frame(avatar_row, bg="#191f34", width=92, height=82)
+    preview_card = tk.Frame(avatar_row, bg="#191f34", width=164, height=154, highlightbackground="#283652", highlightthickness=1)
     preview_card.pack(side="right")
     preview_card.pack_propagate(False)
     preview_image = tk.Label(preview_card, bg="#191f34", fg="#a2abc9", text="2D")
-    preview_image.pack(side="top", pady=(2, 0))
+    preview_image.pack(side="top", pady=(4, 0))
     preview_name = tk.StringVar(value="")
-    tk.Label(preview_card, textvariable=preview_name, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 8), wraplength=88).pack(side="bottom", fill="x")
+    tk.Label(preview_card, textvariable=preview_name, bg="#191f34", fg="#e9ecff", font=("Segoe UI", 10, "bold"), wraplength=150).pack(side="bottom", fill="x", pady=5)
     avatar.set(AVATAR_PROFILES[initial_avatar]["label"])
     panel.astra_avatar_preview = preview_image
     panel.astra_avatar_preview_name = preview_name
@@ -74,7 +76,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
                 resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
                 image_path = resource_root / "assets" / "avatars" / AVATAR_PROFILES[selected]["asset"]
                 image = tk.PhotoImage(master=panel, file=str(image_path))
-                factor = max(1, (max(image.width(), image.height()) + 79) // 80)
+                factor = max(1, (max(image.width(), image.height()) + 127) // 128)
                 preview_photos[selected] = image.subsample(factor, factor)
             except Exception:
                 preview_photos[selected] = None
@@ -111,6 +113,11 @@ def open_ai_settings(owner, button, on_saved, app=None):
     tk.Button(voice_tab, text="Открыть 3D-preview выбранного персонажа", command=preview_3d,
               bg="#34304f", fg="#e9ecff", activebackground="#51447e", relief="flat",
               font=("Segoe UI", 10)).pack(anchor="w", padx=24, pady=(0, 10))
+    avatar_mode = tk.StringVar(master=panel, value=profile.avatar_mode)
+    mode_row = tk.LabelFrame(voice_tab, text="Режим отображения", bg="#101322", fg="#a2abc9", bd=0, padx=8, pady=4)
+    mode_row.pack(anchor="w", padx=24, pady=(0, 8), fill="x")
+    for label, value in (("2D · быстрый встроенный портрет", "2d"), ("3D · отдельное preview-окно", "3d")):
+        tk.Radiobutton(mode_row, text=label, variable=avatar_mode, value=value, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff").pack(side="left", padx=8)
     def avatar_changed(_event=None):
         selected = avatar_labels.get(avatar.get(), DEFAULT_AVATAR_ID)
         previous = previous_avatar[0]
@@ -140,6 +147,22 @@ def open_ai_settings(owner, button, on_saved, app=None):
     tk.Scale(voice_tab, from_=80, to=300, variable=rate, orient="horizontal", bg="#101322", fg="#e9ecff", highlightthickness=0).pack(fill="x", padx=20)
     tk.Label(voice_tab, text="Громкость речи", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
     tk.Scale(voice_tab, from_=0, to=100, variable=volume, orient="horizontal", bg="#101322", fg="#e9ecff", highlightthickness=0).pack(fill="x", padx=20)
+
+    tk.Label(appearance_tab, text="Спокойный интерфейс", bg="#101322", fg="#e9ecff", font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=24, pady=(20, 4))
+    tk.Label(appearance_tab, text="Тёмная тема Quiet Orbit · читаемая типографика и экономная анимация", bg="#101322", fg="#a2abc9", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=(0, 20))
+    scale_labels = {100: "100% · стандартный", 110: "110% · немного крупнее", 125: "125% · крупный", 150: "150% · очень крупный"}
+    scale_values = {label: value for value, label in scale_labels.items()}
+    tk.Label(appearance_tab, text="Масштаб текста и элементов", bg="#101322", fg="#a2abc9").pack(anchor="w", padx=24)
+    scale = ttk.Combobox(appearance_tab, values=tuple(scale_values), state="readonly", font=("Segoe UI", 11))
+    scale.set(scale_labels[profile.ui_scale])
+    scale.pack(fill="x", padx=24, pady=(4, 12))
+    reduced_motion = tk.BooleanVar(master=panel, value=profile.reduced_motion)
+    tk.Checkbutton(appearance_tab, text="Уменьшить движение · отключить плавание и пульсацию портрета", variable=reduced_motion, bg="#101322", fg="#e9ecff", selectcolor="#191f34", activebackground="#101322", activeforeground="#e9ecff", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=8)
+    tk.Label(appearance_tab, text="Масштаб применяется при следующем запуске Astra. Системное масштабирование Windows учитывается автоматически.", bg="#101322", fg="#a2abc9", wraplength=720, justify="left").pack(anchor="w", padx=24, pady=8)
+    appearance_save = button(appearance_tab, "Сохранить внешний вид", lambda: save())
+    appearance_save.pack(anchor="w", padx=24, pady=18)
+    panel.astra_scale_selector = scale
+    panel.astra_reduced_motion = reduced_motion
     status = tk.StringVar(value="Ключ хранится локально в зашифрованном виде. Проверка сети запускается отдельно.")
     if profile_load_failed:
         status.set("Сохранённые настройки не прочитаны. Можно сохранить новый профиль.")
@@ -325,7 +348,7 @@ def open_ai_settings(owner, button, on_saved, app=None):
         selected_voice = voices_map.get(voices.get(), character_profiles[selected_avatar]["voice_id"])
         selected_name = assistant_name.get().strip()
         character_profiles[selected_avatar] = {"assistant_name": selected_name, "voice_id": selected_voice}
-        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), local_command_router_enabled=local_router.get() and code == "ollama", allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles)).validate()
+        return AIProfile(provider=code, model=model.get().strip(), base_url=endpoint.get().strip(), api_key=key.get(), memory_enabled=memory.get(), local_command_router_enabled=local_router.get() and code == "ollama", allowed_scopes=tuple(scope for scope, variable in scope_vars.items() if variable.get()), assistant_name=selected_name, voice_id=selected_voice, microphone_index=microphone_map.get(microphones.get(), profile.microphone_index), voice_rate=rate.get(), voice_volume=volume.get(), avatar_id=selected_avatar, character_profiles=dict(character_profiles), avatar_mode=avatar_mode.get(), ui_scale=scale_values[scale.get()], reduced_motion=reduced_motion.get()).validate()
     panel.astra_provider_selector = provider
     panel.astra_local_router_control = local_router_control
     panel.astra_local_router_variable = local_router
@@ -522,6 +545,9 @@ def open_ai_settings(owner, button, on_saved, app=None):
         if timer[0] is not None:
             panel.after_cancel(timer[0])
         panel.destroy()
+    cancel = button(panel, "Отмена · закрыть без сохранения", close)
+    cancel.pack(side="bottom", anchor="e", padx=20, pady=(0, 10))
+    panel.astra_cancel = cancel
     panel.protocol("WM_DELETE_WINDOW", close)
     def destroyed(event):
         if event.widget == panel and timer[0] is not None:

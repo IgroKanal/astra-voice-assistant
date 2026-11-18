@@ -327,7 +327,7 @@ def test_music_follow_up_and_youtube_search() -> None:
 def test_action_like_stt_substitution_never_reaches_conversation_llm() -> None:
     ctx, responses, ai, apps, *_ = make_context()
     process_turn("Астра, откроется AMD", ctx)
-    assert responses[-1] == "Не нашёл такое приложение в списке.", responses
+    assert responses[-1] == "Не нашла такое приложение в списке.", responses
     assert not apps.opened
     assert ai.route_calls == 0 and ai.ask_calls == 0
 

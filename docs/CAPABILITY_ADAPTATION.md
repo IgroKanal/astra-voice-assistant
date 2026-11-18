@@ -50,10 +50,13 @@ Timeout or failed recognition cancels the pending request.
 
 The wake-only command «что доступно на этом компьютере» takes a fresh, read-only
 snapshot of registered applications, browsers and the system default, audio
-inputs and outputs, and supported AmneziaWG/WireGuard tunnels. Audio endpoint
-enumeration reads metadata only and does not open a microphone or playback
-stream. It reports counts and
-availability without speaking installed application names, executable paths,
+inputs and outputs, Windows network adapters, and supported AmneziaWG/WireGuard
+tunnels. Audio endpoint enumeration reads metadata only and does not open a
+microphone or playback stream. Network discovery counts Windows components
+marked with the NDIS `NCF_VIRTUAL` characteristic (`0x1`); this can include
+VPN, virtual-machine and container adapters and does not identify a particular
+client. It reports counts and availability
+without speaking installed application names, executable paths, adapter names,
 or VPN profile names. A failed discovery source is reported as unavailable,
 not as proof that the resource does not exist. The snapshot does not grant
 permission; launching a newly discovered app and changing VPN state retain
@@ -126,8 +129,8 @@ spoken “yes” must not create a lasting permission.
 ## Remaining architecture work
 
 1. Extend the typed capability inventory beyond the current application,
-   browser, audio-input/output, and AmneziaWG/WireGuard snapshot to cover other
-   VPN adapters and supported Windows features.
+   browser, audio-input/output, network-adapter, and AmneziaWG/WireGuard
+   snapshot to cover other VPN adapters and supported Windows features.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.

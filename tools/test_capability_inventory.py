@@ -7,6 +7,7 @@ from src.command_parser import CommandType, parse_command_text
 from src.config_loader import AppConfig
 from src.system_controller import SystemController
 from src.system_discovery import BrowserDiscovery, RegisteredApplication
+from src.network_adapter_discovery import NetworkAdapterInventory
 from main import _WAKE_REQUIRED_TYPES
 
 
@@ -19,14 +20,17 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_windows_browsers", return_value=BrowserDiscovery({"browser_orbit": browser}, "browser_orbit")), \
              patch("src.capability_inventory.discover_audio_inputs", return_value=devices), \
              patch("src.capability_inventory.discover_audio_outputs", return_value=(object(), object(), object())), \
+             patch("src.capability_inventory.discover_network_adapter_inventory", return_value=NetworkAdapterInventory(4, 2)), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=("WireGuardTunnel$private",)):
             inventory = discover_capability_inventory()
 
-        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 1))
+        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 4, 2, 1))
         summary = inventory.describe()
         self.assertIn("приложений для запуска обнаружено: 1", summary)
         self.assertIn("входных аудиоустройств обнаружено: 2", summary)
         self.assertIn("выходных аудиоустройств обнаружено: 3", summary)
+        self.assertIn("виртуальных адаптеров: 2", summary)
+        self.assertIn("конкретный клиент не определён", summary)
         self.assertIn("системный браузер по умолчанию найден", summary)
         self.assertNotIn("Private editor", summary)
         self.assertNotIn("private.exe", summary)
@@ -38,6 +42,7 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_windows_browsers", side_effect=OSError), \
              patch("src.capability_inventory.discover_audio_inputs", return_value=()), \
              patch("src.capability_inventory.discover_audio_outputs", side_effect=OSError), \
+             patch("src.capability_inventory.discover_network_adapter_inventory", return_value=None), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()):
             inventory = discover_capability_inventory()
 
@@ -47,6 +52,8 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertEqual(inventory.audio_inputs, 0)
         self.assertIsNone(inventory.audio_outputs)
         self.assertIn("устройств вывода звука прочитать не удалось", inventory.describe())
+        self.assertIsNone(inventory.network_adapters)
+        self.assertIsNone(inventory.virtual_network_adapters)
         self.assertEqual(inventory.supported_vpn_tunnels, 0)
         self.assertIn("список браузеров прочитать не удалось", inventory.describe())
 

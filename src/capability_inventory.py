@@ -11,6 +11,7 @@ from src.system_discovery import (
     discover_vpn_tunnel_services,
     discover_windows_browsers,
 )
+from src.network_adapter_discovery import discover_network_adapter_inventory
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class CapabilityInventory:
     system_default_browser: bool | None
     audio_inputs: int | None
     audio_outputs: int | None
+    network_adapters: int | None
+    virtual_network_adapters: int | None
     supported_vpn_tunnels: int | None
 
     def describe(self) -> str:
@@ -54,6 +57,19 @@ class CapabilityInventory:
             parts.append(f"выходных аудиоустройств обнаружено: {self.audio_outputs}")
         else:
             parts.append("выходные аудиоустройства не обнаружены")
+
+        if self.network_adapters is None or self.virtual_network_adapters is None:
+            parts.append("сетевые адаптеры прочитать не удалось")
+        else:
+            parts.append(
+                f"сетевых адаптеров обнаружено: {self.network_adapters}; "
+                f"виртуальных адаптеров: {self.virtual_network_adapters}"
+            )
+            if self.virtual_network_adapters:
+                parts.append(
+                    "виртуальный адаптер может относиться к VPN, виртуальной машине "
+                    "или контейнеру; конкретный клиент не определён"
+                )
 
         if self.supported_vpn_tunnels is None:
             parts.append("список поддерживаемых VPN-туннелей прочитать не удалось")
@@ -108,6 +124,7 @@ def discover_capability_inventory() -> CapabilityInventory:
     audio_output_count = _read_count(
         lambda: discover_audio_outputs(strict=True), lambda items: len(items)
     )
+    network = discover_network_adapter_inventory()
     vpn_count = _read_count(discover_vpn_tunnel_services, lambda items: len(items))
     return CapabilityInventory(
         registered_applications=application_count,
@@ -115,5 +132,9 @@ def discover_capability_inventory() -> CapabilityInventory:
         system_default_browser=default_browser,
         audio_inputs=audio_count,
         audio_outputs=audio_output_count,
+        network_adapters=network.adapter_count if network is not None else None,
+        virtual_network_adapters=(
+            network.virtual_adapter_count if network is not None else None
+        ),
         supported_vpn_tunnels=vpn_count,
     )

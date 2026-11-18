@@ -1211,6 +1211,14 @@ def _controller_message(ctx: TurnContext, message: str) -> str:
     return message
 
 
+def _registered_app_matches(item: object, target: str) -> bool:
+    aliases = getattr(item, "aliases", ())
+    if not isinstance(aliases, (tuple, list, set, frozenset)):
+        aliases = ()
+    names = (getattr(item, "name", ""), *aliases)
+    return any(isinstance(name, str) and normalize_text(name) == target for name in names)
+
+
 def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
     """
     Выполняет безопасное действие.
@@ -1739,12 +1747,12 @@ def handle_action(action: AssistantAction, ctx: TurnContext) -> bool:
         if app is None and action.source in {"local", "local_parser", "pending_followup"}:
             target = normalize_text(action.target).removesuffix(".exe")
             matches = [item for item in getattr(ctx.app_manager, "registered_apps", ())
-                       if normalize_text(item.name) == target]
+                       if _registered_app_matches(item, target)]
             if not matches:
                 try:
                     ctx.app_manager.registered_apps = discover_registered_applications()
                     matches = [item for item in ctx.app_manager.registered_apps
-                               if normalize_text(item.name) == target]
+                               if _registered_app_matches(item, target)]
                 except (OSError, ValueError):
                     ctx.logger.warning("Не удалось обновить список зарегистрированных приложений.")
             if len(matches) == 1:

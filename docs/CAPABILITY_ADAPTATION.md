@@ -21,10 +21,15 @@ Discovery is read-only. It does not install software, change the Windows
 default, enable a capability, or grant access to user files. If registry access
 is unavailable, the existing app configuration remains usable.
 
-There is also a bounded inventory of registered `App Paths` entries. It keeps
-only existing absolute executable paths and prefers a per-user registration.
-Known command interpreters and script launchers are excluded from discovery;
-the spoken request is never used as an executable path or command line.
+There is also a bounded inventory of registered `App Paths` entries and local
+Start Menu shortcuts. Shortcut names become display aliases; only an existing
+absolute `.exe` target is kept, and shortcut arguments are ignored. The scan is
+limited to the current-user and machine-wide Start Menu roots, skips linked
+directories, and never starts a shortcut or target. Known command interpreters,
+shell hosts and script launchers are excluded from discovery; the spoken request
+is never used as an executable path or command line. A shortcut alias still
+goes through the exact-match, one-time launch confirmation and file identity
+recheck used by other discovered applications.
 If a local command exactly names an otherwise unknown entry, Astra requests a
 one-time confirmation. Confirmation expires after 20 seconds; before launching,
 the core verifies the registration and file identity again. The language model

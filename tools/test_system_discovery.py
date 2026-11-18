@@ -87,6 +87,91 @@ class DiscoveryTests(unittest.TestCase):
         registry = FakeRegistry(values, children)
         self.assertEqual(discover_registered_applications(registry=registry, file_exists=lambda p: True), ())
 
+    def test_start_menu_shortcuts_add_display_names_without_launching_targets(self):
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+            shortcut_root = Path(root) / 'Programs'
+            shortcut_root.mkdir()
+            shortcut = shortcut_root / 'Friendly Editor.lnk'
+            shortcut.write_bytes(b'fixture')
+            executable = r'C:\Program Files\Vendor\editor.exe'
+            seen = []
+
+            def read_shortcut(path):
+                seen.append(path)
+                return executable
+
+            registry = FakeRegistry({}, {})
+            apps = discover_registered_applications(
+                registry=registry,
+                file_exists=lambda path: path == executable,
+                start_menu_roots=(str(shortcut_root),),
+                shortcut_target=read_shortcut,
+            )
+            self.assertEqual(len(apps), 1)
+            self.assertEqual(apps[0].name, 'Friendly Editor')
+            self.assertEqual(apps[0].executable, executable)
+            self.assertEqual(apps[0].aliases, ('editor',))
+            self.assertEqual(seen, [str(shortcut)])
+
+    def test_start_menu_ignores_shell_hosts_and_missing_targets(self):
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+            shortcut_root = Path(root) / 'Programs'
+            shortcut_root.mkdir()
+            (shortcut_root / 'Explorer.lnk').write_bytes(b'fixture')
+            (shortcut_root / 'Missing.lnk').write_bytes(b'fixture')
+            (shortcut_root / 'Network.lnk').write_bytes(b'fixture')
+            (shortcut_root / 'Arguments.lnk').write_bytes(b'fixture')
+            targets = {
+                'Explorer.lnk': r'C:\Windows\explorer.exe',
+                'Missing.lnk': r'C:\Program Files\gone.exe',
+                'Network.lnk': r'\\server\share\remote.exe',
+                'Arguments.lnk': r'C:\Program Files\app.exe --launch-extra',
+            }
+            apps = discover_registered_applications(
+                registry=FakeRegistry({}, {}),
+                file_exists=lambda path: path == r'C:\Windows\explorer.exe',
+                start_menu_roots=(str(shortcut_root),),
+                shortcut_target=lambda path: targets[Path(path).name],
+            )
+            self.assertEqual(apps, ())
+
+    def test_start_menu_name_merges_as_alias_for_registered_executable(self):
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+            shortcut_root = Path(root) / 'Programs'
+            shortcut_root.mkdir()
+            (shortcut_root / 'Friendly Editor.lnk').write_bytes(b'fixture')
+            base = r'Software\Microsoft\Windows\CurrentVersion\App Paths'
+            executable = r'C:\Program Files\Vendor\editor.exe'
+            registry = FakeRegistry(
+                {('user', base + r'\editor.exe', ''): executable},
+                {('user', base): ['editor.exe']},
+            )
+            apps = discover_registered_applications(
+                registry=registry,
+                file_exists=lambda path: path == executable,
+                start_menu_roots=(str(shortcut_root),),
+                shortcut_target=lambda _path: executable,
+            )
+            self.assertEqual(len(apps), 1)
+            self.assertEqual(apps[0].name, 'editor')
+            self.assertEqual(apps[0].aliases, ('Friendly Editor',))
+
+    def test_shortcut_scan_is_bounded(self):
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+            shortcut_root = Path(root) / 'Programs'
+            shortcut_root.mkdir()
+            for name in ('One.lnk', 'Two.lnk'):
+                (shortcut_root / name).write_bytes(b'fixture')
+            seen = []
+            discover_registered_applications(
+                registry=FakeRegistry({}, {}),
+                file_exists=lambda _path: True,
+                start_menu_roots=(str(shortcut_root),),
+                shortcut_target=lambda path: seen.append(path) or r'C:\Program Files\app.exe',
+                max_shortcuts=1,
+            )
+            self.assertEqual(len(seen), 1)
+
     def test_preference_and_merge(self):
         app = AppConfig('chrome', ['chrome'], ['C:\\Chrome\\chrome.exe'], 'chrome.exe')
         detected = BrowserDiscovery({'chrome': app}, 'chrome')
@@ -98,7 +183,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(merged.open_command, app.open_command)
 
     def test_overrides_round_trip_and_reject_paths(self):
-        with tempfile.TemporaryDirectory() as root:
+        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
             store = CapabilityOverrideStore(Path(root) / 'preferences.json')
             store.save(CapabilityOverrides('Chrome'))
             self.assertEqual(store.load().browser_preferred, 'chrome')

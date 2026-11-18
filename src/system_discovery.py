@@ -53,6 +53,168 @@ class RegisteredApplication:
     """An inventory record, not permission to launch the executable."""
     name: str
     executable: str
+    aliases: tuple[str, ...] = ()
+
+
+def _default_start_menu_roots() -> tuple[str, ...]:
+    """Return only the current user's and machine-wide local Start Menu roots."""
+    roots = []
+    for variable in ("APPDATA", "PROGRAMDATA"):
+        base = os.environ.get(variable, "")
+        if not base:
+            continue
+        root = Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        if root.is_absolute() and not root.drive.startswith("\\\\"):
+            roots.append(str(root))
+    return tuple(dict.fromkeys(roots))
+
+
+def _shortcut_target_reader() -> Callable[[str], str] | None:
+    """Create a read-only COM shortcut reader; never starts the target."""
+    if os.name != "nt":
+        return None
+    try:
+        from win32com.client import Dispatch
+
+        shell = Dispatch("WScript.Shell")
+        return lambda shortcut: str(shell.CreateShortcut(shortcut).TargetPath or "")
+    except Exception:
+        return None
+
+
+def _is_reparse_directory(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
+
+
+def _merge_shortcut_application(
+    found: dict[str, RegisteredApplication],
+    display_name: str,
+    executable: str,
+    *,
+    limit: int,
+) -> None:
+    """Merge a friendly Start Menu name without replacing a registered path."""
+    normalized_path = os.path.normcase(os.path.abspath(executable))
+    alias = display_name.strip()[:100]
+    if not alias:
+        return
+    for key, current in tuple(found.items()):
+        if os.path.normcase(os.path.abspath(current.executable)) != normalized_path:
+            continue
+        aliases = {value.casefold(): value for value in current.aliases}
+        aliases.setdefault(alias.casefold(), alias)
+        found[key] = RegisteredApplication(
+            current.name,
+            current.executable,
+            tuple(sorted(aliases.values(), key=str.casefold)),
+        )
+        return
+    if len(found) >= limit:
+        return
+    key = "startmenu:" + normalized_path
+    current = found.get(key)
+    if current is not None:
+        aliases = {value.casefold(): value for value in current.aliases}
+        aliases.setdefault(alias.casefold(), alias)
+        found[key] = RegisteredApplication(
+            current.name,
+            current.executable,
+            tuple(sorted(aliases.values(), key=str.casefold)),
+        )
+        return
+    executable_name = Path(executable).stem
+    found[key] = RegisteredApplication(
+        alias,
+        executable,
+        tuple(sorted({executable_name}, key=str.casefold)) if executable_name.casefold() != alias.casefold() else (),
+    )
+
+
+def _discover_start_menu_applications(
+    found: dict[str, RegisteredApplication],
+    roots: tuple[str, ...],
+    shortcut_target: Callable[[str], str],
+    expandvars: Callable[[str], str],
+    file_exists: Callable[[str], bool],
+    *,
+    limit: int,
+    max_shortcuts: int,
+) -> None:
+    """Read bounded local .lnk inventories and keep only existing .exe targets."""
+    scanned = 0
+    visited_directories = 0
+    max_entries = max_shortcuts * 8
+    for raw_root in roots[:16]:
+        if not isinstance(raw_root, str) or len(raw_root) > 32767:
+            continue
+        root = Path(raw_root)
+        if not root.is_absolute() or root.drive.startswith("\\\\") or _is_reparse_directory(root):
+            continue
+        try:
+            if not root.is_dir():
+                continue
+        except OSError:
+            continue
+        for current, directory_names, file_names in os.walk(
+            root, topdown=True, followlinks=False, onerror=lambda _error: None
+        ):
+            visited_directories += 1
+            if visited_directories > max_entries:
+                return
+            current_path = Path(current)
+            try:
+                depth = len(current_path.relative_to(root).parts)
+            except ValueError:
+                directory_names[:] = []
+                continue
+            directory_names[:] = sorted(
+                name for name in directory_names
+                if not _is_reparse_directory(current_path / name)
+            )[:256]
+            if depth >= 8 or scanned >= max_entries:
+                directory_names[:] = []
+            for file_name in sorted(file_names, key=str.casefold):
+                if not file_name.casefold().endswith(".lnk"):
+                    continue
+                scanned += 1
+                if scanned > max_shortcuts or scanned > max_entries:
+                    return
+                shortcut = current_path / file_name
+                try:
+                    if shortcut.is_symlink() or shortcut.stat().st_size > 1024 * 1024:
+                        continue
+                    target = shortcut_target(str(shortcut))
+                except Exception:
+                    continue
+                executable = _parse_registered_executable(
+                    target, expandvars, app_path=True
+                )
+                if (not executable or Path(executable).drive.startswith("\\\\")
+                        or Path(executable).stem.casefold() in (
+                    _COMMAND_INTERPRETERS | {"explorer", "applicationframehost"}
+                )):
+                    continue
+                try:
+                    if not file_exists(executable):
+                        continue
+                except OSError:
+                    continue
+                _merge_shortcut_application(
+                    found,
+                    Path(file_name).stem,
+                    executable,
+                    limit=limit,
+                )
+                if len(found) >= limit:
+                    return
+            if scanned >= max_entries:
+                return
 
 
 def discover_vpn_tunnel_services(*, registry: Any | None = None) -> tuple[str, ...]:
@@ -76,10 +238,18 @@ def discover_vpn_tunnel_services(*, registry: Any | None = None) -> tuple[str, .
 def discover_registered_applications(*, registry: Any | None = None,
                                      file_exists: Callable[[str], bool] | None = None,
                                      expandvars: Callable[[str], str] = os.path.expandvars,
-                                     limit: int = 512) -> tuple[RegisteredApplication, ...]:
-    """Read registered App Paths without launching or authorizing anything."""
-    if not 1 <= limit <= 2048:
+                                     limit: int = 512,
+                                     start_menu_roots: tuple[str, ...] | None = None,
+                                     shortcut_target: Callable[[str], str] | None = None,
+                                     max_shortcuts: int = 512) -> tuple[RegisteredApplication, ...]:
+    """Read App Paths and Start Menu shortcuts without launching or authorizing.
+
+    Shortcut targets are metadata only. They are parsed as a single existing
+    executable, and launch still goes through the runtime's one-time approval.
+    """
+    if not 1 <= limit <= 2048 or type(max_shortcuts) is not int or not 0 <= max_shortcuts <= 4096:
         raise ValueError("Недопустимый размер списка приложений")
+    native_registry = registry is None
     if registry is None:
         if os.name != "nt":
             return ()
@@ -114,6 +284,23 @@ def discover_registered_applications(*, registry: Any | None = None,
                     exists = False
                 if exists:
                     found.setdefault(key.casefold(), RegisteredApplication(Path(key).stem, executable))
+    if max_shortcuts:
+        roots = start_menu_roots
+        reader = shortcut_target
+        if roots is None and native_registry:
+            roots = _default_start_menu_roots()
+        if reader is None and native_registry:
+            reader = _shortcut_target_reader()
+        if roots and reader is not None:
+            _discover_start_menu_applications(
+                found,
+                tuple(roots),
+                reader,
+                expandvars,
+                file_exists,
+                limit=limit,
+                max_shortcuts=max_shortcuts,
+            )
     return tuple(found.values())
 
 

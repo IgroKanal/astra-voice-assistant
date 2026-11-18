@@ -13,7 +13,7 @@ from tools.smoke_test_v11_daily_workflow import make_context
 
 class DiscoveredLaunchTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp')
         self.path = Path(self.temp.name) / 'example.exe'
         self.path.write_bytes(b'first')
         self.app = RegisteredApplication('example', str(self.path))
@@ -89,6 +89,29 @@ class DiscoveredLaunchTests(unittest.TestCase):
         self.request()
         self.assertEqual(self.ctx.state.pending_kind, 'confirm_discovered_app')
         discover.assert_called_once()
+
+    @patch('main.subprocess.Popen')
+    @patch('main.discover_registered_applications')
+    def test_start_menu_alias_uses_the_existing_one_time_confirmation(self, discover, popen):
+        self.apps.registered_apps = (RegisteredApplication('Friendly Editor', str(self.path), ('editor',)),)
+        discover.return_value = self.apps.registered_apps
+        handle_action(AssistantAction(ActionType.OPEN_APP, target='editor', source='local'), self.ctx)
+        self.assertEqual(self.ctx.state.pending_kind, 'confirm_discovered_app')
+        popen.assert_not_called()
+        process_turn('да', self.ctx)
+        self.assertEqual(popen.call_args.args[0], [str(self.path)])
+
+    @patch('main.subprocess.Popen')
+    def test_ambiguous_start_menu_alias_never_launches_either_candidate(self, popen):
+        second_path = Path(self.temp.name) / 'other.exe'
+        second_path.write_bytes(b'other')
+        self.apps.registered_apps = (
+            RegisteredApplication('Editor A', str(self.path), ('editor',)),
+            RegisteredApplication('Editor B', str(second_path), ('editor',)),
+        )
+        handle_action(AssistantAction(ActionType.OPEN_APP, target='editor', source='local'), self.ctx)
+        self.assertEqual(self.ctx.state.pending_kind, '')
+        popen.assert_not_called()
 
     @patch('main.subprocess.Popen')
     @patch('main.discover_registered_applications')

@@ -17,7 +17,7 @@ from tools.validate_package import _secret_findings, _unsafe_path_reason, _forbi
 
 
 def validate_voice_core_modules(modules):
-    if any(name not in modules for name in ("src.microphone_recovery", "src.assistant_persona", "src.runtime_events")):
+    if any(name not in modules for name in ("src.microphone_recovery", "src.assistant_persona", "src.runtime_events", "src.audio_device_discovery")):
         raise ValueError("The packaged runtime is missing character, event or microphone recovery support")
 
 
@@ -83,7 +83,7 @@ def main():
             required_modules = {
                 "pypdf", "PIL.Image", "PIL.ImageOps",
                 "src.file_workspace", "src.file_transactions", "src.file_rag", "src.skill_executor",
-                "src.plan_interpreter", "src.avatar_preview", "src.onboarding_state",
+                "src.plan_interpreter", "src.avatar_preview", "src.audio_device_discovery", "src.onboarding_state",
                 "src.profile_backup", "src.backup_crypto", "src.portable_memory_backup",
                 "src.portable_reminder_backup", "src.action_audit", "src.command_catalog",
                 "src.desktop_file_search", "src.desktop_tray", "src.qt_theme", "src.qt_widgets",
@@ -93,14 +93,21 @@ def main():
             if missing_modules:
                 raise ValueError("Required Qt desktop modules are missing from Astra.exe: " + ", ".join(missing_modules))
             embedded_names = {name.replace("\\", "/").casefold() for name in embedded.toc}
-            qt_binaries = (
-                "pyside6/qtcore.pyd", "pyside6/qtgui.pyd", "pyside6/qtwidgets.pyd",
-                "pyside6/qt/plugins/platforms/qwindows.dll",
-            )
+            qt_binaries = ("pyside6/qtcore.pyd", "pyside6/qtgui.pyd", "pyside6/qtwidgets.pyd")
             missing_binaries = [
                 required for required in qt_binaries
                 if not any(name.endswith(required) for name in embedded_names)
             ]
+            qt_plugin_locations = (
+                "pyside6/qt/plugins/platforms/qwindows.dll",
+                "pyside6/plugins/platforms/qwindows.dll",
+            )
+            if not any(
+                name.endswith(location)
+                for location in qt_plugin_locations
+                for name in embedded_names
+            ):
+                missing_binaries.append("Qt Windows platform plugin (qwindows.dll)")
             if missing_binaries:
                 raise ValueError("Required Qt binaries or Windows platform plugin are missing from Astra.exe: " + ", ".join(missing_binaries))
             runtime_exe = destination / folder / "runtime" / "AstraRuntime" / "AstraRuntime.exe"

@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import win32crypt
 
+from src.audio_device_discovery import audio_input_identity_for_index
 from src.config_loader import Settings
 from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
 
@@ -36,6 +37,7 @@ class AIProfile:
     assistant_name: str | None = None
     voice_id: str = ""
     microphone_index: int | None = None
+    microphone_identity: str = field(default="", repr=False)
     voice_rate: int = 180
     voice_volume: float = 1.0
     avatar_id: str = DEFAULT_AVATAR_ID
@@ -81,6 +83,8 @@ class AIProfile:
             raise ValueError("Неизвестный образ ассистента")
         if self.microphone_index is not None and (type(self.microphone_index) is not int or not 0 <= self.microphone_index <= 256):
             raise ValueError("Выбери обнаруженный микрофон")
+        if not isinstance(self.microphone_identity, str) or (self.microphone_identity and not re.fullmatch(r"[a-f0-9]{64}", self.microphone_identity)):
+            raise ValueError("Некорректный идентификатор микрофона")
         if type(self.voice_rate) is not int or not 80 <= self.voice_rate <= 300:
             raise ValueError("Скорость голоса должна быть от 80 до 300")
         if type(self.voice_volume) not in (int, float) or not 0 <= self.voice_volume <= 1:
@@ -123,7 +127,13 @@ class DesktopSettings:
 
     def save(self, profile: AIProfile):
         profile.validate()
+        if profile.microphone_index is not None and not profile.microphone_identity:
+            identity = audio_input_identity_for_index(profile.microphone_index)
+            if identity:
+                profile = replace(profile, microphone_identity=identity)
         data = asdict(profile)
+        if not profile.microphone_identity:
+            data.pop("microphone_identity", None)
         # Older clients can still read profiles that do not opt in.
         if not profile.cloud_dialogue_enabled:
             data.pop("cloud_dialogue_enabled")
@@ -150,7 +160,7 @@ class DesktopSettings:
             # Empty means automatic voice selection for the character's gender.
             voice_id = character["voice_id"]
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index, stt_device_identity=profile.microphone_identity)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

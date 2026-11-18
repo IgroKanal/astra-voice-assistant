@@ -45,11 +45,17 @@ read-only fallback. Connect and disconnect still use the configured service;
 automatic selection, user choice and confirmation for changing a connection
 remain open. No VPN state was changed during automated tests.
 
-If the configured microphone cannot initialize, the voice runtime tries the
-Windows default once and reports the fallback. If both fail, it remains
-unavailable. This does not detect an index that now points to a different but
-working device: stable device identification remains open. No real microphone
-was opened by the automated fallback tests.
+When a user saves a microphone selection, the encrypted per-user profile stores
+a SHA-256 fingerprint of its normalized device name and host API, not the raw
+name or machine-local PortAudio index. On startup, the core enumerates input
+metadata without opening a recording stream and resolves the fingerprint to
+the current index only when there is one unique match. A missing or ambiguous
+match skips the stale index and tries the Windows default once, with a status
+message. A profile created on an older version still uses its saved index until
+the user saves settings again. If the selected device cannot initialize, the
+Windows default is tried and reported; if that also fails, voice input remains
+unavailable. Automated tests inject fake device inventories and do not open a
+real microphone.
 
 The selected built-in character supplies the runtime assistant name and
 grammatical gender. Both are included in the answer-model instruction; local
@@ -81,8 +87,11 @@ spoken “yes” must not create a lasting permission.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.
-4. Replace fixed VPN service names and device indices with discovered IDs plus
-   stable user overrides.
+4. Replace fixed VPN service names with discovered client identities plus
+   explicit choice and confirmation. Microphone selection now uses a per-user
+   hashed name/host-API fingerprint and refuses to guess when duplicate devices
+   match; Windows Core Audio endpoint IDs remain a stronger option for
+   identical devices.
 5. Keep voice state events as the source of character animation state. The Qt
    scene and current 2D art are preserved; production layered art or a real VRM/
    Live2D-compatible model is still required before attempting polished new

@@ -17,6 +17,7 @@ import pyttsx3
 import speech_recognition as sr
 
 from src.config_loader import Settings
+from src.audio_device_discovery import discover_audio_inputs, resolve_audio_input_index
 from src.runtime_events import emit_activity, emit_event
 
 
@@ -117,7 +118,11 @@ class VoiceIO:
         )
 
     def _init_microphone(self) -> None:
-        device_index = getattr(self.settings, "stt_device_index", None)
+        configured_index = getattr(self.settings, "stt_device_index", None)
+        device_identity = getattr(self.settings, "stt_device_identity", "")
+        device_index = configured_index
+        if device_identity:
+            device_index = resolve_audio_input_index(device_identity, discover_audio_inputs())
         candidates = (device_index, None) if device_index is not None else (None,)
         self.microphone = None
         for candidate in candidates:
@@ -129,8 +134,8 @@ class VoiceIO:
                         duration=self.settings.ambient_noise_duration_seconds,
                     )
                 self.microphone = microphone
-                if candidate is None and device_index is not None:
-                    message = "Выбранный микрофон недоступен; используется микрофон Windows по умолчанию."
+                if candidate is None and (configured_index is not None or bool(device_identity)):
+                    message = "Сохранённый микрофон не найден; используется микрофон Windows по умолчанию."
                     self.logger.warning(message)
                     print(message)
                     emit_event("state", message)

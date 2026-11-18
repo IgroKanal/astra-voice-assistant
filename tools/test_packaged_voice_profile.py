@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,7 +16,8 @@ def main():
     root = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="astra-voice-eval-") as temp:
         settings = DesktopSettings(Path(temp) / "AstraVoiceAssistant" / "settings.dpapi")
-        settings.save(AIProfile(provider="disabled", assistant_name="Мику", voice_id="synthetic-voice-id", microphone_index=2, voice_rate=210, voice_volume=.65))
+        with patch("src.desktop_settings.audio_input_identity_for_index", return_value=""):
+            settings.save(AIProfile(provider="disabled", assistant_name="Мику", voice_id="synthetic-voice-id", microphone_index=2, voice_rate=210, voice_volume=.65))
         env = dict(os.environ, LOCALAPPDATA=temp, ASTRA_IGNORE_DESKTOP_SETTINGS="0", TTS_ENABLED="false", VPN_ENABLED="false", ASTRA_DESKTOP_EVENTS="1", PYTHONIOENCODING="utf-8")
         result = subprocess.run([str(root / "runtime" / "AstraRuntime" / "AstraRuntime.exe"), "--text"], input="Мику, сколько времени\nМику, стоп\n", cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         events = [event for line in result.stdout.splitlines() if (event := parse_event(line))]

@@ -100,7 +100,7 @@ def build() -> Path:
     pyinstaller_config.mkdir()
     os.environ["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_config)
     common = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--noupx", "--clean", "--specpath", str(work), "--icon", str(icon)]
-    subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", str(ROOT / "astra_desktop_qt.py")], cwd=ROOT, check=True)
+    subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", "--hidden-import", "src.avatar_preview", str(ROOT / "astra_desktop_qt.py")], cwd=ROOT, check=True)
     subprocess.run(common + ["--name", "AstraRuntime", "--onedir", "--console", "--distpath", str(output / "runtime"), "--workpath", str(work / "runtime"), "--collect-submodules", "pyttsx3.drivers", "--add-data", str(ROOT / "config") + ":config", str(ROOT / "astra_runtime.py")], cwd=ROOT, check=True)
     runtime_dir = output / "runtime" / "AstraRuntime"
     subprocess.run(common + ["--name", "edge-tts", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-tts"), "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_tts_entry.py")], cwd=ROOT, check=True)

@@ -1106,6 +1106,7 @@ class DesktopUITests(unittest.TestCase):
                 if isinstance(item, (tk.Button, tk.Entry)):
                     controls.append(item)
             self.assertGreater(len(controls), 10)
+            self.pump(window, lambda: all(item.winfo_ismapped() for item in controls), timeout=3)
             for item in controls:
                 label = item.cget("text") if isinstance(item, tk.Button) else "entry"
                 self.assertTrue(item.winfo_ismapped(), label)

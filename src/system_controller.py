@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -20,9 +21,14 @@ class SystemActionResult:
 class SystemController:
     """Безопасные системные действия: скриншот и краткая информация о ПК."""
 
-    def __init__(self, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        capability_summary: Callable[[], str] | None = None,
+    ) -> None:
         self.logger = logger or logging.getLogger(__name__)
         self.home = Path.home()
+        self.capability_summary = capability_summary
 
     def take_screenshot(self) -> SystemActionResult:
         screenshots_dir = self.home / "Pictures" / "AstraScreenshots"
@@ -72,12 +78,28 @@ try {{
             return self._disk_info()
         if target == "internet":
             return self._internet_info()
+        if target == "capabilities":
+            return self._capability_info()
 
         parts = [self._memory_info().message, self._disk_info().message]
         battery = self._battery_info()
         if battery.ok:
             parts.append(battery.message)
         return SystemActionResult(True, " ".join(parts))
+
+    def _capability_info(self) -> SystemActionResult:
+        if not callable(self.capability_summary):
+            return SystemActionResult(False, "Инвентаризация возможностей недоступна.")
+        try:
+            message = self.capability_summary()
+        except Exception as exc:
+            self.logger.warning(
+                "Capability inventory failed: %s", type(exc).__name__
+            )
+            return SystemActionResult(False, "Не удалось проверить возможности этого компьютера.")
+        if not isinstance(message, str) or not 1 <= len(message) <= 2000:
+            return SystemActionResult(False, "Инвентаризация возможностей вернула некорректный ответ.")
+        return SystemActionResult(True, message)
 
     def _battery_info(self) -> SystemActionResult:
         script = r"""

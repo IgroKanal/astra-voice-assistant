@@ -18,7 +18,7 @@ from tools.validate_package import _secret_findings, _unsafe_path_reason, _forbi
 
 def validate_voice_core_modules(modules):
     if any(name not in modules for name in ("src.microphone_recovery", "src.assistant_persona", "src.runtime_events", "src.audio_device_discovery")):
-        raise ValueError("The packaged runtime is missing character, event or microphone recovery support")
+        raise ValueError("The packaged runtime is missing voice, event, microphone recovery or audio-device discovery support")
 
 
 def main():

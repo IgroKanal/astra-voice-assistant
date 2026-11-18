@@ -287,6 +287,9 @@ def test_runtime_is_local_wake_only_and_follow_up_is_bounded() -> None:
     assert follow_responses[-1] == "Открываю.", follow_responses
 
     process_turn("Астра, закрой яндекс музыку", ctx)
+    assert ctx.state.pending_kind == "action_confirmation"
+    assert not apps.closed, apps.closed
+    process_turn("да", ctx)
     assert apps.closed == ["яндекс музыка"], apps.closed
     process_turn("Астра, переключись на яндекс музыку", ctx)
     assert windows.focused == ["яндекс музыку"], windows.focused

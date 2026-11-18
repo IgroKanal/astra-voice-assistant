@@ -21,6 +21,7 @@ from src.background_tasks import BackgroundTaskError, BackgroundTaskManager
 from src.action_policy import ActionPolicy, action_confirmation_prompt
 from src.action_audit import record_action
 from src.capability_overrides import CapabilityOverrideStore
+from src.capability_inventory import discover_capability_inventory
 from src.audio_io import ListenResult, VoiceIO
 from src.command_parser import (
     CommandType,
@@ -957,7 +958,7 @@ def build_help_text(topic: str = "general", settings: Settings | None = None) ->
         ),
         "system": (
             "Система: Астра, статус интернета, сколько памяти, сколько места, "
-            "сделай скриншот."
+            "что доступно на этом компьютере, сделай скриншот."
         ),
         "voice": (
             f"Голос: повтори, что ты {character_phrase(settings, female='услышала', male='услышал')}, стоп. "
@@ -3026,7 +3027,10 @@ def main() -> int:
         browser_focus_missing_timeout_seconds=settings.browser_focus_missing_timeout_seconds,
     )
     folders = FolderController(logger=logger)
-    system = SystemController(logger=logger)
+    system = SystemController(
+        logger=logger,
+        capability_summary=lambda: discover_capability_inventory().describe(),
+    )
     vpn = VpnController(
         settings=settings,
         logger=logger,

@@ -8,7 +8,12 @@ from tools.validate_desktop_package import validate_voice_core_modules
 
 class VoiceCorePackageTests(unittest.TestCase):
     def test_each_runtime_module_is_required(self):
-        required = {"src.microphone_recovery", "src.assistant_persona", "src.runtime_events"}
+        required = {
+            "src.microphone_recovery",
+            "src.assistant_persona",
+            "src.runtime_events",
+            "src.audio_device_discovery",
+        }
         validate_voice_core_modules(required)
         for missing in required:
             with self.subTest(missing=missing), self.assertRaises(ValueError):

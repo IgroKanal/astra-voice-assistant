@@ -48,6 +48,15 @@ Wake-only voice mode supports up to three consecutive follow-ups, so an open
 request, application name and confirmation can be spoken in separate turns.
 Timeout or failed recognition cancels the pending request.
 
+The wake-only command «что доступно на этом компьютере» takes a fresh, read-only
+snapshot of registered applications, browsers and the system default, audio
+inputs, and supported AmneziaWG/WireGuard tunnels. It reports counts and
+availability without speaking installed application names, executable paths,
+or VPN profile names. A failed discovery source is reported as unavailable,
+not as proof that the resource does not exist. The snapshot does not grant
+permission; launching a newly discovered app and changing VPN state retain
+their existing confirmation rules.
+
 At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
 An explicit per-user choice wins when that service is still present; otherwise
 an explicit `.env` choice is kept when present. A stale AmneziaWG/WireGuard
@@ -114,8 +123,9 @@ spoken “yes” must not create a lasting permission.
 
 ## Remaining architecture work
 
-1. Build a typed capability inventory for installed applications, browsers,
-   VPN clients, audio devices, and supported Windows features.
+1. Extend the typed capability inventory beyond the current application,
+   browser, audio-input, and AmneziaWG/WireGuard snapshot to cover other VPN
+   adapters and supported Windows features.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.

@@ -255,6 +255,9 @@ def test_wake_only_runtime_markers_present() -> None:
     assert "что ты услышал" in astra_main.build_help_text(
         "voice", Settings(assistant_gender="male")
     )
+    assert "что доступно на этом компьютере" in astra_main.build_help_text(
+        "system", Settings()
+    )
 
 
 def main() -> None:

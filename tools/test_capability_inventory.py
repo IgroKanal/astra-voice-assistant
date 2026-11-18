@@ -21,10 +21,11 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_audio_inputs", return_value=devices), \
              patch("src.capability_inventory.discover_audio_outputs", return_value=(object(), object(), object())), \
              patch("src.capability_inventory.discover_network_adapter_inventory", return_value=NetworkAdapterInventory(4, 2)), \
-             patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=("WireGuardTunnel$private",)):
+             patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=("WireGuardTunnel$private",)), \
+             patch("src.capability_inventory.discover_windows_ras_profile_names", return_value=("Private VPN", "Work dial-up")):
             inventory = discover_capability_inventory()
 
-        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 4, 2, 1))
+        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 4, 2, 1, 2))
         summary = inventory.describe()
         self.assertIn("приложений для запуска обнаружено: 1", summary)
         self.assertIn("входных аудиоустройств обнаружено: 2", summary)
@@ -32,9 +33,13 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertIn("виртуальных адаптеров: 2", summary)
         self.assertIn("конкретный клиент не определён", summary)
         self.assertIn("системный браузер по умолчанию найден", summary)
+        self.assertIn("профилей Windows RAS обнаружено: 2", summary)
+        self.assertIn("среди них могут быть VPN и dial-up", summary)
         self.assertNotIn("Private editor", summary)
         self.assertNotIn("private.exe", summary)
         self.assertNotIn("WireGuardTunnel$private", summary)
+        self.assertNotIn("Private VPN", summary)
+        self.assertNotIn("Work dial-up", summary)
         self.assertIn("не выдаёт разрешений", summary)
 
     def test_failed_discovery_source_is_reported_as_unknown_not_as_empty(self):
@@ -43,7 +48,8 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_audio_inputs", return_value=()), \
              patch("src.capability_inventory.discover_audio_outputs", side_effect=OSError), \
              patch("src.capability_inventory.discover_network_adapter_inventory", return_value=None), \
-             patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()):
+             patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()), \
+             patch("src.capability_inventory.discover_windows_ras_profile_names", side_effect=OSError):
             inventory = discover_capability_inventory()
 
         self.assertIsNone(inventory.registered_applications)
@@ -55,6 +61,8 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertIsNone(inventory.network_adapters)
         self.assertIsNone(inventory.virtual_network_adapters)
         self.assertEqual(inventory.supported_vpn_tunnels, 0)
+        self.assertIsNone(inventory.windows_ras_profiles)
+        self.assertIn("профили удалённого доступа Windows прочитать не удалось", inventory.describe())
         self.assertIn("список браузеров прочитать не удалось", inventory.describe())
 
     def test_inventory_query_is_a_system_info_command(self):

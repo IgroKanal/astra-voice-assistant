@@ -12,6 +12,7 @@ from src.system_discovery import (
     discover_windows_browsers,
 )
 from src.network_adapter_discovery import discover_network_adapter_inventory
+from src.ras_discovery import discover_windows_ras_profile_names
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class CapabilityInventory:
     network_adapters: int | None
     virtual_network_adapters: int | None
     supported_vpn_tunnels: int | None
+    windows_ras_profiles: int | None = None
 
     def describe(self) -> str:
         parts = []
@@ -84,6 +86,14 @@ class CapabilityInventory:
                 "это не исключает другие VPN-клиенты"
             )
 
+        if self.windows_ras_profiles is None:
+            parts.append("профили удалённого доступа Windows прочитать не удалось")
+        else:
+            parts.append(
+                f"профилей Windows RAS обнаружено: {self.windows_ras_profiles}; "
+                "среди них могут быть VPN и dial-up подключения, ими Astra пока не управляет"
+            )
+
         parts.append(
             "Это только инвентаризация: запуск нового приложения требует "
             "подтверждения, а обнаружение само по себе не выдаёт разрешений."
@@ -126,6 +136,7 @@ def discover_capability_inventory() -> CapabilityInventory:
     )
     network = discover_network_adapter_inventory()
     vpn_count = _read_count(discover_vpn_tunnel_services, lambda items: len(items))
+    ras_count = _read_count(discover_windows_ras_profile_names, lambda items: len(items))
     return CapabilityInventory(
         registered_applications=application_count,
         browsers=browser_count,
@@ -137,4 +148,5 @@ def discover_capability_inventory() -> CapabilityInventory:
             network.virtual_adapter_count if network is not None else None
         ),
         supported_vpn_tunnels=vpn_count,
+        windows_ras_profiles=ras_count,
     )

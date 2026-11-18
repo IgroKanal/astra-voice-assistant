@@ -51,8 +51,17 @@ Timeout or failed recognition cancels the pending request.
 The wake-only command «что доступно на этом компьютере» takes a fresh, read-only
 snapshot of registered applications, browsers and the system default, audio
 inputs and outputs, Windows network adapters, and supported AmneziaWG/WireGuard
-tunnels. Audio endpoint enumeration reads metadata only and does not open a
-microphone or playback stream. Network discovery counts Windows components
+tunnels, plus native Windows RAS phonebook profiles. RAS discovery checks that
+Remote Access Connection Manager (`RasMan`) is already running before loading
+`rasapi32.dll`, because loading that library can start the service. It then
+calls the read-only `RasEnumEntriesW` API and retains profile names only in the
+transient discovery result; the voice summary includes only a count. RAS
+profiles can represent VPN or dial-up connections, so this count is not
+reported as a VPN count and does not imply that Astra can manage those
+profiles. No credentials are queried and no connection is started or stopped.
+Audio endpoint
+enumeration reads metadata only and does not open a microphone or playback
+stream. Network discovery counts Windows components
 marked with the NDIS `NCF_VIRTUAL` characteristic (`0x1`); this can include
 VPN, virtual-machine and container adapters and does not identify a particular
 client. It reports counts and availability
@@ -134,10 +143,12 @@ spoken “yes” must not create a lasting permission.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.
-4. Expand VPN discovery to additional client adapters. The current
-   AmneziaWG/WireGuard resolver honors a valid per-user preference, auto-selects
-   only a unique discovered tunnel, and asks for an exact numbered voice choice
-   when the configured service is stale and several candidates exist.
+4. Expand VPN discovery to additional client adapters. Native Windows RAS
+   profile names are now included as a separate read-only count, but the
+   profiles may be VPN or dial-up and are not yet controllable by Astra. The
+   current AmneziaWG/WireGuard resolver honors a valid per-user preference,
+   auto-selects only a unique discovered tunnel, and asks for an exact numbered
+   voice choice when the configured service is stale and several candidates exist.
    Microphone selection uses a per-user hashed name/host-API fingerprint and
    refuses to guess when duplicate devices match; Windows Core Audio endpoint
    IDs remain a stronger option for identical devices.

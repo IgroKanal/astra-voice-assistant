@@ -45,15 +45,16 @@ Timeout or failed recognition cancels the pending request.
 
 At startup, Astra inspects registered AmneziaWG and WireGuard tunnel services.
 An explicit per-user choice wins when that service is still present; otherwise
-an explicit `.env` choice is kept when present, and exactly one discovered
-tunnel is selected automatically. If several candidates remain, the resolver
-does not choose one. This selected service is then used by the existing VPN
-controller, whose connect/disconnect operations now require a one-time
-confirmation. The user choice is stored in the versioned per-user override
-file, separate from `.env`; version 1 preference files remain readable. The
-current detector still recognizes only AmneziaWG/WireGuard tunnel services and
-does not detect every commercial or Windows-native VPN client. No VPN state
-was changed during automated tests.
+an explicit `.env` choice is kept when present. A stale AmneziaWG/WireGuard
+service name can adapt to the single currently discovered tunnel, while an
+unknown explicit service name is preserved for a client outside this adapter.
+If several supported candidates remain, the resolver does not choose one. The
+selected supported service is used by the existing VPN controller, whose
+connect/disconnect operations require a one-time confirmation. The user choice
+is stored in the versioned per-user override file, separate from `.env`; version
+1 preference files remain readable. The current detector recognizes only
+AmneziaWG/WireGuard tunnel services and does not detect every commercial or
+Windows-native VPN client. No VPN state was changed during automated tests.
 
 When a user saves a microphone selection, the encrypted per-user profile stores
 a SHA-256 fingerprint of its normalized device name and host API, not the raw

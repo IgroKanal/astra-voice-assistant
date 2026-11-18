@@ -26,10 +26,26 @@ class VpnDiscoveryTests(unittest.TestCase):
             resolve_vpn_service_preference('AmneziaWGTunnel$work', '', discovered),
             'AmneziaWGTunnel$work',
         )
+        self.assertEqual(
+            resolve_vpn_service_preference(
+                'WireGuardTunnel$home', 'AmneziaWGTunnel$work', discovered
+            ),
+            'AmneziaWGTunnel$work',
+        )
         self.assertEqual(resolve_vpn_service_preference('', '', discovered), '')
         self.assertEqual(
-            resolve_vpn_service_preference('stale', '', ('WireGuardTunnel$home',)),
+            resolve_vpn_service_preference(
+                'WireGuardTunnel$stale', '', ('WireGuardTunnel$home',)
+            ),
             'WireGuardTunnel$home',
+        )
+        self.assertEqual(
+            resolve_vpn_service_preference('WireGuardTunnel$old', '', ('WireGuardTunnel$new',)),
+            'WireGuardTunnel$new',
+        )
+        self.assertEqual(
+            resolve_vpn_service_preference('OpenVPNService', '', ('WireGuardTunnel$home',)),
+            '',
         )
         self.assertEqual(
             resolve_vpn_service_preference('', 'WireGuardTunnel$bad*name', discovered),

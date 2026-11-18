@@ -242,7 +242,7 @@ def resolve_vpn_service_preference(
     override_preference: str,
     discovered_services: tuple[str, ...],
 ) -> str:
-    """Resolve only to a currently discovered service; never guess among several."""
+    """Resolve to a current supported service without replacing custom config."""
     candidates: dict[str, str] = {}
     for service in discovered_services:
         if isinstance(service, str) and _VPN_SERVICE_NAME_RE.fullmatch(service):
@@ -255,6 +255,11 @@ def resolve_vpn_service_preference(
             match = candidates.get(clean.casefold())
             if match:
                 return match
+    configured = configured_preference.strip() if isinstance(configured_preference, str) else ""
+    if configured and not configured.casefold().startswith(_VPN_TUNNEL_PREFIXES):
+        # Preserve an explicit service for another VPN client that this
+        # bounded discovery adapter does not recognize.
+        return ""
     if len(candidates) == 1:
         return next(iter(candidates.values()))
     return ""

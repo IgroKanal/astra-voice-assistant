@@ -65,6 +65,7 @@ from src.system_discovery import (
     discover_registered_applications,
     discover_vpn_tunnel_services,
     discover_windows_browsers,
+    is_supported_vpn_tunnel_service,
     merge_discovered_browsers,
     resolve_browser_preference,
     resolve_vpn_service_preference,
@@ -149,6 +150,7 @@ _ROUTER_BLOCKED_ACTION_TYPES = {
 
 _REQUIRES_WAKE_TARGET = "__requires_wake__"
 _PENDING_TTL_SECONDS = 20.0
+_MAX_VPN_VOICE_CHOICES = 9
 
 
 @dataclass
@@ -160,6 +162,9 @@ class TurnState:
     pending_kind: str = ""
     pending_created_at: float = 0.0
     pending_confirmation_action: AssistantAction | None = None
+    pending_confirmation_vpn_service: str = ""
+    pending_vpn_action: AssistantAction | None = None
+    pending_vpn_services: tuple[str, ...] = ()
     pending_discovered_app: object | None = None
     pending_app_identity: tuple[int, int, int, int] | None = None
     last_context_kind: str = ""
@@ -421,6 +426,9 @@ def clear_pending(state: TurnState) -> None:
     state.pending_kind = ""
     state.pending_created_at = 0.0
     state.pending_confirmation_action = None
+    state.pending_confirmation_vpn_service = ""
+    state.pending_vpn_action = None
+    state.pending_vpn_services = ()
     state.pending_discovered_app = None
     state.pending_app_identity = None
 
@@ -434,6 +442,36 @@ def pending_is_active(state: TurnState) -> bool:
     if not state.pending_kind:
         return False
     return time.monotonic() - state.pending_created_at <= _PENDING_TTL_SECONDS
+
+
+def _vpn_choice_index(answer: str, count: int) -> int | None:
+    """Parse a bounded, exact ordinal answer without accepting service text."""
+    if not 1 <= count <= _MAX_VPN_VOICE_CHOICES:
+        return None
+    ordinals = {
+        "1": 0, "один": 0, "одна": 0, "первый": 0, "первая": 0, "первое": 0, "номер один": 0,
+        "2": 1, "два": 1, "две": 1, "второй": 1, "вторая": 1, "второе": 1, "номер два": 1,
+        "3": 2, "три": 2, "третий": 2, "третья": 2, "третье": 2, "номер три": 2,
+        "4": 3, "четыре": 3, "четвёртый": 3, "четвертый": 3, "четвёртая": 3, "четвертая": 3,
+        "четвёртое": 3, "четвертое": 3, "номер четыре": 3,
+        "5": 4, "пять": 4, "пятый": 4, "пятая": 4, "пятое": 4, "номер пять": 4,
+        "6": 5, "шесть": 5, "шестой": 5, "шестая": 5, "шестое": 5, "номер шесть": 5,
+        "7": 6, "семь": 6, "седьмой": 6, "седьмая": 6, "седьмое": 6, "номер семь": 6,
+        "8": 7, "восемь": 7, "восьмой": 7, "восьмая": 7, "восьмое": 7, "номер восемь": 7,
+        "9": 8, "девять": 8, "девятый": 8, "девятая": 8, "девятое": 8, "номер девять": 8,
+    }
+    index = ordinals.get(normalize_text(answer))
+    return index if index is not None and index < count else None
+
+
+def _vpn_service_choice_label(service_name: str, number: int) -> str:
+    """Build a short voice label from a discovered service, never user speech."""
+    folded = service_name.casefold()
+    provider = "WireGuard" if folded.startswith("wireguardtunnel$") else "AmneziaWG"
+    profile = service_name.partition("$")[2]
+    profile = re.sub(r"[^\w.-]", " ", profile, flags=re.UNICODE)
+    profile = " ".join(profile.split())[:24]
+    return f"{number}. {provider}" + (f" {profile}" if profile else "")
 
 
 def remember_context(ctx: TurnContext, kind: str, target: str) -> None:
@@ -1235,6 +1273,44 @@ def handle_action(
     Возвращает False, если нужно завершить приложение.
     """
     decision = ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(action)
+    vpn_selection_required: tuple[str, ...] = ()
+    vpn_setup_error = ""
+    selected_vpn_before = ""
+    if (decision.allowed and action.type == ActionType.VPN_CONTROL
+            and (action.target or action.query) in {"connect", "disconnect"}
+            and isinstance(ctx.vpn, VpnController)):
+        if not ctx.vpn.settings.vpn_enabled:
+            vpn_setup_error = "VPN-команды отключены в настройках."
+        else:
+            selected_vpn_before = ctx.vpn.tunnel_service
+            if not selected_vpn_before or is_supported_vpn_tunnel_service(selected_vpn_before):
+                try:
+                    candidates = ctx.vpn.available_tunnel_services()
+                except (OSError, ValueError):
+                    candidates = ()
+                selected_match = next(
+                    (item for item in candidates
+                     if selected_vpn_before and item.casefold() == selected_vpn_before.casefold()),
+                    "",
+                )
+                if selected_match:
+                    if selected_match != selected_vpn_before:
+                        ctx.vpn.select_discovered_tunnel(selected_match)
+                elif len(candidates) == 1:
+                    selection = ctx.vpn.select_discovered_tunnel(candidates[0])
+                    if not selection.selected:
+                        vpn_setup_error = "Список VPN-подключений изменился. Повтори команду."
+                elif len(candidates) > 1:
+                    if len(candidates) > _MAX_VPN_VOICE_CHOICES:
+                        vpn_setup_error = "Найдено слишком много VPN-туннелей. Укажи нужный в настройках Astra."
+                    else:
+                        vpn_selection_required = candidates
+                elif not selected_vpn_before:
+                    vpn_setup_error = "Совместимые VPN-туннели не найдены. Проверь настройки VPN."
+    if confirmation_accepted and selected_vpn_before:
+        current_vpn = getattr(ctx.vpn, "tunnel_service", "")
+        if current_vpn and current_vpn.casefold() != selected_vpn_before.casefold():
+            confirmation_accepted = False
     close_target = action.target or action.query
     is_non_action_close_sentinel = (
         action.type == ActionType.CLOSE_APP
@@ -1250,27 +1326,47 @@ def handle_action(
         and not is_non_action_close_sentinel
     )
     if getattr(ctx, "audit", None) is not None:
-        if not decision.allowed:
+        if not decision.allowed or vpn_setup_error:
             audit_outcome = "blocked"
+        elif vpn_selection_required:
+            audit_outcome = "choice_requested"
         elif confirmation_required:
             audit_outcome = "confirmation_requested"
         else:
             audit_outcome = "dispatch_allowed"
         ctx.audit(getattr(action.type, "value", "unknown"), audit_outcome)
     ctx.logger.info(
-        "policy action=%s source=%s allowed=%s confirmation=%s scope=%s",
+        "policy action=%s source=%s allowed=%s confirmation=%s choice=%s scope=%s",
         getattr(action.type, "value", "invalid"),
         action.source,
         decision.allowed,
         confirmation_required,
+        bool(vpn_selection_required),
         decision.scope,
     )
     if not decision.allowed:
         ctx.respond(decision.reason)
         return True
+    if vpn_setup_error:
+        ctx.respond(vpn_setup_error)
+        return True
+    if vpn_selection_required:
+        set_pending(ctx.state, "vpn_service_selection")
+        ctx.state.pending_vpn_action = action
+        ctx.state.pending_vpn_services = vpn_selection_required
+        labels = "; ".join(
+            _vpn_service_choice_label(service, index)
+            for index, service in enumerate(vpn_selection_required, start=1)
+        )
+        ctx.respond(
+            f"Найдено несколько VPN-подключений: {labels}. Назови номер нужного."
+        )
+        return True
     if confirmation_required:
         set_pending(ctx.state, "action_confirmation")
         ctx.state.pending_confirmation_action = action
+        if action.type == ActionType.VPN_CONTROL and isinstance(ctx.vpn, VpnController):
+            ctx.state.pending_confirmation_vpn_service = ctx.vpn.tunnel_service
         ctx.respond(action_confirmation_prompt(action))
         return True
 
@@ -2148,6 +2244,10 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             clear_pending(ctx.state)
             ctx.respond("Подтверждение не распознано. Действие отменено.")
             return True
+        if ctx.state.pending_kind == "vpn_service_selection":
+            clear_pending(ctx.state)
+            ctx.respond("Выбор VPN не распознан. Команда отменена.")
+            return True
         ctx.respond(character_phrase(ctx.settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
         return True
 
@@ -2188,9 +2288,53 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
         ctx.respond("Открываю.")
         return True
 
+    if ctx.state.pending_kind == "vpn_service_selection":
+        active = pending_is_active(ctx.state)
+        pending_action = ctx.state.pending_vpn_action
+        choices = ctx.state.pending_vpn_services
+        answer = normalize_text(_strip_wake_prefix_for_follow_up(raw_text, ctx.settings))
+        clear_pending(ctx.state)
+        if answer in {"нет", "отмена", "отмени", "не надо"}:
+            ctx.respond("Выбор VPN отменён.")
+            return True
+        index = _vpn_choice_index(answer, len(choices))
+        if not active:
+            if index is None:
+                return process_turn(raw_text, ctx)
+            ctx.respond("Время выбора VPN истекло. Повтори команду.")
+            return True
+        if index is None:
+            # A new command replaces the pending choice and follows normal
+            # wake/action validation; it cannot become a service name.
+            return process_turn(raw_text, ctx)
+        if pending_action is None or not isinstance(ctx.vpn, VpnController):
+            ctx.respond("Выбор VPN отменён. Повтори команду.")
+            return True
+        selected = choices[index]
+        try:
+            current = ctx.vpn.available_tunnel_services()
+        except (OSError, ValueError):
+            current = ()
+        current_match = next(
+            (item for item in current if item.casefold() == selected.casefold()),
+            "",
+        )
+        if not current_match:
+            ctx.respond("Список VPN-подключений изменился. Повтори команду.")
+            return True
+        selection = ctx.vpn.select_discovered_tunnel(current_match, remember=True)
+        if not selection.selected:
+            ctx.respond("Не удалось выбрать VPN-подключение. Повтори команду.")
+            return True
+        if not selection.remembered:
+            ctx.respond("Выбор VPN сохранён только до перезапуска.")
+        handle_action(pending_action, ctx)
+        return True
+
     if ctx.state.pending_kind == "action_confirmation":
         active = pending_is_active(ctx.state)
         pending_action = ctx.state.pending_confirmation_action
+        pending_vpn_service = ctx.state.pending_confirmation_vpn_service
         answer = normalize_text(_strip_wake_prefix_for_follow_up(raw_text, ctx.settings))
         clear_pending(ctx.state)
         if answer in {"нет", "отмена", "отмени", "не надо"}:
@@ -2214,6 +2358,12 @@ def process_turn(raw_text: str, ctx: TurnContext) -> bool:
             return True
         if not decision.requires_confirmation:
             ctx.respond("Действие изменилось. Повтори команду.")
+            return True
+        if (pending_action.type == ActionType.VPN_CONTROL
+                and (pending_action.target or pending_action.query) in {"connect", "disconnect"}
+                and isinstance(ctx.vpn, VpnController)
+                and not ctx.vpn.selected_tunnel_is_current(pending_vpn_service)):
+            ctx.respond("VPN-подключение изменилось. Повтори команду и подтверди заново.")
             return True
         handle_action(pending_action, ctx, confirmation_accepted=True)
         return True
@@ -2451,6 +2601,7 @@ def _listen_pending_voice_follow_up(
             logger.info("Pending command session timeout/unknown: %s", follow_up.error)
             file_confirmation = ctx.state.pending_kind == "file_mutation_confirmation"
             action_confirmation = ctx.state.pending_kind == "action_confirmation"
+            vpn_selection = ctx.state.pending_kind == "vpn_service_selection"
             if file_confirmation and ctx.file_mutation is not None:
                 ctx.file_mutation.cancel()
             clear_pending(ctx.state)
@@ -2460,6 +2611,8 @@ def _listen_pending_voice_follow_up(
                 ctx.respond("Подтверждение не распознано. Файловое действие отменено.")
             elif action_confirmation:
                 ctx.respond("Подтверждение не распознано. Действие отменено.")
+            elif vpn_selection:
+                ctx.respond("Выбор VPN не распознан. Команда отменена.")
             else:
                 ctx.respond(character_phrase(settings, female="Не расслышала, повтори.", male="Не расслышал, повтори."))
             return True
@@ -2796,8 +2949,9 @@ def main() -> int:
         browser_discovery = BrowserDiscovery({})
     apps = merge_discovered_browsers(apps, browser_discovery)
 
+    capability_override_store = CapabilityOverrideStore()
     try:
-        capability_overrides = CapabilityOverrideStore().load()
+        capability_overrides = capability_override_store.load()
     except (OSError, ValueError):
         # A damaged preference file must not prevent the voice runtime from
         # starting; the current Windows default remains available.
@@ -2873,7 +3027,11 @@ def main() -> int:
     )
     folders = FolderController(logger=logger)
     system = SystemController(logger=logger)
-    vpn = VpnController(settings=settings, logger=logger)
+    vpn = VpnController(
+        settings=settings,
+        logger=logger,
+        override_store=capability_override_store if capability_overrides is not None else None,
+    )
     windows = WindowController(
         logger=logger,
         browser_preferred=browser_process,

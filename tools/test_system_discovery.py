@@ -192,6 +192,11 @@ class DiscoveryTests(unittest.TestCase):
                 store.save(CapabilityOverrides('C:\\evil.exe'))
             store.save(CapabilityOverrides('chrome', ('browser',)))
             self.assertEqual(store.load().disabled_auto_scopes, ('browser',))
+            store.set_vpn_service_preferred('WireGuardTunnel$home')
+            updated = store.load()
+            self.assertEqual(updated.browser_preferred, 'chrome')
+            self.assertEqual(updated.disabled_auto_scopes, ('browser',))
+            self.assertEqual(updated.vpn_service_preferred, 'WireGuardTunnel$home')
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides(disabled_auto_scopes=({},)))
             with self.assertRaises(ValueError):

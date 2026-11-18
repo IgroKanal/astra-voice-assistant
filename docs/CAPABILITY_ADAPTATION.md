@@ -50,9 +50,13 @@ service name can adapt to the single currently discovered tunnel, while an
 unknown explicit service name is preserved for a client outside this adapter.
 If several supported candidates remain, the resolver does not choose one. The
 selected supported service is used by the existing VPN controller, whose
-connect/disconnect operations require a one-time confirmation. The user choice
-is stored in the versioned per-user override file, separate from `.env`; version
-1 preference files remain readable. The current detector recognizes only
+connect/disconnect operations require a one-time confirmation. At action time,
+if no configured preference resolves and several supported services remain,
+voice asks for an ordinal from 1 to 9, rechecks the exact selected service,
+stores that preference separately, and then asks for the action confirmation.
+User speech is never used as a service name. The user choice is stored in the
+versioned per-user override file, separate from `.env`; version 1 preference
+files remain readable. The current detector recognizes only
 AmneziaWG/WireGuard tunnel services and does not detect every commercial or
 Windows-native VPN client. No VPN state was changed during automated tests.
 
@@ -108,9 +112,10 @@ spoken “yes” must not create a lasting permission.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.
-4. Expand VPN discovery to additional client adapters and a voice-friendly
-   choice flow. The current AmneziaWG/WireGuard resolver honors a valid
-   per-user preference and auto-selects only a unique discovered tunnel.
+4. Expand VPN discovery to additional client adapters. The current
+   AmneziaWG/WireGuard resolver honors a valid per-user preference, auto-selects
+   only a unique discovered tunnel, and asks for an exact numbered voice choice
+   when the configured service is stale and several candidates exist.
    Microphone selection uses a per-user hashed name/host-API fingerprint and
    refuses to guess when duplicate devices match; Windows Core Audio endpoint
    IDs remain a stronger option for identical devices.

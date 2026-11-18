@@ -232,9 +232,14 @@ def discover_vpn_tunnel_services(*, registry: Any | None = None) -> tuple[str, .
         return ()
     services = _registry_subkeys(registry, root, _SERVICE_REGISTRY, max_entries=8192)
     return tuple(name for name in services
-                 if isinstance(name, str)
-                 and name.casefold().startswith(_VPN_TUNNEL_PREFIXES)
-                 and _VPN_SERVICE_NAME_RE.fullmatch(name))
+                 if is_supported_vpn_tunnel_service(name))
+
+
+def is_supported_vpn_tunnel_service(name: Any) -> bool:
+    """Accept only exact service names understood by the tunnel adapter."""
+    return (isinstance(name, str)
+            and bool(_VPN_SERVICE_NAME_RE.fullmatch(name))
+            and name.casefold().startswith(_VPN_TUNNEL_PREFIXES))
 
 
 def resolve_vpn_service_preference(
@@ -256,7 +261,7 @@ def resolve_vpn_service_preference(
             if match:
                 return match
     configured = configured_preference.strip() if isinstance(configured_preference, str) else ""
-    if configured and not configured.casefold().startswith(_VPN_TUNNEL_PREFIXES):
+    if configured and not is_supported_vpn_tunnel_service(configured):
         # Preserve an explicit service for another VPN client that this
         # bounded discovery adapter does not recognize.
         return ""

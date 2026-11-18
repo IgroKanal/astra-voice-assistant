@@ -15,6 +15,7 @@ ACTIONS = frozenset(item.value for item in ActionType) | frozenset({
 })
 OUTCOMES = frozenset({
     "dispatch_allowed",
+    "choice_requested",
     "confirmation_requested",
     "blocked",
     "succeeded",

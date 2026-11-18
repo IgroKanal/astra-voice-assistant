@@ -56,10 +56,12 @@ class AuditTests(unittest.TestCase):
     def test_confirmation_request_is_a_valid_metadata_outcome(self):
         with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:
             audit = ActionAudit(Path(temp) / "audit.sqlite")
+            audit.record("vpn_control", "choice_requested")
             audit.record("close_app", "confirmation_requested")
             rows = audit.recent()
-            self.assertEqual(len(rows), 1)
+            self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0][1:3], ("close_app", "confirmation_requested"))
+            self.assertEqual(rows[1][1:3], ("vpn_control", "choice_requested"))
 
     def test_clear_overwrites_event_data_and_is_repeatable(self):
         with tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp") as temp:

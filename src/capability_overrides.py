@@ -1,7 +1,7 @@
 """Per-user adaptive capability preferences, kept separate from app config."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -98,3 +98,9 @@ class CapabilityOverrideStore:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+    def set_vpn_service_preferred(self, service_name: str) -> None:
+        """Update the VPN choice without overwriting other user preferences."""
+        selected = CapabilityOverrides(vpn_service_preferred=service_name).validate()
+        current = self.load()
+        self.save(replace(current, vpn_service_preferred=selected.vpn_service_preferred))

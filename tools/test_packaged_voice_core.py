@@ -13,6 +13,8 @@ class VoiceCorePackageTests(unittest.TestCase):
             "src.assistant_persona",
             "src.runtime_events",
             "src.audio_device_discovery",
+            "src.vpn_controller",
+            "src.windows_service_control",
         }
         validate_voice_core_modules(required)
         for missing in required:

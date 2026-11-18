@@ -58,7 +58,14 @@ calls the read-only `RasEnumEntriesW` API and retains profile names only in the
 transient discovery result; the voice summary includes only a count. RAS
 profiles can represent VPN or dial-up connections, so this count is not
 reported as a VPN count and does not imply that Astra can manage those
-profiles. No credentials are queried and no connection is started or stopped.
+profiles. A second read-only pass asks `RasGetEntryPropertiesW` for the native
+entry type and reports a separate count only for entries Windows identifies as
+VPN. The code uses the documented `RASENTRYW` layout but reads only `dwType`;
+other profile fields are discarded. If a profile cannot be classified, the VPN
+count is marked unavailable rather than guessing. Classification is capped at
+128 entries per snapshot and rejects remote phonebook paths. No credentials are
+queried, no profile names are spoken, and no connection is started or stopped.
+Detecting a Windows VPN profile does not yet mean Astra can connect to it.
 Audio endpoint
 enumeration reads metadata only and does not open a microphone or playback
 stream. Network discovery counts Windows components
@@ -163,10 +170,10 @@ spoken “yes” must not create a lasting permission.
 2. Separate discovered inventory, per-user overrides, and authorization state.
 3. Keep ordinary reversible actions available by default; request confirmation
    immediately before sensitive or irreversible operations.
-4. Expand VPN discovery to additional client adapters. Native Windows RAS
-   profile names are now included as a separate read-only count, but the
-   profiles may be VPN or dial-up and are not yet controllable by Astra. The
-   current AmneziaWG/WireGuard resolver honors a valid per-user preference,
+4. Expand VPN discovery and then add explicitly confirmed adapters. Native
+   Windows RAS profiles are classified as VPN or non-VPN using their Windows
+   entry type, but RAS profile management is not implemented. The current
+   AmneziaWG/WireGuard resolver honors a valid per-user preference,
    auto-selects only a unique discovered tunnel, and asks for an exact numbered
    voice choice when the configured service is stale and several candidates exist.
    Microphone selection uses a per-user hashed name/host-API fingerprint and

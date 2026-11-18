@@ -4,12 +4,19 @@ from unittest.mock import patch
 
 from src.ras_discovery import (
     _RasEntryNameW,
+    _RasEntryW,
+    _create_ras_entry_type_reader,
     _enumerate_native_ras_entries,
+    discover_windows_ras_vpn_profile_names,
     discover_windows_ras_profile_names,
 )
 
 
 class RasDiscoveryTests(unittest.TestCase):
+    def test_rasentry_vpn_type_offset_matches_windows_sdk_layout(self):
+        self.assertEqual(_RasEntryW.dwType.offset, 3496)
+        self.assertEqual(ctypes.sizeof(_RasEntryW), 6724)
+
     def test_names_are_bounded_deduplicated_and_not_assumed_to_be_vpns(self):
         names = discover_windows_ras_profile_names(
             enumerator=lambda: (
@@ -135,6 +142,123 @@ class RasDiscoveryTests(unittest.TestCase):
             )
         self.assertEqual(function.calls, 2)
         self.assertTrue(function.argtypes)
+
+    def test_vpn_profile_discovery_classifies_type_and_does_not_report_names(self):
+        records = (
+            ("Office VPN", r"C:\Users\example\rasphone.pbk"),
+            ("Legacy dial-up", r"C:\Users\example\rasphone.pbk"),
+            ("office vpn", r"C:\Users\example\rasphone.pbk"),
+        )
+        calls = []
+
+        def read_type(phonebook_path, entry_name):
+            calls.append((phonebook_path, entry_name))
+            return 2 if entry_name == "Office VPN" else 1
+
+        names = discover_windows_ras_vpn_profile_names(
+            entries_enumerator=lambda: records,
+            type_reader=read_type,
+        )
+        self.assertEqual(names, ("Office VPN",))
+        self.assertEqual(len(calls), 2)
+
+    def test_vpn_profile_unknown_type_makes_snapshot_unknown(self):
+        records = (("Office VPN", r"C:\Users\example\rasphone.pbk"),)
+        self.assertIsNone(discover_windows_ras_vpn_profile_names(
+            entries_enumerator=lambda: records,
+            type_reader=lambda _path, _name: None,
+        ))
+
+    def test_duplicate_names_in_separate_phonebooks_are_classified_separately(self):
+        records = (
+            ("Private", r"C:\Users\example\first.pbk"),
+            ("Private", r"C:\Users\example\second.pbk"),
+        )
+        seen_paths = []
+
+        def read_type(phonebook_path, _entry_name):
+            seen_paths.append(phonebook_path)
+            return 2 if phonebook_path.endswith("second.pbk") else 1
+
+        self.assertEqual(
+            discover_windows_ras_vpn_profile_names(
+                entries_enumerator=lambda: records,
+                type_reader=read_type,
+            ),
+            ("Private",),
+        )
+        self.assertEqual(seen_paths, [records[0][1], records[1][1]])
+
+    def test_type_query_limit_and_remote_phonebook_fail_closed(self):
+        calls = []
+        excessive = tuple(
+            (f"entry-{index}", r"C:\Users\example\rasphone.pbk")
+            for index in range(129)
+        )
+        self.assertIsNone(discover_windows_ras_vpn_profile_names(
+            entries_enumerator=lambda: excessive,
+            type_reader=lambda *_args: calls.append(True) or 2,
+        ))
+        self.assertEqual(calls, [])
+
+        self.assertIsNone(discover_windows_ras_vpn_profile_names(
+            entries_enumerator=lambda: (("remote", r"\\server\share\rasphone.pbk"),),
+            type_reader=lambda *_args: calls.append(True) or 2,
+        ))
+        self.assertEqual(calls, [])
+
+    def test_empty_vpn_profile_inventory_does_not_require_type_reader(self):
+        self.assertEqual(discover_windows_ras_vpn_profile_names(
+            entries_enumerator=lambda: (),
+        ), ())
+
+    def test_rasentry_type_reader_retries_only_bounded_buffer_growth(self):
+        from src import ras_discovery
+
+        calls = []
+
+        class FakeFunction:
+            argtypes = None
+            restype = None
+
+            def __call__(self, phonebook_path, entry_name, entry_pointer,
+                         buffer_size_pointer, device_info, device_size):
+                calls.append((phonebook_path, entry_name, device_info, device_size))
+                buffer_size = ctypes.cast(
+                    buffer_size_pointer, ctypes.POINTER(ctypes.c_uint32)
+                ).contents
+                entry = ctypes.cast(
+                    entry_pointer, ctypes.POINTER(ras_discovery._RasEntryW)
+                ).contents
+                if len(calls) == 1:
+                    buffer_size.value = ctypes.sizeof(_RasEntryW) + 128
+                    return ras_discovery._ERROR_BUFFER_TOO_SMALL
+                entry.dwType = ras_discovery._RASET_VPN
+                return ras_discovery._ERROR_SUCCESS
+
+        class FakeLibrary:
+            RasGetEntryPropertiesW = FakeFunction()
+
+        real_sizeof = ctypes.sizeof
+
+        def windows_sizeof(value):
+            if value is ctypes.c_wchar:
+                return 2
+            return real_sizeof(value)
+
+        with patch.object(ras_discovery.os, "name", "nt"), \
+             patch.object(ras_discovery, "_rasman_is_running", return_value=True), \
+             patch.object(ras_discovery.ctypes, "sizeof", side_effect=windows_sizeof), \
+             patch.object(ras_discovery.ctypes, "WinDLL", return_value=FakeLibrary(), create=True):
+            reader = _create_ras_entry_type_reader()
+            self.assertIsNotNone(reader)
+            self.assertEqual(
+                reader(r"C:\Users\example\rasphone.pbk", "Office VPN"), 2
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0:2], (r"C:\Users\example\rasphone.pbk", "Office VPN"))
+        self.assertEqual(calls[0][2:], (None, None))
 
 
 if __name__ == "__main__":

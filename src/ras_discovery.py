@@ -19,6 +19,7 @@ _MAX_RAS_ENTRIES = 4096
 _MAX_RAS_TYPE_QUERIES = 128
 _MAX_RAS_BUFFER = 4 * 1024 * 1024
 _RASET_VPN = 2
+_MAX_RAS_CONNECTIONS = 128
 
 
 class _RasEntryNameW(ctypes.Structure):
@@ -42,6 +43,28 @@ class _Guid(ctypes.Structure):
         ("data2", ctypes.c_uint16),
         ("data3", ctypes.c_uint16),
         ("data4", ctypes.c_uint8 * 8),
+    ]
+
+
+class _Luid(ctypes.Structure):
+    _fields_ = [("low_part", ctypes.c_uint32), ("high_part", ctypes.c_int32)]
+
+
+class _RasConnW(ctypes.Structure):
+    """RASCONNW layout; discovery consumes only the entry and phonebook names."""
+
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("hrasconn", ctypes.c_void_p),
+        ("szEntryName", ctypes.c_wchar * (_MAX_RAS_ENTRY_NAME + 1)),
+        ("szDeviceType", ctypes.c_wchar * 17),
+        ("szDeviceName", ctypes.c_wchar * 129),
+        ("szPhonebook", ctypes.c_wchar * 261),
+        ("dwSubEntry", ctypes.c_uint32),
+        ("guidEntry", _Guid),
+        ("dwFlags", ctypes.c_uint32),
+        ("luid", _Luid),
+        ("guidCorrelationId", _Guid),
     ]
 
 
@@ -239,6 +262,59 @@ def _enumerate_native_ras_entries() -> tuple[str, ...] | None:
     return None if records is None else tuple(name for name, _path in records)
 
 
+def _enumerate_native_ras_connections() -> tuple[tuple[str, str], ...] | None:
+    """Return active RAS entry names and phonebook paths without changing state."""
+    if ctypes.sizeof(ctypes.c_wchar) != 2 or not _rasman_is_running():
+        return None
+    try:
+        rasapi = ctypes.WinDLL("rasapi32.dll")
+        enumerate_connections = rasapi.RasEnumConnectionsW
+        enumerate_connections.argtypes = (
+            ctypes.POINTER(_RasConnW),
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32),
+        )
+        enumerate_connections.restype = ctypes.c_uint32
+
+        buffer_bytes = ctypes.c_uint32(0)
+        connection_count = ctypes.c_uint32(0)
+        result = enumerate_connections(
+            None, ctypes.byref(buffer_bytes), ctypes.byref(connection_count)
+        )
+        if result == _ERROR_SUCCESS:
+            return () if connection_count.value == 0 else None
+        if result != _ERROR_BUFFER_TOO_SMALL:
+            return None
+
+        structure_size = ctypes.sizeof(_RasConnW)
+        required = int(buffer_bytes.value)
+        if (
+            required < structure_size
+            or required > structure_size * _MAX_RAS_CONNECTIONS
+            or required % structure_size
+        ):
+            return None
+        capacity = required // structure_size
+        if not 1 <= capacity <= _MAX_RAS_CONNECTIONS:
+            return None
+
+        connections = (_RasConnW * capacity)()
+        connections[0].dwSize = structure_size
+        buffer_bytes = ctypes.c_uint32(required)
+        connection_count = ctypes.c_uint32(0)
+        result = enumerate_connections(
+            connections, ctypes.byref(buffer_bytes), ctypes.byref(connection_count)
+        )
+        if result != _ERROR_SUCCESS or connection_count.value > capacity:
+            return None
+        return tuple(
+            (connections[index].szEntryName, connections[index].szPhonebook)
+            for index in range(connection_count.value)
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 def discover_windows_ras_profile_names(
     *, enumerator: Callable[[], object] | None = None,
 ) -> tuple[str, ...] | None:
@@ -410,3 +486,77 @@ def discover_windows_ras_vpn_profile_names(
         if entry_type == _RASET_VPN:
             vpn_names.append(name)
     return tuple(vpn_names)
+
+
+def discover_windows_ras_active_vpn_profile_names(
+    *,
+    connections_enumerator: Callable[[], object] | None = None,
+    type_reader: Callable[[str, str], int | None] | None = None,
+) -> tuple[str, ...] | None:
+    """Return names for active RAS connections whose entry type is VPN.
+
+    Names and phonebook paths stay transient and are never logged or included
+    in the spoken inventory. ``None`` means the active snapshot could not be
+    completely classified; an empty tuple means no active RAS VPN was found.
+    """
+    if connections_enumerator is None:
+        if os.name != "nt":
+            return None
+        connections_enumerator = _enumerate_native_ras_connections
+    try:
+        records = connections_enumerator()
+    except Exception:
+        return None
+    if records is None:
+        return None
+    if not isinstance(records, (tuple, list)) or len(records) > _MAX_RAS_CONNECTIONS:
+        return None
+    if not records:
+        return ()
+    if type_reader is None:
+        type_reader = _create_ras_entry_type_reader()
+    if type_reader is None:
+        return None
+
+    active_vpn_names: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for record in records:
+        if (
+            not isinstance(record, (tuple, list))
+            or len(record) != 2
+            or not isinstance(record[0], str)
+            or not isinstance(record[1], str)
+        ):
+            return None
+        name, phonebook_path = (item.strip() for item in record)
+        if (
+            not name
+            or len(name) > _MAX_RAS_ENTRY_NAME
+            or any(ord(character) < 32 for character in name)
+            or len(phonebook_path) > 32767
+            or any(ord(character) < 32 for character in phonebook_path)
+        ):
+            return None
+        # RAS can report a connection created without a phonebook entry as
+        # a dot followed by its number. It cannot be safely matched to a VPN
+        # profile, so do not guess its type.
+        if name.startswith("."):
+            continue
+        drive, _tail = ntpath.splitdrive(phonebook_path)
+        if phonebook_path and (
+            not ntpath.isabs(phonebook_path) or drive.startswith("\\\\")
+        ):
+            return None
+        key = (phonebook_path.casefold(), name.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            entry_type = type_reader(phonebook_path, name)
+        except Exception:
+            return None
+        if entry_type is None:
+            return None
+        if entry_type == _RASET_VPN:
+            active_vpn_names.append(name)
+    return tuple(active_vpn_names)

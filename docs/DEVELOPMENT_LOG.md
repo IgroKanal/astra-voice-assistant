@@ -1,5 +1,26 @@
 # Astra — журнал автономной разработки
 
+## 2026-11-19 · read-only обнаружение активных Windows RAS VPN
+
+- К снимку возможностей добавлено перечисление активных Windows RAS-соединений
+  через `RasEnumConnectionsW`; профиль классифицируется по `RASENTRYW.dwType`.
+  В краткий ответ попадает только число активных VPN-профилей, имена, локальные
+  пути и connection handles отбрасываются. Учётные данные не читаются,
+  подключения не меняются. Клиенты со своими закрытыми API по-прежнему требуют
+  отдельных адаптеров.
+- Загрузка `rasapi32.dll` разрешена только после проверки, что `RasMan` уже
+  запущен. Инвентаризация ограничена 128 соединениями, повторные multilink
+  записи схлопываются по профилю; неизвестный тип и удалённая phonebook не
+  классифицируются наугад. Сверка с Microsoft: [RasEnumConnectionsW](https://learn.microsoft.com/en-us/windows/win32/api/ras/nf-ras-rasenumconnectionsw)
+  и [RASCONN](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/legacy/aa376725(v=vs.85)).
+- Проверки: 23 targeted RAS/inventory-теста и полный набор из 669 тестов прошли
+  (1 штатный пропуск); compileall, wake-runtime и daily-workflow smoke, четыре
+  config validator и Astra Doctor прошли. Локальный Doctor сохраняет
+  необязательное предупреждение, что настроенная AmneziaWG-служба не найдена.
+  Реальный VPN-статус, голос/микрофон и пользовательская приёмка не проверялись;
+  Windows CI для этого изменения ещё предстоит. Версия 3.1.0, этап 3.2 открыт;
+  UI и portable/EXE/installer не менялись и не собирались.
+
 ## 2026-11-19 · SAPI fallback учитывает род активного персонажа
 
 - При автоматическом подборе SAPI-голоса Astra теперь пропускает голос,

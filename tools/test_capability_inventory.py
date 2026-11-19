@@ -23,10 +23,16 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_network_adapter_inventory", return_value=NetworkAdapterInventory(4, 2)), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=("WireGuardTunnel$private",)), \
              patch("src.capability_inventory.discover_windows_ras_profile_names", return_value=("Private VPN", "Work dial-up")), \
-             patch("src.capability_inventory.discover_windows_ras_vpn_profile_names", return_value=("Private VPN",)):
+             patch("src.capability_inventory.discover_windows_ras_vpn_profile_names", return_value=("Private VPN",)), \
+             patch(
+                 "src.capability_inventory.discover_windows_ras_active_vpn_profile_names",
+                 return_value=("Private VPN",),
+             ):
             inventory = discover_capability_inventory()
 
-        self.assertEqual(inventory, CapabilityInventory(1, 1, True, 2, 3, 4, 2, 1, 2, 1))
+        self.assertEqual(
+            inventory, CapabilityInventory(1, 1, True, 2, 3, 4, 2, 1, 2, 1, 1)
+        )
         summary = inventory.describe()
         self.assertIn("приложений для запуска обнаружено: 1", summary)
         self.assertIn("входных аудиоустройств обнаружено: 2", summary)
@@ -37,6 +43,7 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertIn("профилей Windows RAS обнаружено: 2", summary)
         self.assertIn("среди них могут быть VPN и dial-up", summary)
         self.assertIn("VPN-профилей Windows RAS обнаружено: 1", summary)
+        self.assertIn("активных VPN-подключений Windows RAS: 1", summary)
         self.assertIn("подключение через Astra пока не поддерживается", summary)
         self.assertNotIn("Private editor", summary)
         self.assertNotIn("private.exe", summary)
@@ -56,7 +63,11 @@ class CapabilityInventoryTests(unittest.TestCase):
              ), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()), \
              patch("src.capability_inventory.discover_windows_ras_profile_names", side_effect=OSError), \
-             patch("src.capability_inventory.discover_windows_ras_vpn_profile_names", side_effect=OSError):
+             patch("src.capability_inventory.discover_windows_ras_vpn_profile_names", side_effect=OSError), \
+             patch(
+                 "src.capability_inventory.discover_windows_ras_active_vpn_profile_names",
+                 side_effect=RuntimeError,
+             ):
             inventory = discover_capability_inventory()
 
         self.assertIsNone(inventory.registered_applications)
@@ -70,8 +81,13 @@ class CapabilityInventoryTests(unittest.TestCase):
         self.assertEqual(inventory.supported_vpn_tunnels, 0)
         self.assertIsNone(inventory.windows_ras_profiles)
         self.assertIsNone(inventory.windows_ras_vpn_profiles)
+        self.assertIsNone(inventory.active_windows_ras_vpn_profiles)
         self.assertIn("профили удалённого доступа Windows прочитать не удалось", inventory.describe())
         self.assertIn("тип VPN-профилей Windows RAS определить не удалось", inventory.describe())
+        self.assertIn(
+            "состояние активных Windows RAS VPN-подключений прочитать не удалось",
+            inventory.describe(),
+        )
         self.assertIn("список браузеров прочитать не удалось", inventory.describe())
 
     def test_inventory_query_is_a_system_info_command(self):

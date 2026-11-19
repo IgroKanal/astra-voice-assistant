@@ -13,6 +13,7 @@ from src.system_discovery import (
 )
 from src.network_adapter_discovery import discover_network_adapter_inventory
 from src.ras_discovery import (
+    discover_windows_ras_active_vpn_profile_names,
     discover_windows_ras_profile_names,
     discover_windows_ras_vpn_profile_names,
 )
@@ -32,6 +33,7 @@ class CapabilityInventory:
     supported_vpn_tunnels: int | None
     windows_ras_profiles: int | None = None
     windows_ras_vpn_profiles: int | None = None
+    active_windows_ras_vpn_profiles: int | None = None
 
     def describe(self) -> str:
         parts = []
@@ -106,6 +108,16 @@ class CapabilityInventory:
                 "подключение через Astra пока не поддерживается"
             )
 
+        if self.active_windows_ras_vpn_profiles is None:
+            parts.append("состояние активных Windows RAS VPN-подключений прочитать не удалось")
+        elif self.active_windows_ras_vpn_profiles:
+            parts.append(
+                "активных VPN-подключений Windows RAS: "
+                f"{self.active_windows_ras_vpn_profiles}"
+            )
+        else:
+            parts.append("активные VPN-подключения Windows RAS не обнаружены")
+
         parts.append(
             "Это только инвентаризация: запуск нового приложения требует "
             "подтверждения, а обнаружение само по себе не выдаёт разрешений."
@@ -158,6 +170,9 @@ def discover_capability_inventory() -> CapabilityInventory:
     ras_vpn_count = _read_count(
         discover_windows_ras_vpn_profile_names, lambda items: len(items)
     )
+    active_ras_vpn_count = _read_count(
+        discover_windows_ras_active_vpn_profile_names, lambda items: len(items)
+    )
     return CapabilityInventory(
         registered_applications=application_count,
         browsers=browser_count,
@@ -171,4 +186,5 @@ def discover_capability_inventory() -> CapabilityInventory:
         supported_vpn_tunnels=vpn_count,
         windows_ras_profiles=ras_count,
         windows_ras_vpn_profiles=ras_vpn_count,
+        active_windows_ras_vpn_profiles=active_ras_vpn_count,
     )

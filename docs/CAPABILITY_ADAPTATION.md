@@ -69,6 +69,11 @@ count is marked unavailable rather than guessing. Classification is capped at
 128 entries per snapshot and rejects remote phonebook paths. No credentials are
 queried, no profile names are spoken, and no connection is started or stopped.
 Detecting a Windows VPN profile does not yet mean Astra can connect to it.
+The inventory also uses read-only `RasEnumConnectionsW` to find active RAS
+connections, then classifies each against its local phonebook entry. The spoken
+summary reports only the active VPN count; names, phonebook paths and connection
+handles are discarded. This works for Windows RAS-compatible VPN clients but
+does not identify or control clients that use unrelated private APIs.
 Audio endpoint
 enumeration reads metadata only and does not open a microphone or playback
 stream. Network discovery counts Windows components

@@ -5,8 +5,11 @@ from unittest.mock import patch
 from src.ras_discovery import (
     _RasEntryNameW,
     _RasEntryW,
+    _RasConnW,
     _create_ras_entry_type_reader,
+    _enumerate_native_ras_connections,
     _enumerate_native_ras_entries,
+    discover_windows_ras_active_vpn_profile_names,
     discover_windows_ras_vpn_profile_names,
     discover_windows_ras_profile_names,
 )
@@ -143,6 +146,53 @@ class RasDiscoveryTests(unittest.TestCase):
         self.assertEqual(function.calls, 2)
         self.assertTrue(function.argtypes)
 
+    @unittest.skipUnless(ctypes.sizeof(ctypes.c_wchar) == 2, "Windows UTF-16 structure layout")
+    def test_active_connection_enumerator_uses_bounded_read_only_calls(self):
+        from src import ras_discovery
+
+        class FakeFunction:
+            def __init__(self):
+                self.argtypes = None
+                self.restype = None
+                self.calls = 0
+
+            def __call__(self, connections, buffer_bytes, connection_count):
+                self.calls += 1
+                size = ctypes.cast(
+                    buffer_bytes, ctypes.POINTER(ctypes.c_uint32)
+                )
+                count = ctypes.cast(
+                    connection_count, ctypes.POINTER(ctypes.c_uint32)
+                )
+                if connections is None:
+                    size.contents.value = ctypes.sizeof(_RasConnW) * 2
+                    count.contents.value = 2
+                    return ras_discovery._ERROR_BUFFER_TOO_SMALL
+                count.contents.value = 2
+                connections[0].szEntryName = "Office VPN"
+                connections[0].szPhonebook = r"C:\Users\example\rasphone.pbk"
+                connections[1].szEntryName = "Legacy dial-up"
+                connections[1].szPhonebook = r"C:\Users\example\rasphone.pbk"
+                return ras_discovery._ERROR_SUCCESS
+
+        class FakeLibrary:
+            pass
+
+        function = FakeFunction()
+        library = FakeLibrary()
+        library.RasEnumConnectionsW = function
+        with patch.object(ras_discovery, "_rasman_is_running", return_value=True), \
+             patch.object(ras_discovery.ctypes, "WinDLL", return_value=library):
+            self.assertEqual(
+                _enumerate_native_ras_connections(),
+                (
+                    ("Office VPN", r"C:\Users\example\rasphone.pbk"),
+                    ("Legacy dial-up", r"C:\Users\example\rasphone.pbk"),
+                ),
+            )
+        self.assertEqual(function.calls, 2)
+        self.assertTrue(function.argtypes)
+
     def test_vpn_profile_discovery_classifies_type_and_does_not_report_names(self):
         records = (
             ("Office VPN", r"C:\Users\example\rasphone.pbk"),
@@ -168,6 +218,67 @@ class RasDiscoveryTests(unittest.TestCase):
             entries_enumerator=lambda: records,
             type_reader=lambda _path, _name: None,
         ))
+
+    def test_active_vpn_discovery_classifies_only_active_profile_records(self):
+        phonebook = r"C:\Users\example\rasphone.pbk"
+        records = (
+            ("Office VPN", phonebook),
+            ("Legacy dial-up", phonebook),
+            ("office vpn", phonebook),
+            (".5550100", ""),
+        )
+        calls = []
+
+        def read_type(path, name):
+            calls.append((path, name))
+            return 2 if name.casefold() == "office vpn" else 1
+
+        self.assertEqual(
+            discover_windows_ras_active_vpn_profile_names(
+                connections_enumerator=lambda: records,
+                type_reader=read_type,
+            ),
+            ("Office VPN",),
+        )
+        self.assertEqual(calls, [(phonebook, "Office VPN"), (phonebook, "Legacy dial-up")])
+
+    def test_active_vpn_discovery_keeps_empty_and_failed_states_distinct(self):
+        self.assertEqual(
+            discover_windows_ras_active_vpn_profile_names(
+                connections_enumerator=lambda: (),
+            ),
+            (),
+        )
+        self.assertIsNone(
+            discover_windows_ras_active_vpn_profile_names(
+                connections_enumerator=lambda: None,
+            )
+        )
+        self.assertIsNone(
+            discover_windows_ras_active_vpn_profile_names(
+                connections_enumerator=lambda: (("Office VPN", r"\\server\share\rasphone.pbk"),),
+                type_reader=lambda *_args: 2,
+            )
+        )
+        too_many = tuple(
+            (f"entry-{index}", r"C:\Users\example\rasphone.pbk")
+            for index in range(129)
+        )
+        self.assertIsNone(
+            discover_windows_ras_active_vpn_profile_names(
+                connections_enumerator=lambda: too_many,
+                type_reader=lambda *_args: 2,
+            )
+        )
+
+    @unittest.skipUnless(ctypes.sizeof(ctypes.c_wchar) == 2, "Windows UTF-16 structure layout")
+    @patch("src.ras_discovery._rasman_is_running", return_value=False)
+    @patch("src.ras_discovery.ctypes.WinDLL")
+    def test_active_connection_enumerator_does_not_load_ras_api_when_rasman_is_stopped(
+        self, load_library, _running
+    ):
+        self.assertIsNone(_enumerate_native_ras_connections())
+        load_library.assert_not_called()
 
     def test_duplicate_names_in_separate_phonebooks_are_classified_separately(self):
         records = (

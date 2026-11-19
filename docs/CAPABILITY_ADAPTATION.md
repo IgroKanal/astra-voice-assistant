@@ -167,18 +167,18 @@ automatic action (`browser`, `system`). Invalid overrides disable automatic
 mode. Screenshots, URL opening, file access and other actions are not granted
 by this mode. Runtime confirmation now covers closing an application,
 connecting/disconnecting VPN, closing Yandex Music, forgetting a personal-memory
-note and cancelling a reminder. Replacing the remaining
-fixed scope catalog and reviewing risk classification for every action are
-still open.
+note, cancelling reminders and clearing the current dialogue. Replacing the
+remaining fixed scope catalog and reviewing risk classification for every
+action are still open.
 
 The runtime separately marks closing an application, connecting/disconnecting
-VPN, closing Yandex Music, forgetting a personal-memory note and cancelling a
-reminder as actions that need one-time confirmation. The
-exact typed action is held for at most 20 seconds; a changed command cancels
-the pending request, and the action scope is checked again when the user says
-yes. VPN status and ordinary media transport controls remain read-only or
-reversible and do not ask for confirmation. File changes keep their existing
-separate preview-and-confirm transaction.
+VPN, closing Yandex Music, forgetting a personal-memory note, cancelling a
+reminder and clearing the current dialogue as actions that need one-time
+confirmation. The exact typed action is held for at most 20 seconds; a changed
+command cancels the pending request, and the action scope is checked again when
+the user says yes. VPN status and ordinary media transport controls remain
+read-only or reversible and do not ask for confirmation. File changes keep their
+existing separate preview-and-confirm transaction.
 
 Each `ActionType` must have a normal capability scope, a scope derived from a
 typed value (currently keyboard shortcuts), or membership in the small

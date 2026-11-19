@@ -166,6 +166,7 @@ class ActionPolicyTests(unittest.TestCase):
             (AssistantAction(ActionType.VPN_CONTROL, target="status"), False),
             (AssistantAction(ActionType.MEDIA_CONTROL, target="shutdown_yandex_music"), True),
             (AssistantAction(ActionType.MEDIA_CONTROL, target="media_next"), False),
+            (AssistantAction(ActionType.CLEAR_DIALOGUE), True),
             (AssistantAction(ActionType.MEMORY_NOTE, target=MEMORY_FORGET_PREFIX + "secret"), True),
             (AssistantAction(ActionType.MEMORY_NOTE, target="__memory_search__:secret"), False),
             (AssistantAction(ActionType.REMINDER, target=CANCEL_REMINDER_MATCH_PREFIX + "meeting"), True),

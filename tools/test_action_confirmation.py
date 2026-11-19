@@ -115,6 +115,25 @@ class ActionConfirmationTests(unittest.TestCase):
         process_turn("да", self.ctx)
         media.execute.assert_called_once_with("shutdown_yandex_music")
 
+    def test_clearing_dialogue_waits_and_preserves_saved_memory_and_reminders(self):
+        clear_dialogue = Mock()
+        self.ctx.ai_client.clear_dialogue = clear_dialogue
+        action = AssistantAction(ActionType.CLEAR_DIALOGUE, source="local")
+
+        handle_action(action, self.ctx)
+        clear_dialogue.assert_not_called()
+        self.assertEqual(self.ctx.state.pending_kind, "action_confirmation")
+        self.assertIn("Сохранённые заметки и напоминания не изменятся", self.responses[-1])
+
+        process_turn("нет", self.ctx)
+        clear_dialogue.assert_not_called()
+        self.assertEqual(self.ctx.state.pending_kind, "")
+
+        handle_action(action, self.ctx)
+        process_turn("да", self.ctx)
+        clear_dialogue.assert_called_once_with()
+        self.assertEqual(self.ctx.state.pending_kind, "")
+
     def test_unrecognized_empty_confirmation_cancels_pending_action(self):
         self.request_close()
         process_turn("", self.ctx)

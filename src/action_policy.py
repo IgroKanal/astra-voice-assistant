@@ -113,6 +113,8 @@ def action_requires_confirmation(action: AssistantAction) -> bool:
         return (action.target or action.query).strip().casefold() in {"connect", "disconnect"}
     if action.type == ActionType.MEDIA_CONTROL:
         return (action.target or action.query).split(":", 1)[0].strip().casefold() == "shutdown_yandex_music"
+    if action.type == ActionType.CLEAR_DIALOGUE:
+        return True
     if action.type == ActionType.MEMORY_NOTE:
         return (action.target or "").strip().startswith(MEMORY_FORGET_PREFIX)
     if action.type == ActionType.REMINDER:
@@ -136,6 +138,11 @@ def action_confirmation_prompt(action: AssistantAction) -> str:
         return f"Подтверди {verb} VPN. Скажи да или нет."
     if action.type == ActionType.MEDIA_CONTROL:
         return "Подтверди закрытие Яндекс Музыки. Скажи да или нет."
+    if action.type == ActionType.CLEAR_DIALOGUE:
+        return (
+            "Подтверди очистку текущего диалога. Сохранённые заметки и напоминания "
+            "не изменятся. Скажи да или нет."
+        )
     if action.type == ActionType.MEMORY_NOTE:
         return "Подтверди удаление заметки из личной памяти. Скажи да или нет."
     if action.type == ActionType.REMINDER:

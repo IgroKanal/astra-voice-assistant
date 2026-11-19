@@ -25,7 +25,10 @@ class CharacterGrammarTests(unittest.TestCase):
         ctx, responses, *_ = make_context()
         for gender, expected in [('female', 'Начала'), ('male', 'Начал')]:
             selected = replace(ctx, settings=replace(ctx.settings, assistant_gender=gender), ai_client=Mock())
-            handle_action(AssistantAction(ActionType.CLEAR_DIALOGUE), selected)
+            action = AssistantAction(ActionType.CLEAR_DIALOGUE)
+            handle_action(action, selected)
+            self.assertEqual(selected.state.pending_kind, "action_confirmation")
+            process_turn("да", selected)
             self.assertTrue(responses[-1].startswith(expected + ' '))
 
     def test_known_controller_responses_follow_character_gender(self):

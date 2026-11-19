@@ -187,6 +187,9 @@ def test_new_dialogue_is_exact_local_wake_required_action() -> None:
     astra_main.emit_event = lambda kind, text: emitted.append((kind, text)) or True
     try:
         process_turn("Астра, начни новый диалог", ctx)
+        assert ctx.state.pending_kind == "action_confirmation"
+        assert not ai.dialogue_cleared and ai.dialogue
+        process_turn("да", ctx)
     finally:
         astra_main.emit_event = original_emit
 

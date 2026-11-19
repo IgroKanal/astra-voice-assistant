@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = ""
+    [string]$ProjectRoot = "",
+    [switch]$IncludeDesktopUiTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,8 +77,33 @@ try {
         }
     }
 
-    & $python -m unittest discover -s tools -p "test_*.py" -v
-    if ($LASTEXITCODE -ne 0) { throw "Desktop/skills unit and integration tests failed" }
+    if ($IncludeDesktopUiTests) {
+        Write-Host "Running all unit/integration tests, including legacy Tk and Qt UI suites."
+        & $python -m unittest discover -s tools -p "test_*.py" -v
+    }
+    else {
+        $uiTestNames = @(
+            "test_action_audit_ui.py",
+            "test_desktop_ui.py",
+            "test_qt_desktop.py",
+            "test_reminders_ui.py",
+            "test_ui_layout.py",
+            "test_visual_layout.py"
+        )
+        $testModules = @(
+            Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "tools") -Filter "test_*.py" -File |
+                Where-Object { $_.Name -notin $uiTestNames } |
+                Sort-Object Name |
+                ForEach-Object { "tools.$($_.BaseName)" }
+        )
+        if ($testModules.Count -eq 0) {
+            throw "No core unit/integration test modules were found"
+        }
+        Write-Host "Running core unit/integration tests; skipped window-creating UI suites: $($uiTestNames -join ', ')"
+        $unittestArgs = @("-m", "unittest") + $testModules + @("-v")
+        & $python @unittestArgs
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Unit and integration tests failed" }
 
     Write-Host "Astra current automatic gate passed. Manual Windows tests are still required."
 }

@@ -3,20 +3,17 @@ from pathlib import Path
 import os
 import tempfile
 
-from src.file_workspace import FileWorkspace, WorkspaceDenied
+from src.file_workspace import FileWorkspace
 
 
 def workspace_tempdir(prefix: str, project_root: Path) -> tempfile.TemporaryDirectory:
-    """Prefer the user's D: scratch drive; fall back to a safe project root in CI."""
-    candidates = []
-    if os.name == "nt" and Path("D:/").exists():
-        candidates.append(Path("D:/Astra-Work"))
-    candidates.append(Path(project_root))
-    for base in candidates:
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-            FileWorkspace._check_components(base)
-            return tempfile.TemporaryDirectory(prefix=prefix, dir=str(base))
-        except (OSError, WorkspaceDenied):
-            continue
-    raise RuntimeError("Не удалось выбрать безопасную временную папку для workspace-теста")
+    """Use the configured scratch root or system temp, never the repository."""
+    configured = os.environ.get("ASTRA_BUILD_TEMP_ROOT", "").strip()
+    base = Path(configured) if configured else Path(tempfile.gettempdir())
+    base.mkdir(parents=True, exist_ok=True)
+    FileWorkspace._check_components(base)
+    resolved = base.resolve()
+    project = project_root.resolve()
+    if resolved == project or project in resolved.parents:
+        raise RuntimeError("Workspace-тесты не должны создавать временные данные в репозитории")
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(base))

@@ -14,7 +14,7 @@ from tools.smoke_test_v11_daily_workflow import make_context
 
 class VpnVoiceSelectionTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=r"D:\Astra-Work\Temp")
+        self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.ctx, self.responses, *_ = make_context()

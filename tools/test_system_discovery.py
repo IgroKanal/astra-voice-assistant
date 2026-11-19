@@ -121,7 +121,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(discover_registered_applications(registry=registry, file_exists=lambda p: True), ())
 
     def test_start_menu_shortcuts_add_display_names_without_launching_targets(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             shortcut_root = Path(root) / 'Programs'
             shortcut_root.mkdir()
             shortcut = shortcut_root / 'Friendly Editor.lnk'
@@ -147,7 +147,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(seen, [str(shortcut)])
 
     def test_start_menu_ignores_shell_hosts_and_missing_targets(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             shortcut_root = Path(root) / 'Programs'
             shortcut_root.mkdir()
             (shortcut_root / 'Explorer.lnk').write_bytes(b'fixture')
@@ -169,7 +169,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(apps, ())
 
     def test_start_menu_name_merges_as_alias_for_registered_executable(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             shortcut_root = Path(root) / 'Programs'
             shortcut_root.mkdir()
             (shortcut_root / 'Friendly Editor.lnk').write_bytes(b'fixture')
@@ -190,7 +190,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(apps[0].aliases, ('Friendly Editor',))
 
     def test_shortcut_scan_is_bounded(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             shortcut_root = Path(root) / 'Programs'
             shortcut_root.mkdir()
             for name in ('One.lnk', 'Two.lnk'):
@@ -216,7 +216,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(merged.open_command, app.open_command)
 
     def test_overrides_round_trip_and_reject_paths(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             store = CapabilityOverrideStore(Path(root) / 'preferences.json')
             store.save(CapabilityOverrides(
                 'Chrome',
@@ -251,7 +251,7 @@ class DiscoveryTests(unittest.TestCase):
                 store.save(CapabilityOverrides(microphone_endpoint_identity='C:\\device'))
 
     def test_legacy_override_file_loads_without_vpn_choice(self):
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as root:
+        with tempfile.TemporaryDirectory() as root:
             path = Path(root) / 'preferences.json'
             path.write_text(
                 '{"version":1,"browser_preferred":"chrome","disabled_auto_scopes":[]}',

@@ -13,7 +13,7 @@ from tools.smoke_test_v11_daily_workflow import make_context
 
 class DiscoveredLaunchTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp')
+        self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / 'example.exe'
         self.path.write_bytes(b'first')
         self.app = RegisteredApplication('example', str(self.path))

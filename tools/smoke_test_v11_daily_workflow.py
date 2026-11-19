@@ -353,7 +353,7 @@ def test_routine_config_rejects_privilege_expansion() -> None:
                 }
             }
         }
-        with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "routines.json"
             config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             try:
@@ -372,7 +372,7 @@ def test_wake_aliases_keep_new_actions_local() -> None:
 
 
 def test_package_source_match_detects_stale_zip() -> None:
-    with tempfile.TemporaryDirectory(dir=r'D:\Astra-Work\Temp') as temp_dir:
+    with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir) / "source"
         root.mkdir()
         (root / "main.py").write_text("current\n", encoding="utf-8")

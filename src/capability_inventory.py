@@ -146,7 +146,13 @@ def discover_capability_inventory() -> CapabilityInventory:
     audio_output_count = _read_count(
         lambda: discover_audio_outputs(strict=True), lambda items: len(items)
     )
-    network = discover_network_adapter_inventory()
+    try:
+        network = discover_network_adapter_inventory()
+    except Exception:
+        # Discovery is advisory. A registry/provider failure on one Windows
+        # installation must not prevent the voice runtime from returning the
+        # rest of the capability snapshot.
+        network = None
     vpn_count = _read_count(discover_vpn_tunnel_services, lambda items: len(items))
     ras_count = _read_count(discover_windows_ras_profile_names, lambda items: len(items))
     ras_vpn_count = _read_count(

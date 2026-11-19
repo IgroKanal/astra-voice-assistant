@@ -25,6 +25,9 @@ not retained.
 Discovery is read-only. It does not install software, change the Windows
 default, enable a capability, or grant access to user files. If registry access
 is unavailable, the existing app configuration remains usable.
+If a network-adapter provider raises unexpectedly, the network counts are
+reported as unavailable while the rest of the snapshot remains usable; one
+failed discovery source must not stop the voice runtime.
 
 There is also a bounded inventory of registered `App Paths` entries and local
 Start Menu shortcuts. Shortcut names become display aliases; only an existing

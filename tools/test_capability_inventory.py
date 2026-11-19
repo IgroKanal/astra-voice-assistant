@@ -50,7 +50,10 @@ class CapabilityInventoryTests(unittest.TestCase):
              patch("src.capability_inventory.discover_windows_browsers", side_effect=OSError), \
              patch("src.capability_inventory.discover_audio_inputs", return_value=()), \
              patch("src.capability_inventory.discover_audio_outputs", side_effect=OSError), \
-             patch("src.capability_inventory.discover_network_adapter_inventory", return_value=None), \
+             patch(
+                 "src.capability_inventory.discover_network_adapter_inventory",
+                 side_effect=RuntimeError("registry provider unavailable"),
+             ), \
              patch("src.capability_inventory.discover_vpn_tunnel_services", return_value=()), \
              patch("src.capability_inventory.discover_windows_ras_profile_names", side_effect=OSError), \
              patch("src.capability_inventory.discover_windows_ras_vpn_profile_names", side_effect=OSError):

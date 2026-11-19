@@ -12,8 +12,10 @@
   также блокирует обращение к хранилищу.
 - Проверки: 60 focused policy/memory/reminder/confirmation/grammar tests; полный
   набор — 671 тест, 1 штатный пропуск; wake-runtime и daily-workflow smoke,
-  compileall прошли. Windows CI для этого изменения ещё не запускался; реальный
-  голос, микрофон и ручное поведение напоминаний оставлены пользователю.
+  compileall прошли. Windows CI
+  [44443067485](https://github.com/IgroKanal/astra-voice-assistant/actions/runs/44443067485)
+  прошёл на `fb1597a`; package steps пропущены. Реальный голос, микрофон и
+  ручное поведение напоминаний оставлены пользователю.
 
 ## 2026-11-19 · fail-closed классификация typed actions
 

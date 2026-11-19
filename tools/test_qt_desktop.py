@@ -31,6 +31,7 @@ class FakeBridge:
         self.process = None
         self.sent = []
         self.replies = []
+        self.cancel_calls = 0
 
     def start(self, mode):
         self.mode = mode
@@ -44,6 +45,14 @@ class FakeBridge:
 
     def send(self, text):
         self.sent.append(text)
+
+    @property
+    def cancel_response_available(self):
+        return self.running
+
+    def cancel_response(self):
+        self.cancel_calls += 1
+        return self.running
 
     def reply_file_request(self, result, expected_process=None):
         self.replies.append((result, expected_process))
@@ -106,6 +115,20 @@ class QtDesktopTests(unittest.TestCase):
         self.assertEqual(QApplication.clipboard().text(), "проверка вставки")
         self.window.append_message("Ты", "<b>не HTML</b>")
         self.assertIn("<b>не HTML</b>", self.window.chat.toPlainText())
+
+    def test_stop_response_button_appears_only_while_ai_is_thinking(self):
+        button = self.window.cancel_response_button
+        self.assertTrue(button.isHidden())
+        self.window.bridge.emit("activity", "thinking:start")
+        self.window._poll()
+        self.assertFalse(button.isHidden())
+        QTest.mouseClick(button, Qt.LeftButton)
+        self.assertEqual(self.window.bridge.cancel_calls, 1)
+        self.assertFalse(button.isEnabled())
+        self.window.bridge.emit("activity", "thinking:stop")
+        self.window._poll()
+        self.assertTrue(button.isHidden())
+        self.assertTrue(button.isEnabled())
 
     def test_text_send_auto_starts_text_channel_without_manual_mode(self):
         self.window.entry.setText("Мику, сколько времени")

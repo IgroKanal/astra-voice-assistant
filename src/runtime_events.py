@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 PREFIX = "@ASTRA_EVENT "
-KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request", "file_read_request", "file_question_request", "activity", "profile"})
+KINDS = frozenset({"assistant", "transcript", "state", "error", "conversation_reset", "file_search_request", "file_open_request", "file_read_request", "file_question_request", "activity", "profile", "control"})
 ACTIVITY_NAMES = frozenset({"listening", "recognizing", "thinking", "speaking"})
 ACTIVITY_VALUES = frozenset(f"{name}:{phase}" for name in ACTIVITY_NAMES for phase in ("start", "stop"))
+CONTROL_VALUES = frozenset({"cancel_ready", "cancel_unavailable"})
 _AVATAR_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 MAX_WEB_SOURCES = 3
 MAX_EVENT_TEXT = 100_000
@@ -92,6 +93,8 @@ def emit_event(kind: str, text: str, *, data: dict[str, object] | None = None) -
         raise ValueError("Invalid runtime event text")
     if kind == "activity" and text not in ACTIVITY_VALUES:
         raise ValueError("Unsupported runtime activity")
+    if kind == "control" and text not in CONTROL_VALUES:
+        raise ValueError("Unsupported runtime control event")
     payload = {"version": 1, "type": kind, "text": text}
     if data is not None:
         if kind == "assistant":
@@ -152,6 +155,8 @@ def parse_event_record(line: str) -> RuntimeEvent | None:
         return None
     data = None
     if event["type"] == "activity" and event["text"] not in ACTIVITY_VALUES:
+        return None
+    if event["type"] == "control" and event["text"] not in CONTROL_VALUES:
         return None
     if "data" in event:
         try:

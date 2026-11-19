@@ -143,6 +143,13 @@ phrases use the selected gender. Other fixed text may still need review; model
 compliance and real voice output require user testing. Voice-feedback commands
 accept both masculine and feminine forms so the parser remains usable when the
 user switches character gender.
+Automatic SAPI selection prefers an installed Russian voice whose reported or
+recognized gender matches the active character. An unclassified Russian voice
+can serve as a neutral fallback, but a known opposite-gender voice is skipped;
+an explicitly selected voice remains an intentional override. This avoids
+silently using a clearly female local voice for a male character. If no
+compatible voice exists, Russian SAPI fallback is unavailable until a suitable
+voice is configured or installed. Real audio quality still needs user review.
 
 ## Security boundary
 

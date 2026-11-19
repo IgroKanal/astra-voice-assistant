@@ -312,7 +312,9 @@ class VoiceIO:
                     selected_voice.id,
                 )
             else:
-                self.logger.warning("SAPI TTS-голоса не найдены.")
+                self.logger.warning(
+                    "Совместимый с выбранным персонажем SAPI TTS-голос не найден."
+                )
 
             engine.setProperty("rate", self.settings.tts_rate)
             engine.setProperty("volume", self.settings.tts_volume)
@@ -360,6 +362,18 @@ class VoiceIO:
             for voice in russian_voices:
                 if self._sapi_voice_gender(voice) == desired_gender:
                     return voice
+
+            # A voice with no reliable gender metadata is a safer fallback
+            # than one the OS explicitly identifies as the opposite gender.
+            for voice in russian_voices:
+                if not self._sapi_voice_gender(voice):
+                    return voice
+
+            # Do not silently speak Russian in a voice known to contradict the
+            # selected character. The caller can keep text output or use an
+            # explicitly configured online voice instead.
+            if russian_voices:
+                return None
 
         if russian_voices:
             return russian_voices[0]
@@ -1028,7 +1042,8 @@ class VoiceIO:
 
         if self._has_cyrillic(text) and not self.tts_has_russian_voice:
             self.logger.warning(
-                "Ответ содержит кириллицу, но русский SAPI-голос не найден. "
+                "Ответ содержит кириллицу, но совместимый русский SAPI-голос "
+                "для выбранного персонажа не найден. "
                 "Озвучка пропущена."
             )
             return False

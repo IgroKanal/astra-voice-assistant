@@ -529,6 +529,24 @@ class SapiVoiceSelectionTests(unittest.TestCase):
 
         self.assertIs(voice._select_sapi_voice([female, male]), male)
 
+    def test_known_opposite_gender_sapi_voice_is_not_used_as_fallback(self):
+        female = self._voice("Microsoft Irina", "Female")
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(assistant_gender="male")
+
+        self.assertIsNone(voice._select_sapi_voice([female]))
+
+    def test_russian_sapi_output_is_skipped_when_no_compatible_voice_exists(self):
+        voice = object.__new__(VoiceIO)
+        voice.settings = Settings(assistant_gender="male")
+        voice.tts_engine = Mock()
+        voice.tts_has_russian_voice = False
+        voice.logger = Mock()
+
+        self.assertFalse(voice._speak_sapi("Я понял"))
+        voice.tts_engine.say.assert_not_called()
+        voice.tts_engine.runAndWait.assert_not_called()
+
     def test_unknown_gender_keeps_russian_fallback_ahead_of_other_languages(self):
         russian = self._voice("Russian voice A", None)
         english_male = self._voice("English voice", "Male", language="en-US")

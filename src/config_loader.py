@@ -99,6 +99,12 @@ class Settings:
 
     tts_enabled: bool = True
     tts_engine: str = "edge"
+    # Optional paid cloud TTS. Credentials are read from .env and excluded
+    # from Settings repr/logs; selecting this engine explicitly sends spoken
+    # assistant replies to Yandex SpeechKit.
+    tts_yandex_api_key: str = field(default="", repr=False)
+    tts_yandex_folder_id: str = ""
+    tts_yandex_timeout_seconds: float = 25.0
 
     tts_edge_voice: str = "ru-RU-SvetlanaNeural"
     tts_edge_fallback_voice: str = "ru-RU-DmitryNeural"
@@ -453,6 +459,11 @@ def load_settings(env_path: str | Path = ".env") -> Settings:
         stt_prefer_cyrillic=_bool_from_env("STT_PREFER_CYRILLIC", True),
         tts_enabled=_bool_from_env("TTS_ENABLED", True),
         tts_engine=_str_from_env("TTS_ENGINE", "edge").lower(),
+        tts_yandex_api_key=os.getenv("YANDEX_SPEECHKIT_API_KEY", "").strip(),
+        tts_yandex_folder_id=_str_from_env("YANDEX_SPEECHKIT_FOLDER_ID", ""),
+        tts_yandex_timeout_seconds=_float_from_env(
+            "YANDEX_SPEECHKIT_TIMEOUT_SECONDS", 25.0
+        ),
         tts_edge_voice=_str_from_env("TTS_EDGE_VOICE", "ru-RU-SvetlanaNeural"),
         tts_edge_fallback_voice=_str_from_env(
             "TTS_EDGE_FALLBACK_VOICE",

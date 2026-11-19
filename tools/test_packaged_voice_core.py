@@ -17,6 +17,7 @@ class VoiceCorePackageTests(unittest.TestCase):
             "src.windows_audio_endpoint",
             "src.vpn_controller",
             "src.windows_service_control",
+            "src.yandex_speechkit",
         }
         validate_voice_core_modules(required)
         for missing in required:

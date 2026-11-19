@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import json
 import os
 import sys
@@ -8,7 +9,8 @@ from unittest.mock import MagicMock, Mock, call, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.audio_io import VoiceIO
 from src.config_loader import Settings
-from src.runtime_events import PREFIX, emit_activity, emit_assistant_profile, parse_event_record
+from src.runtime_events import PREFIX, emit_activity, emit_assistant_profile, emit_event, parse_event_record
+from src.ai_client import LLMResult
 from main import handle_action
 from src.task_router import ActionType, AssistantAction
 from tools.smoke_test_v11_daily_workflow import make_context
@@ -59,6 +61,50 @@ class RuntimeActivityTests(unittest.TestCase):
         self.assertIsNone(parse_event_record(PREFIX + json.dumps({"version": 1, "type": "activity", "text": "delete:all"})))
         with self.assertRaises(ValueError):
             emit_activity("delete", True)
+
+    def test_control_event_is_typed_and_rejects_unknown_values(self):
+        with patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "1"}), patch("builtins.print") as output:
+            self.assertTrue(emit_event("control", "cancel_ready"))
+            event = parse_event_record(output.call_args.args[0])
+        self.assertEqual((event.kind, event.text), ("control", "cancel_ready"))
+        invalid = PREFIX + json.dumps({"version": 1, "type": "control", "text": "run:command"})
+        self.assertIsNone(parse_event_record(invalid))
+        with self.assertRaises(ValueError):
+            emit_event("control", "run:command")
+
+    def test_runtime_passes_cancel_signal_to_ai_and_resets_it_afterward(self):
+        class Signal:
+            def __init__(self):
+                self.active = True
+                self.reset_count = 0
+
+            def is_set(self):
+                return self.active
+
+            def reset(self):
+                self.reset_count += 1
+                self.active = False
+
+        class CancellableAI:
+            def __init__(self):
+                self.cancelled_at_call = None
+
+            def ask(self, _question, *, cancelled=None):
+                self.cancelled_at_call = cancelled()
+                return LLMResult(False, "Запрос отменён.")
+
+        ctx, responses, *_ = make_context()
+        signal = Signal()
+        ai = CancellableAI()
+        ctx = replace(ctx, ai_client=ai, cancellation_signal=signal)
+        action = AssistantAction(ActionType.ASK_LLM, query="тест", source="local_parser")
+        with patch("main.emit_activity"), patch.dict(os.environ, {"ASTRA_DESKTOP_EVENTS": "0"}):
+            self.assertTrue(handle_action(action, ctx))
+
+        self.assertTrue(ai.cancelled_at_call)
+        self.assertEqual(signal.reset_count, 1)
+        self.assertFalse(signal.is_set())
+        self.assertEqual(responses, ["Запрос отменён."])
 
     def test_tts_signals_stop_even_if_playback_fails(self):
         voice = object.__new__(VoiceIO)

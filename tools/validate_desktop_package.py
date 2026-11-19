@@ -26,6 +26,7 @@ def validate_voice_core_modules(modules):
         "src.windows_audio_endpoint",
         "src.vpn_controller",
         "src.windows_service_control",
+        "src.desktop_cancellation",
     )
     if any(name not in modules for name in required):
         raise ValueError(

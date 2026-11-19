@@ -430,6 +430,10 @@ class AstraQtDesktop(QMainWindow):
         self.entry.returnPressed.connect(self.send_text)
         composer.addWidget(self.entry, 1)
         composer.addWidget(button("Отправить", self.send_text, "primary"))
+        self.cancel_response_button = button("Остановить", self.cancel_response, "secondary")
+        self.cancel_response_button.setToolTip("Остановить текущий запрос к ИИ")
+        self.cancel_response_button.setVisible(False)
+        composer.addWidget(self.cancel_response_button)
         layout.addLayout(composer)
         self.voice_status = label(self.home_status.text(), "status")
         self.chat_copy = QAction("Копировать", self)
@@ -771,6 +775,14 @@ class AstraQtDesktop(QMainWindow):
         self.append_message("Ты", text)
         self.entry.clear()
 
+    def cancel_response(self):
+        if not self.bridge.cancel_response():
+            self.cancel_response_button.setEnabled(False)
+            self.append_message("Система", "Сигнал остановки ответа недоступен.")
+            return
+        self.cancel_response_button.setEnabled(False)
+        self._set_voice_status("Останавливаю ответ…")
+
     def _flush_pending_texts(self):
         if not self.pending_texts or not self.bridge.running or self.bridge.mode != "text":
             return
@@ -866,7 +878,16 @@ class AstraQtDesktop(QMainWindow):
             elif kind in {"status", "state"}:
                 self._set_voice_status(text)
             elif kind == "assistant":
+                self.cancel_response_button.setVisible(False)
                 self.append_message(self.assistant_name, text)
+            elif kind == "activity":
+                if text == "thinking:start":
+                    available = self.bridge.cancel_response_available
+                    self.cancel_response_button.setVisible(available)
+                    self.cancel_response_button.setEnabled(available)
+                elif text == "thinking:stop":
+                    self.cancel_response_button.setVisible(False)
+                    self.cancel_response_button.setEnabled(True)
             elif kind == "transcript":
                 self.append_message("Ты · голос", text)
             elif kind == "conversation_reset":

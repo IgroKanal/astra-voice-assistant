@@ -12,6 +12,7 @@ class VoiceCorePackageTests(unittest.TestCase):
             "src.microphone_recovery",
             "src.assistant_persona",
             "src.runtime_events",
+            "src.desktop_cancellation",
             "src.audio_device_discovery",
             "src.windows_audio_endpoint",
             "src.vpn_controller",

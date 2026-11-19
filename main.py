@@ -23,6 +23,7 @@ from src.action_audit import record_action
 from src.capability_overrides import CapabilityOverrideStore
 from src.capability_inventory import discover_capability_inventory
 from src.audio_io import ListenResult, VoiceIO
+from src.desktop_cancellation import DesktopCancellationEvent
 from src.command_parser import (
     CommandType,
     ParsedCommand,
@@ -215,6 +216,7 @@ class TurnContext:
     web_sources: Callable[[tuple], None] | None = None
     file_mutation: object | None = None
     available_auto_scopes: frozenset[str] | None = None
+    cancellation_signal: object | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2173,6 +2175,8 @@ def handle_action(
             and callable(ctx.respond_streamed)
         )
         try:
+            cancelled = getattr(ctx.cancellation_signal, "is_set", None)
+            ask_options = {"cancelled": cancelled} if callable(cancelled) else {}
             if can_stream_speech:
                 cleaner = getattr(ctx.ai_client, "_clean_llm_answer", None)
                 first_sentence = FirstSentenceBuffer(cleaner if callable(cleaner) else None)
@@ -2187,15 +2191,25 @@ def handle_action(
                     except Exception:
                         ctx.logger.warning("Early speech failed; final answer will use regular TTS")
 
-                result = ctx.ai_client.ask(question, on_text_chunk=speak_first_sentence)
+                result = ctx.ai_client.ask(
+                    question,
+                    on_text_chunk=speak_first_sentence,
+                    **ask_options,
+                )
             else:
-                result = ctx.ai_client.ask(question)
+                result = ctx.ai_client.ask(question, **ask_options)
         except Exception as exc:
             # A provider can fail after early audio has already started. Do not
             # log the exception message: it may contain the user's question.
             ctx.logger.warning("AI answer failed unexpectedly (%s)", type(exc).__name__)
             result = LLMResult(False, "Не удалось получить ответ от ИИ. Попробуй ещё раз.")
         finally:
+            reset = getattr(ctx.cancellation_signal, "reset", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception:
+                    ctx.logger.warning("Desktop response cancellation signal could not be reset")
             emit_activity("thinking", False)
         if spoken_parts and callable(ctx.respond_streamed):
             # An incomplete answer must never be treated as the prefix of an
@@ -2500,6 +2514,7 @@ def run_text_mode(
     media: MediaController | None = None,
     background_tasks: BackgroundTaskManager | None = None,
     available_auto_scopes: frozenset[str] | None = None,
+    cancellation_signal: object | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -2558,6 +2573,7 @@ def run_text_mode(
         web_answer=lambda query: _voice_web_answer(settings, query),
         web_sources=_publish_web_sources,
         available_auto_scopes=available_auto_scopes,
+        cancellation_signal=cancellation_signal,
     )
 
     while True:
@@ -2659,6 +2675,7 @@ def _run_voice_mode_impl(
     background_tasks: BackgroundTaskManager | None = None,
     file_mutation: object | None = None,
     available_auto_scopes: frozenset[str] | None = None,
+    cancellation_signal: object | None = None,
 ) -> None:
     from src.desktop_file_search import DesktopFileSearchChannel
 
@@ -2768,6 +2785,7 @@ def _run_voice_mode_impl(
         web_sources=_publish_web_sources,
         file_mutation=file_mutation,
         available_auto_scopes=available_auto_scopes,
+        cancellation_signal=cancellation_signal,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -2920,6 +2938,7 @@ def run_voice_mode(
     *,
     file_mutation: object | None = None,
     available_auto_scopes: frozenset[str] | None = None,
+    cancellation_signal: object | None = None,
 ) -> None:
     """Run voice mode and always discard an unfinished file-action preview."""
     try:
@@ -2928,6 +2947,7 @@ def run_voice_mode(
             windows, ai_client, logger, routines, media, background_tasks,
             file_mutation,
             available_auto_scopes,
+            cancellation_signal,
         )
     finally:
         cancel = getattr(file_mutation, "cancel", None)
@@ -3077,6 +3097,19 @@ def main() -> int:
         logger=logger,
         on_complete=_notify_background_task,
     )
+    cancellation_signal = None
+    if os.environ.get("ASTRA_DESKTOP_EVENTS") == "1":
+        try:
+            cancellation_signal = DesktopCancellationEvent.open_from_environment()
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Desktop response cancellation channel unavailable (%s)",
+                type(exc).__name__,
+            )
+            emit_event("control", "cancel_unavailable")
+        else:
+            if cancellation_signal is not None:
+                emit_event("control", "cancel_ready")
 
     try:
         if args.stt_test:
@@ -3086,12 +3119,14 @@ def main() -> int:
                 settings, apps, app_manager, keyboard, folders, system, vpn,
                 windows, ai_client, logger, routines, media, background_tasks,
                 frozenset(available_auto_scopes),
+                cancellation_signal,
             )
         else:
             run_voice_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
                 windows, ai_client, logger, routines, media, background_tasks,
                 available_auto_scopes=frozenset(available_auto_scopes),
+                cancellation_signal=cancellation_signal,
             )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")
@@ -3103,6 +3138,11 @@ def main() -> int:
         return 1
     finally:
         background_tasks.shutdown()
+        if cancellation_signal is not None:
+            try:
+                cancellation_signal.close()
+            except OSError:
+                logger.warning("Desktop response cancellation channel did not close cleanly")
 
     logger.info("Ассистент завершил работу")
     return 0

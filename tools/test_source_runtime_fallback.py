@@ -15,8 +15,12 @@ class SourceRuntimeFallbackTests(unittest.TestCase):
             process = Mock()
             popen.return_value = process
             bridge = DesktopBridge(Path(root))
-            bridge.start('text')
-            self.assertEqual(popen.call_args.args[0], [sys.executable, '-u', str(Path(root).resolve() / 'main.py'), '--text'])
+            try:
+                bridge.start('text')
+                self.assertEqual(popen.call_args.args[0], [sys.executable, '-u', str(Path(root).resolve() / 'main.py'), '--text'])
+            finally:
+                bridge.prevent_restart()
+                bridge.stop()
 
     def test_frozen_app_does_not_use_itself_as_interpreter(self):
         with tempfile.TemporaryDirectory() as root, \

@@ -4,7 +4,17 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.action_policy import ALL_SCOPES, CAPABILITY_CATALOG, DEFAULT_SCOPES, ActionPolicy, action_requires_confirmation, capability_catalog
+from src.action_policy import (
+    ALL_SCOPES,
+    CAPABILITY_CATALOG,
+    DEFAULT_SCOPES,
+    DYNAMIC_SCOPE_ACTIONS,
+    SCOPE_FREE_ACTIONS,
+    SCOPES,
+    ActionPolicy,
+    action_requires_confirmation,
+    capability_catalog,
+)
 from src.task_router import ActionType, AssistantAction
 
 
@@ -18,6 +28,24 @@ class ActionPolicyTests(unittest.TestCase):
             DEFAULT_SCOPES,
         )
         self.assertTrue(all(item.title and item.description for item in catalog))
+
+    def test_every_action_type_has_an_explicit_scope_or_safe_scope_free_classification(self):
+        self.assertFalse(set(SCOPES) & set(SCOPE_FREE_ACTIONS))
+        self.assertFalse(set(SCOPES) & set(DYNAMIC_SCOPE_ACTIONS))
+        self.assertFalse(set(SCOPE_FREE_ACTIONS) & set(DYNAMIC_SCOPE_ACTIONS))
+        self.assertEqual(
+            set(ActionType),
+            set(SCOPES) | set(SCOPE_FREE_ACTIONS) | set(DYNAMIC_SCOPE_ACTIONS),
+        )
+        policy = ActionPolicy()
+        for action_type in SCOPE_FREE_ACTIONS:
+            with self.subTest(action=action_type):
+                self.assertTrue(policy.check(AssistantAction(action_type)).allowed)
+        for action_type in DYNAMIC_SCOPE_ACTIONS:
+            with self.subTest(dynamic_action=action_type):
+                decision = policy.check(AssistantAction(action_type, target="enter"))
+                self.assertTrue(decision.allowed)
+                self.assertTrue(decision.scope)
 
     def test_invalid_permission_sets_and_malformed_actions_fail_closed(self):
         for scopes in ("apps", None, ("unknown",), (None,), ([],)):

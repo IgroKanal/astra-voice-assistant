@@ -61,6 +61,27 @@ SCOPES = {
     ActionType.FILE_QUESTION: "ask_files",
     ActionType.FILE_MUTATION: "modify_files",
 }
+# These built-in requests intentionally have no capability grant: they only
+# answer, manage the current conversation, or operate bounded local jobs. Keep
+# this set explicit so a newly added ActionType cannot silently inherit access.
+SCOPE_FREE_ACTIONS = frozenset({
+    ActionType.GET_TIME,
+    ActionType.GET_DATE,
+    ActionType.VOICE_FEEDBACK,
+    ActionType.BACKGROUND_ASK,
+    ActionType.BACKGROUND_LIST,
+    ActionType.BACKGROUND_CANCEL,
+    ActionType.BACKGROUND_RESULT,
+    ActionType.CLEAR_DIALOGUE,
+    ActionType.HELP,
+    ActionType.ASK_LLM,
+    ActionType.EXIT,
+    ActionType.EMPTY,
+    ActionType.UNKNOWN,
+})
+# The exact scope is derived from the requested shortcut, then checked against
+# the ordinary capability grants above.
+DYNAMIC_SCOPE_ACTIONS = frozenset({ActionType.KEYBOARD_SHORTCUT})
 ROUTER_ALLOWED = {ActionType.OPEN_APP, ActionType.CLOSE_APP, ActionType.OPEN_URL, ActionType.OPEN_FOLDER, ActionType.WEB_SEARCH, ActionType.GET_TIME, ActionType.GET_DATE, ActionType.HELP, ActionType.ASK_LLM, ActionType.UNKNOWN, ActionType.EMPTY}
 TRUSTED_LOCAL = {
     "local", "local_parser", "pending_followup", "routine",
@@ -150,6 +171,8 @@ class ActionPolicy:
         if action.type == ActionType.KEYBOARD_SHORTCUT:
             name = action.target or action.query
             scope = "media" if name.startswith(("media_", "volume_")) else "browser" if name in BROWSER_KEYS else "windows" if name == "show_desktop" else "typing"
+        if not scope and action.type not in SCOPE_FREE_ACTIONS:
+            return PolicyDecision(False, "Для этого действия не настроено разрешение")
         if scope and action.source not in TRUSTED_LOCAL and action.source != "llm_router":
             return PolicyDecision(False, "Недоверенный источник действия", scope)
         if self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS and scope in self.denied_auto_scopes:

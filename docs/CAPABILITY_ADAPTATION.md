@@ -178,6 +178,13 @@ yes. VPN status and ordinary media transport controls remain read-only or
 reversible and do not ask for confirmation. File changes keep their existing
 separate preview-and-confirm transaction.
 
+Each `ActionType` must have a normal capability scope, a scope derived from a
+typed value (currently keyboard shortcuts), or membership in the small
+scope-free set for built-in conversation/status requests and bounded local
+background-job controls. A new action type fails closed until policy explicitly
+classifies it, so a missing scope cannot become an accidental grant. This
+classification does not replace runtime confirmation for sensitive changes.
+
 Do not treat a discovered VPN service, device, executable, or file as an
 authorization. Those require their own adapters and risk classification. A
 confirmation must be bound to the exact pending action and expire; a general

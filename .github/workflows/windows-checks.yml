@@ -33,6 +33,16 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install -r requirements-desktop.txt
           .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+      - name: Configure isolated test temporary directory
+        shell: pwsh
+        run: |
+          $temp = $env:RUNNER_TEMP
+          if (-not $temp) { throw 'GitHub runner temporary directory is unavailable' }
+          New-Item -ItemType Directory -Path $temp -Force | Out-Null
+          "ASTRA_BUILD_TEMP_ROOT=$temp" >> $env:GITHUB_ENV
+          "TEMP=$temp" >> $env:GITHUB_ENV
+          "TMP=$temp" >> $env:GITHUB_ENV
+          "TMPDIR=$temp" >> $env:GITHUB_ENV
       - name: Compile
         shell: pwsh
         run: .\.venv\Scripts\python.exe -m compileall main.py astra_desktop.pyw astra_desktop_qt.py astra_runtime.py src tools

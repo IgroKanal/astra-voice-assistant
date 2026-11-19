@@ -3014,6 +3014,8 @@ def main() -> int:
         and browser_discovery.default_browser in browser_discovery.apps
     ):
         available_auto_scopes.add("browser")
+    if vpn_services:
+        available_auto_scopes.add("vpn")
     logger.info(
         "System discovery: automatic_action_scopes=%s",
         ",".join(sorted(available_auto_scopes)),

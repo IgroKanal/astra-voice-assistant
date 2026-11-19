@@ -42,7 +42,7 @@ class CapabilityOverrides:
         ):
             raise ValueError("Некорректный идентификатор аудиоустройства")
         if not isinstance(self.disabled_auto_scopes, (tuple, list)) or any(
-            not isinstance(scope, str) or scope not in {"browser", "system"} for scope in self.disabled_auto_scopes
+            not isinstance(scope, str) or scope not in {"browser", "system", "vpn"} for scope in self.disabled_auto_scopes
         ):
             raise ValueError("Неизвестное ограничение автоматических возможностей")
         return CapabilityOverrides(browser_preferred=value.casefold(),
@@ -116,6 +116,22 @@ class CapabilityOverrideStore:
         selected = CapabilityOverrides(vpn_service_preferred=service_name).validate()
         current = self.load()
         self.save(replace(current, vpn_service_preferred=selected.vpn_service_preferred))
+
+    def set_auto_scope_enabled(self, scope: str, enabled: bool) -> None:
+        """Persist a per-user auto-availability override without storing discovery facts."""
+        if (
+            not isinstance(scope, str)
+            or scope not in {"browser", "system", "vpn"}
+            or type(enabled) is not bool
+        ):
+            raise ValueError("Некорректное пользовательское ограничение возможности")
+        current = self.load()
+        disabled = set(current.disabled_auto_scopes)
+        if enabled:
+            disabled.discard(scope)
+        else:
+            disabled.add(scope)
+        self.save(replace(current, disabled_auto_scopes=tuple(sorted(disabled))))
 
     def set_microphone_endpoint_identity(self, identity: str) -> None:
         """Update the local audio endpoint choice without dropping other preferences."""

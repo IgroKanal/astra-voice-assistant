@@ -239,6 +239,10 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(updated.disabled_auto_scopes, ('browser',))
             self.assertEqual(updated.vpn_service_preferred, 'WireGuardTunnel$home')
             self.assertEqual(updated.microphone_endpoint_identity, 'a' * 64)
+            store.set_auto_scope_enabled('vpn', False)
+            self.assertEqual(store.load().disabled_auto_scopes, ('browser', 'vpn'))
+            store.set_auto_scope_enabled('vpn', True)
+            self.assertEqual(store.load().disabled_auto_scopes, ('browser',))
             store.set_microphone_endpoint_identity('b' * 64)
             self.assertEqual(store.load().microphone_endpoint_identity, 'b' * 64)
             store.set_microphone_endpoint_identity('')
@@ -249,6 +253,9 @@ class DiscoveryTests(unittest.TestCase):
                 store.save(CapabilityOverrides(vpn_service_preferred='WireGuardTunnel$home*'))
             with self.assertRaises(ValueError):
                 store.save(CapabilityOverrides(microphone_endpoint_identity='C:\\device'))
+            for invalid in (('unknown', False), ('vpn', 1)):
+                with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                    store.set_auto_scope_enabled(*invalid)
 
     def test_legacy_override_file_loads_without_vpn_choice(self):
         with tempfile.TemporaryDirectory() as root:

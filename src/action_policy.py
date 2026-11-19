@@ -93,7 +93,13 @@ TRUSTED_LOCAL = {
     "wake_required_guard", "router_unknown_guard", "conversation_fallback", "fallback",
 }
 BROWSER_KEYS = {"close_tab", "new_tab", "reopen_tab", "next_tab", "previous_tab", "address_bar", "find_on_page", "refresh", "browser_back", "browser_forward", "incognito", "fullscreen", "browser_new_window", "browser_downloads", "browser_history"}
-AUTOMATIC_SAFE_ACTIONS = frozenset({ActionType.WEB_SEARCH, ActionType.SYSTEM_INFO})
+AUTOMATIC_SAFE_ACTIONS = frozenset({
+    ActionType.WEB_SEARCH,
+    ActionType.SYSTEM_INFO,
+    # VPN status is read-only. connect/disconnect are still stopped by the
+    # separate action_requires_confirmation check before controller dispatch.
+    ActionType.VPN_CONTROL,
+})
 
 
 @dataclass(frozen=True)

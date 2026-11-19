@@ -162,19 +162,26 @@ Discovery answers **what appears to exist on this PC**. It does not answer
 **whether Astra may perform an action**. The current ActionPolicy still uses
 typed action scopes for most actions. Web search and system information are
 enabled as specific low-risk actions when user overrides load successfully.
-`disabled_auto_scopes` in `capability_overrides.json` can disable either
-automatic action (`browser`, `system`). Invalid overrides disable automatic
-mode. Screenshots, URL opening, file access and other actions are not granted
+VPN availability is derived from the supported tunnel inventory; status is
+read-only, and state changes still require a one-time confirmation.
+`disabled_auto_scopes` in `capability_overrides.json` can disable automatic
+scopes (`browser`, `system`, `vpn`). Invalid overrides disable automatic mode.
+Screenshots, URL opening, file access and other actions are not granted
 by this mode. The startup discovery result is now passed into both voice and
 text runtime policy checks: automatic web search is available only when the
 Windows HTTPS default resolves to a discovered existing browser executable;
 system information is available because its controller is instantiated for
 the runtime. A missing or incomplete browser result blocks the automatic search
 with an explicit availability message instead of trying an unknown handler.
-This availability fact does not create a user grant, and it does not broaden
-ordinary browser actions. Runtime confirmation now covers closing an application,
-connecting/disconnecting VPN, closing Yandex Music, forgetting a personal-memory
-note, cancelling reminders and clearing the current dialogue. Replacing the
+VPN commands join automatic availability only when a supported AmneziaWG or
+WireGuard tunnel service is present. Reading status is read-only; connecting or
+disconnecting still requires a one-time confirmation and service revalidation.
+The per-user override store can disable detected automatic scopes without
+storing discovery results. These availability facts do not create a user grant,
+and they do not broaden ordinary browser actions. Runtime confirmation now
+covers closing an application, connecting/disconnecting VPN, closing Yandex
+Music, forgetting a personal-memory note, cancelling reminders and clearing the
+current dialogue. Replacing the
 remaining fixed scope catalog and reviewing risk classification for every
 action are still open.
 

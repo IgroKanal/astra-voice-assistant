@@ -82,7 +82,11 @@ class ActionPolicyTests(unittest.TestCase):
 
 
     def test_adaptive_mode_enables_only_specific_low_risk_actions(self):
-        policy = ActionPolicy((), automatic_safe_actions=True)
+        policy = ActionPolicy(
+            (),
+            automatic_safe_actions=True,
+            available_auto_scopes={"browser", "system"},
+        )
         self.assertTrue(policy.check(AssistantAction(ActionType.WEB_SEARCH, query='погода')).allowed)
         self.assertTrue(policy.check(AssistantAction(ActionType.SYSTEM_INFO, target='memory')).allowed)
         for kind in (ActionType.OPEN_URL, ActionType.SCREENSHOT, ActionType.FILE_READ, ActionType.VPN_CONTROL):
@@ -111,6 +115,28 @@ class ActionPolicyTests(unittest.TestCase):
                 AssistantAction(ActionType.WEB_SEARCH, query="погода")
             ).allowed
         )
+        vpn_missing = browser_ready.check(
+            AssistantAction(ActionType.VPN_CONTROL, target="status")
+        )
+        self.assertFalse(vpn_missing.allowed)
+
+        vpn_ready = ActionPolicy(
+            (),
+            automatic_safe_actions=True,
+            available_auto_scopes={"vpn"},
+        )
+        self.assertTrue(
+            vpn_ready.check(
+                AssistantAction(ActionType.VPN_CONTROL, target="status")
+            ).allowed
+        )
+        for operation in ("connect", "disconnect"):
+            with self.subTest(vpn_operation=operation):
+                decision = vpn_ready.check(
+                    AssistantAction(ActionType.VPN_CONTROL, target=operation)
+                )
+                self.assertTrue(decision.allowed)
+                self.assertTrue(decision.requires_confirmation)
 
     def test_missing_executor_blocks_auto_action_even_with_default_scope(self):
         policy = ActionPolicy(
@@ -126,6 +152,19 @@ class ActionPolicyTests(unittest.TestCase):
         self.assertTrue(
             policy.check(AssistantAction(ActionType.OPEN_URL, target="example.org")).allowed
         )
+
+    def test_user_can_disable_detected_vpn_without_granting_other_scopes(self):
+        policy = ActionPolicy(
+            ("apps",),
+            automatic_safe_actions=True,
+            denied_auto_scopes=("vpn",),
+            available_auto_scopes={"vpn", "system"},
+        )
+        decision = policy.check(
+            AssistantAction(ActionType.VPN_CONTROL, target="status")
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("отключено", decision.reason)
 
     def test_malformed_detected_capabilities_fail_closed(self):
         for scopes in ("browser", ("unknown",), (None,), ([],)):

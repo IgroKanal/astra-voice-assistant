@@ -9,7 +9,11 @@ from urllib.parse import urlsplit
 
 import win32crypt
 
-from src.audio_device_discovery import audio_input_identities_for_index
+from src.audio_device_discovery import (
+    audio_input_identities_for_index,
+    discover_audio_inputs,
+    resolve_audio_input_index,
+)
 from src.capability_overrides import CapabilityOverrideStore
 from src.config_loader import Settings
 from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
@@ -140,15 +144,110 @@ class DesktopSettings:
 
     def save(self, profile: AIProfile):
         profile.validate()
-        if profile.microphone_index is not None and not profile.microphone_identity:
+        previous_profile = None
+        if self.path.exists():
+            try:
+                previous_profile = self.load()
+            except Exception:
+                # Saving a corrected profile must remain possible after a
+                # damaged DPAPI file; the new selection is validated below.
+                previous_profile = None
+
+        endpoint_identity_update = None
+        if profile.microphone_index is None:
+            selected_a_different_saved_device = (
+                previous_profile is not None
+                and previous_profile.microphone_index is not None
+                and profile.microphone_identity == previous_profile.microphone_identity
+            )
+            if not profile.microphone_identity or selected_a_different_saved_device:
+                # The settings UI represents Windows' default input as None;
+                # it may still carry the previous profile's identity. Portable
+                # profile imports also intentionally clear local device fields.
+                profile = replace(profile, microphone_identity="")
+                endpoint_identity_update = ""
+            elif profile.microphone_identity:
+                # A profile from another machine can contain a stable label
+                # fingerprint but no useful PortAudio index. Remap only when
+                # it matches exactly one device on this computer.
+                endpoint_identity = ""
+                if (
+                    previous_profile is not None
+                    and profile.microphone_identity
+                    == previous_profile.microphone_identity
+                ):
+                    endpoint_identity = (
+                        self.capability_override_store.load().microphone_endpoint_identity
+                    )
+                devices = discover_audio_inputs()
+                resolved_index = resolve_audio_input_index(
+                    profile.microphone_identity,
+                    devices,
+                    endpoint_identity=endpoint_identity,
+                )
+                if resolved_index is not None:
+                    device = next(
+                        item for item in devices if item.index == resolved_index
+                    )
+                    profile = replace(
+                        profile,
+                        microphone_index=resolved_index,
+                        microphone_identity=device.identity,
+                    )
+                    endpoint_identity_update = device.endpoint_identity
+                elif (
+                    previous_profile is None
+                    or profile.microphone_identity
+                    != previous_profile.microphone_identity
+                ):
+                    # Never apply the previous profile's endpoint hash to a
+                    # different fingerprint if the new identity is unresolved.
+                    endpoint_identity_update = ""
+        elif (
+            previous_profile is None
+            or profile.microphone_index != previous_profile.microphone_index
+            or profile.microphone_identity != previous_profile.microphone_identity
+        ):
+            # A changed index is a new explicit selection, even when an older
+            # identity is still present in the profile object.
             identity, endpoint_identity = audio_input_identities_for_index(
                 profile.microphone_index
             )
-            if identity:
-                profile = replace(profile, microphone_identity=identity)
-                self.capability_override_store.set_microphone_endpoint_identity(
-                    endpoint_identity
+            if not identity:
+                raise ValueError(
+                    "Не удалось проверить выбранный микрофон. "
+                    "Обнови список устройств или выбери системный микрофон Windows."
                 )
+            profile = replace(profile, microphone_identity=identity)
+            endpoint_identity_update = endpoint_identity
+        elif profile.microphone_identity:
+            # A stored PortAudio index is only a hint: device ordering can
+            # change after reconnects or on another PC. Re-resolve a stable
+            # fingerprint on save and persist the current local index.
+            stored_endpoint_identity = (
+                self.capability_override_store.load().microphone_endpoint_identity
+            )
+            devices = discover_audio_inputs()
+            resolved_index = resolve_audio_input_index(
+                profile.microphone_identity,
+                devices,
+                endpoint_identity=stored_endpoint_identity,
+            )
+            if resolved_index is None:
+                # Do not let a stale numeric index silently select another
+                # device. Keep the fingerprint so a future save can remap it.
+                profile = replace(profile, microphone_index=None)
+            else:
+                device = next(
+                    item for item in devices if item.index == resolved_index
+                )
+                profile = replace(
+                    profile,
+                    microphone_index=resolved_index,
+                    microphone_identity=device.identity,
+                )
+                endpoint_identity_update = device.endpoint_identity
+
         data = asdict(profile)
         if not profile.microphone_identity:
             data.pop("microphone_identity", None)
@@ -159,14 +258,45 @@ class DesktopSettings:
         encrypted = win32crypt.CryptProtectData(raw, "Astra settings", None, None, None, 1)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + "." + secrets.token_hex(8) + ".tmp")
-        with temporary.open("xb") as stream:
-            stream.write(encrypted)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, self.path)
+        old_overrides = None
+        overrides_updated = False
+        try:
+            with temporary.open("xb") as stream:
+                stream.write(encrypted)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if endpoint_identity_update is not None:
+                old_overrides = self.capability_override_store.load()
+                updated_overrides = replace(
+                    old_overrides,
+                    microphone_endpoint_identity=endpoint_identity_update,
+                )
+                if updated_overrides != old_overrides:
+                    self.capability_override_store.save(updated_overrides)
+                    overrides_updated = True
+            os.replace(temporary, self.path)
+        except Exception:
+            if overrides_updated and old_overrides is not None:
+                self.capability_override_store.save(old_overrides)
+            raise
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def apply(self, settings: Settings) -> Settings:
         profile = self.load()
+        endpoint_identity = ""
+        if profile.microphone_identity:
+            try:
+                endpoint_identity = (
+                    self.capability_override_store.load().microphone_endpoint_identity
+                )
+            except (OSError, ValueError):
+                # A malformed preference sidecar must not prevent startup;
+                # the stable profile fingerprint remains a safe fallback.
+                endpoint_identity = ""
         character = profile.character_profiles.get(profile.avatar_id)
         if character is None:
             # Profiles created before per-character settings keep using their
@@ -178,7 +308,7 @@ class DesktopSettings:
             # Empty means automatic voice selection for the character's gender.
             voice_id = character["voice_id"]
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index, stt_device_identity=profile.microphone_identity)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index, stt_device_identity=profile.microphone_identity, stt_device_endpoint_identity=endpoint_identity)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

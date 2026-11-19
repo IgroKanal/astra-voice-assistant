@@ -249,7 +249,7 @@ def resolve_audio_input_index(
     *,
     endpoint_identity: str = "",
 ) -> int | None:
-    """Prefer a unique Core Audio ID, then a unique legacy label match."""
+    """Prefer a unique Core Audio endpoint ID, then a unique label match."""
     if endpoint_identity:
         if not isinstance(endpoint_identity, str) or not _IDENTITY_RE.fullmatch(endpoint_identity):
             return None

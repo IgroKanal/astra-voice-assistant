@@ -58,7 +58,7 @@ class QtDesktopTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="astra-qt-test-", dir=Path(__file__).resolve().parents[1])
+        self.temp = tempfile.TemporaryDirectory(prefix="astra-qt-test-")
         self.env = patch.dict(os.environ, {"LOCALAPPDATA": self.temp.name})
         self.env.start()
         qt.LOCAL = Path(self.temp.name) / "AstraVoiceAssistant"
@@ -119,7 +119,7 @@ class QtDesktopTests(unittest.TestCase):
         self.window.avatar_choice.setCurrentText("Кай · мужской образ")
         self.window.name_edit.setText("Кайто")
         self.window.scale_choice.setCurrentIndex(2)
-        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("", "")):
+        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("a" * 64, "b" * 64)):
             self.window.save_settings()
         saved = qt.DesktopSettings().load()
         self.assertEqual((saved.avatar_id, saved.assistant_name, saved.ui_scale), ("male_kai", "Кайто", 125))
@@ -156,7 +156,7 @@ class QtDesktopTests(unittest.TestCase):
         for scope, check in self.window.scope_checks.items():
             self.assertNotEqual(check.text(), scope)
             check.setChecked(scope in {"read_files", "ask_files"})
-        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("", "")):
+        with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("a" * 64, "b" * 64)):
             self.window.save_settings()
         saved = qt.DesktopSettings().load()
         self.assertEqual(saved.microphone_index, 3)

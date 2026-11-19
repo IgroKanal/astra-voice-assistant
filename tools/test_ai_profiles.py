@@ -1,6 +1,7 @@
 from pathlib import Path
 from dataclasses import replace
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.config_loader import Settings
 from src.desktop_settings import AIProfile, AVATAR_PROFILES, DesktopSettings
 from src.action_policy import ActionPolicy
+from src.capability_overrides import CapabilityOverrides
+from src.audio_device_discovery import AudioInputDevice
 from src.ollama_client import OllamaClient, OllamaResponseTruncated
 from src.ai_client import AIClient
 
@@ -73,6 +76,7 @@ class AIProfileTests(unittest.TestCase):
             self.assertEqual(settings.tts_voice_name, profile.voice_id)
             self.assertEqual(settings.stt_device_index, 2)
             self.assertEqual(settings.stt_device_identity, "a" * 64)
+            self.assertEqual(settings.stt_device_endpoint_identity, "b" * 64)
             self.assertEqual(settings.tts_rate, 210)
             self.assertEqual(settings.tts_volume, .65)
             self.assertEqual(settings.tts_engine, "sapi")
@@ -91,6 +95,192 @@ class AIProfileTests(unittest.TestCase):
             store.save(AIProfile(provider="disabled"))
             decoded = json.loads(win32crypt.CryptUnprotectData(store.path.read_bytes(), None, None, None, 1)[1].decode("utf-8"))
             self.assertNotIn("microphone_identity", decoded)
+
+    @patch(
+        "src.desktop_settings.audio_input_identities_for_index",
+        side_effect={2: ("a" * 64, "b" * 64), 7: ("c" * 64, "d" * 64)}.__getitem__,
+    )
+    def test_changing_microphone_index_refreshes_identity_and_endpoint(self, _identity_for_index):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.capability_override_store.save(CapabilityOverrides(browser_preferred="firefox"))
+            store.save(AIProfile(provider="disabled", microphone_index=2))
+
+            store.save(replace(store.load(), microphone_index=7))
+
+            saved = store.load()
+            overrides = store.capability_override_store.load()
+            self.assertEqual((saved.microphone_index, saved.microphone_identity), (7, "c" * 64))
+            self.assertEqual(overrides.microphone_endpoint_identity, "d" * 64)
+            self.assertEqual(overrides.browser_preferred, "firefox")
+
+    @patch(
+        "src.desktop_settings.audio_input_identities_for_index",
+        return_value=("a" * 64, "b" * 64),
+    )
+    def test_selecting_windows_default_clears_the_old_microphone_binding(self, _identity_for_index):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(provider="disabled", microphone_index=2))
+
+            store.save(replace(store.load(), microphone_index=None))
+
+            saved = store.load()
+            overrides = store.capability_override_store.load()
+            applied = store.apply(Settings())
+            self.assertIsNone(saved.microphone_index)
+            self.assertEqual(saved.microphone_identity, "")
+            self.assertEqual(overrides.microphone_endpoint_identity, "")
+            self.assertIsNone(applied.stt_device_index)
+            self.assertEqual(applied.stt_device_identity, "")
+
+    @patch(
+        "src.desktop_settings.audio_input_identities_for_index",
+        return_value=("a" * 64, "b" * 64),
+    )
+    def test_restoring_a_portable_default_profile_clears_local_endpoint(self, _identity_for_index):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(provider="disabled", microphone_index=2))
+
+            store.save(AIProfile(provider="disabled"))
+
+            saved = store.load()
+            self.assertIsNone(saved.microphone_index)
+            self.assertEqual(saved.microphone_identity, "")
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "",
+            )
+
+    @patch(
+        "src.desktop_settings.audio_input_identities_for_index",
+        side_effect=[("a" * 64, "b" * 64), ("", "")],
+    )
+    def test_unverified_changed_microphone_selection_does_not_replace_saved_profile(self, _identity_for_index):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(provider="disabled", microphone_index=2))
+            original = store.load()
+
+            with self.assertRaisesRegex(ValueError, "Не удалось проверить выбранный микрофон"):
+                store.save(replace(original, microphone_index=7))
+
+            self.assertEqual(store.load(), original)
+
+    @patch(
+        "src.desktop_settings.discover_audio_inputs",
+        return_value=(AudioInputDevice(9, "a" * 64, "b" * 64),),
+    )
+    def test_profile_identity_remaps_to_a_unique_microphone_on_this_computer(self, _discover):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(provider="disabled"))
+
+            store.save(replace(store.load(), microphone_identity="a" * 64))
+
+            saved = store.load()
+            self.assertEqual((saved.microphone_index, saved.microphone_identity), (9, "a" * 64))
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "b" * 64,
+            )
+
+    @patch(
+        "src.desktop_settings.discover_audio_inputs",
+        return_value=(
+            AudioInputDevice(9, "a" * 64),
+            AudioInputDevice(12, "a" * 64),
+        ),
+    )
+    def test_ambiguous_microphone_identity_keeps_windows_default(self, _discover):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            store.save(AIProfile(provider="disabled"))
+
+            store.save(replace(store.load(), microphone_identity="a" * 64))
+
+            saved = store.load()
+            self.assertIsNone(saved.microphone_index)
+            self.assertEqual(saved.microphone_identity, "a" * 64)
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "",
+            )
+
+    @patch("src.desktop_settings.discover_audio_inputs", return_value=())
+    def test_unresolved_new_identity_clears_the_previous_local_endpoint(self, _discover):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            with patch(
+                "src.desktop_settings.audio_input_identities_for_index",
+                return_value=("a" * 64, "b" * 64),
+            ):
+                store.save(AIProfile(provider="disabled", microphone_index=2))
+
+            store.save(replace(store.load(), microphone_index=None, microphone_identity="c" * 64))
+
+            saved = store.load()
+            self.assertIsNone(saved.microphone_index)
+            self.assertEqual(saved.microphone_identity, "c" * 64)
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "",
+            )
+
+    @patch(
+        "src.desktop_settings.discover_audio_inputs",
+        return_value=(AudioInputDevice(9, "a" * 64, "b" * 64),),
+    )
+    def test_saved_microphone_index_is_rebound_after_device_order_changes(self, _discover):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            with patch(
+                "src.desktop_settings.audio_input_identities_for_index",
+                return_value=("a" * 64, "b" * 64),
+            ):
+                store.save(AIProfile(provider="disabled", microphone_index=2))
+
+            store.save(store.load())
+
+            self.assertEqual(store.load().microphone_index, 9)
+            self.assertEqual(
+                store.apply(Settings()).stt_device_endpoint_identity,
+                "b" * 64,
+            )
+
+    def test_failed_profile_replace_rolls_back_local_endpoint_override(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = DesktopSettings(Path(temp) / "settings.dpapi")
+            with patch(
+                "src.desktop_settings.audio_input_identities_for_index",
+                return_value=("a" * 64, "b" * 64),
+            ):
+                store.save(AIProfile(provider="disabled", microphone_index=2))
+            original_profile = store.load()
+            original_replace = os.replace
+            replace_calls = [0]
+
+            def fail_profile_replace(source, destination):
+                replace_calls[0] += 1
+                if replace_calls[0] == 2:
+                    raise OSError("simulated DPAPI profile replace failure")
+                return original_replace(source, destination)
+
+            with patch(
+                "src.desktop_settings.audio_input_identities_for_index",
+                return_value=("c" * 64, "d" * 64),
+            ), patch(
+                "src.desktop_settings.os.replace",
+                side_effect=fail_profile_replace,
+            ), self.assertRaisesRegex(OSError, "simulated DPAPI profile"):
+                store.save(replace(original_profile, microphone_index=7))
+
+            self.assertEqual(store.load(), original_profile)
+            self.assertEqual(
+                store.capability_override_store.load().microphone_endpoint_identity,
+                "b" * 64,
+            )
 
     def test_openrouter_decision_model_is_rejected_before_saving(self):
         profile = AIProfile(provider="compatible", base_url="https://openrouter.ai/api/v1", model="openai/gpt-6-luna-decisions")

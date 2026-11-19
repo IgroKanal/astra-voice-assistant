@@ -2,12 +2,29 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from dataclasses import asdict, replace
+import base64
+import json
+import secrets
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.desktop_settings import AIProfile
-from src.profile_backup import decrypt_profile, encrypt_profile, export_profile, import_profile
+from src.backup_crypto import derive_backup_key
+from src.profile_backup import (
+    AAD,
+    FORMAT,
+    ITERATIONS,
+    KDF,
+    VERSION,
+    decrypt_profile,
+    encrypt_profile,
+    export_profile,
+    import_profile,
+)
 
 
 class ProfileBackupTests(unittest.TestCase):
@@ -28,6 +45,56 @@ class ProfileBackupTests(unittest.TestCase):
         blob = encrypt_profile(self.profile, "correct horse battery staple")
         self.assertNotIn(self.profile.api_key.encode("ascii"), blob)
         self.assertEqual(decrypt_profile(blob, "correct horse battery staple"), self.profile)
+
+    def test_portable_backup_drops_computer_specific_microphone_selection(self):
+        profile = AIProfile(
+            provider="disabled",
+            microphone_index=41,
+            microphone_identity="a" * 64,
+        )
+
+        restored = decrypt_profile(
+            encrypt_profile(profile, "correct horse battery staple"),
+            "correct horse battery staple",
+        )
+
+        self.assertEqual(
+            restored,
+            replace(profile, microphone_index=None, microphone_identity=""),
+        )
+
+    def test_legacy_portable_backup_discards_stale_microphone_values(self):
+        passphrase = "correct horse battery staple"
+        profile = AIProfile(
+            provider="disabled",
+            microphone_index=41,
+            microphone_identity="a" * 64,
+        )
+        salt = secrets.token_bytes(16)
+        nonce = secrets.token_bytes(12)
+        plaintext = json.dumps(asdict(profile), separators=(",", ":")).encode("utf-8")
+        ciphertext = AESGCM(derive_backup_key(passphrase, salt)).encrypt(
+            nonce, plaintext, AAD
+        )
+        legacy_payload = json.dumps(
+            {
+                "format": FORMAT,
+                "version": VERSION,
+                "kdf": KDF,
+                "iterations": ITERATIONS,
+                "salt": base64.b64encode(salt).decode("ascii"),
+                "nonce": base64.b64encode(nonce).decode("ascii"),
+                "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
+            },
+            separators=(",", ":"),
+        ).encode("ascii")
+
+        restored = decrypt_profile(legacy_payload, passphrase)
+
+        self.assertEqual(
+            restored,
+            replace(profile, microphone_index=None, microphone_identity=""),
+        )
 
     def test_wrong_passphrase_and_tampering_fail_closed(self):
         blob = encrypt_profile(self.profile, "correct horse battery staple")

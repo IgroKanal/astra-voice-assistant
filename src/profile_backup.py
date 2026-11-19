@@ -46,6 +46,11 @@ def encrypt_profile(profile: AIProfile, passphrase: str) -> bytes:
     salt = secrets.token_bytes(16)
     nonce = secrets.token_bytes(12)
     data = asdict(profile)
+    # PortAudio indices and the hashed device name belong to one computer.
+    # Keep them out of portable backups so import uses the destination PC's
+    # normal device discovery instead of inheriting a stale local selection.
+    data.pop("microphone_index", None)
+    data.pop("microphone_identity", None)
     if not profile.cloud_dialogue_enabled:
         data.pop("cloud_dialogue_enabled")
     plaintext = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -85,6 +90,10 @@ def decrypt_profile(payload: bytes, passphrase: str) -> AIProfile:
         profile_data = json.loads(plaintext.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
         if not isinstance(profile_data, dict):
             raise ValueError("Некорректный профиль в резервной копии")
+        # Older v1 backups may contain machine-specific microphone values.
+        # Ignore them when restoring on this or another computer.
+        profile_data.pop("microphone_index", None)
+        profile_data.pop("microphone_identity", None)
         if isinstance(profile_data.get("allowed_scopes"), list):
             profile_data["allowed_scopes"] = tuple(profile_data["allowed_scopes"])
         return AIProfile(**profile_data).validate()

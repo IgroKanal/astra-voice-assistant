@@ -165,6 +165,19 @@ class VoiceIO:
             self._init_edge_tts()
             return
 
+        if self.settings.tts_engine == "yandex":
+            if not self.settings.tts_yandex_api_key:
+                self.logger.warning(
+                    "Yandex SpeechKit выбран, но YANDEX_SPEECHKIT_API_KEY не задан. "
+                    "Сетевой запрос не выполнялся."
+                )
+            else:
+                self.logger.info(
+                    "Yandex SpeechKit TTS включён явно; текст голосовых ответов "
+                    "будет отправляться поставщику."
+                )
+            return
+
         if self.settings.tts_engine in {"sapi", "pyttsx3"}:
             self._init_sapi_tts()
             return
@@ -726,7 +739,11 @@ class VoiceIO:
             emit_event("state", "Говорю…")
         emit_activity("speaking", True)
         try:
-            return self._speak_edge(text) if self.settings.tts_engine == "edge" else self._speak_sapi(text)
+            if self.settings.tts_engine == "edge":
+                return self._speak_edge(text)
+            if self.settings.tts_engine == "yandex":
+                return self._speak_yandex(text)
+            return self._speak_sapi(text)
         finally:
             emit_activity("speaking", False)
             if manage_state:
@@ -827,6 +844,115 @@ class VoiceIO:
         self._log_tts_timing(start, "failed")
         print("[TTS ошибка] Не удалось озвучить ответ.")
         return False
+
+    def _speak_yandex(self, text: str) -> bool:
+        """Play opt-in Yandex PCM chunks as the v3 REST stream arrives."""
+        from src.yandex_speechkit import (
+            AUDIO_SAMPLE_RATE_HZ,
+            YandexSpeechKitClient,
+            resolve_russian_voice,
+            split_text_for_requests,
+        )
+
+        api_key = str(getattr(self.settings, "tts_yandex_api_key", "") or "").strip()
+        if not api_key:
+            self.logger.warning(
+                "Yandex SpeechKit TTS не запущен: API-ключ не настроен"
+            )
+            return False
+
+        audio = None
+        output_stream = None
+        first_audio_at: float | None = None
+        started = time.perf_counter()
+        try:
+            voice = resolve_russian_voice(
+                avatar_id=getattr(self.settings, "assistant_avatar_id", ""),
+                gender=getattr(self.settings, "assistant_gender", "female"),
+                requested_voice=getattr(self.settings, "tts_voice_name", ""),
+            )
+            phrases = split_text_for_requests(text)
+            if not phrases:
+                return False
+
+            total_budget = min(
+                60.0,
+                max(1.0, float(getattr(self.settings, "tts_playback_timeout_seconds", 25.0))),
+            )
+            deadline = time.monotonic() + total_budget
+            request_timeout = min(
+                60.0,
+                max(1.0, float(getattr(self.settings, "tts_yandex_timeout_seconds", 25.0))),
+                total_budget,
+            )
+            client = YandexSpeechKitClient(
+                api_key,
+                folder_id=getattr(self.settings, "tts_yandex_folder_id", ""),
+                timeout_seconds=request_timeout,
+            )
+
+            # PyAudio is already a runtime dependency for microphone capture;
+            # no additional audio package or model is downloaded for TTS.
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            output_stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=AUDIO_SAMPLE_RATE_HZ,
+                output=True,
+            )
+
+            def play_chunk(pcm: bytes) -> None:
+                nonlocal first_audio_at
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("SpeechKit playback budget exceeded")
+                if first_audio_at is None:
+                    first_audio_at = time.perf_counter()
+                    if self.settings.tts_log_timing:
+                        self.logger.info(
+                            "TTS timing: %.2fs [yandex_first_audio]",
+                            first_audio_at - started,
+                        )
+                output_stream.write(pcm, exception_on_underflow=False)
+
+            for phrase in phrases:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("SpeechKit playback budget exceeded")
+                client.timeout_seconds = min(request_timeout, remaining)
+                client.stream_synthesize(
+                    phrase,
+                    voice=voice.voice_id,
+                    on_audio_chunk=play_chunk,
+                )
+
+            self._log_tts_timing(started, "yandex_speechkit_stream")
+            return first_audio_at is not None
+        except Exception as exc:
+            # Provider/HTTP error text can contain request content; keep logs
+            # limited to exception type and never silently fall back to a
+            # different remote or gender-mismatched voice.
+            self.logger.error(
+                "Yandex SpeechKit TTS завершился ошибкой (%s)",
+                type(exc).__name__,
+            )
+            return False
+        finally:
+            if output_stream is not None:
+                try:
+                    output_stream.stop_stream()
+                except Exception:
+                    pass
+                try:
+                    output_stream.close()
+                except Exception:
+                    pass
+            if audio is not None:
+                try:
+                    audio.terminate()
+                except Exception:
+                    pass
 
     def _ensure_sapi_tts(self) -> bool:
         if getattr(self, "tts_engine", None) is not None:

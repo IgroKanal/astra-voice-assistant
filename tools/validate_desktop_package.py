@@ -27,11 +27,12 @@ def validate_voice_core_modules(modules):
         "src.vpn_controller",
         "src.windows_service_control",
         "src.desktop_cancellation",
+        "src.yandex_speechkit",
     )
     if any(name not in modules for name in required):
         raise ValueError(
             "The packaged runtime is missing voice, event, device, VPN controller "
-            "or Windows service-control support"
+            "Windows service-control, or optional Yandex TTS support"
         )
 
 

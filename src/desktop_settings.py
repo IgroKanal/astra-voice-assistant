@@ -17,6 +17,7 @@ from src.audio_device_discovery import (
 from src.capability_overrides import CapabilityOverrideStore
 from src.config_loader import Settings
 from src.action_policy import ALL_SCOPES, DEFAULT_SCOPES
+from src.yandex_speechkit import RUSSIAN_VOICES, resolve_russian_voice
 
 
 AVATAR_PROFILES = {
@@ -307,8 +308,37 @@ class DesktopSettings:
             name = character["assistant_name"]
             # Empty means automatic voice selection for the character's gender.
             voice_id = character["voice_id"]
+        configured_voice = str(voice_id or "").strip()
+        yandex_voice_id = configured_voice.split(":", 1)[-1].casefold() if configured_voice.casefold().startswith("yandex:") else configured_voice.casefold()
+        use_yandex_tts = settings.tts_engine == "yandex" or yandex_voice_id in RUSSIAN_VOICES
+        if use_yandex_tts:
+            # Explicit provider selection wins over legacy Windows SAPI voice
+            # IDs stored by older settings screens. A named Yandex override is
+            # honored; otherwise the avatar receives its mapped Russian voice.
+            requested_yandex_voice = (
+                configured_voice
+                if yandex_voice_id in RUSSIAN_VOICES
+                else settings.tts_voice_name
+            )
+            selected_yandex_voice = resolve_russian_voice(
+                avatar_id=profile.avatar_id,
+                gender=AVATAR_PROFILES[profile.avatar_id]["gender"],
+                requested_voice=requested_yandex_voice,
+            )
+            tts_engine = "yandex"
+            voice_id = selected_yandex_voice.voice_id
+        elif configured_voice:
+            # A saved Windows voice ID remains an explicit local SAPI choice.
+            tts_engine = "sapi"
+            voice_id = configured_voice
+        else:
+            # Preserve the configured Edge/SAPI engine when the character has
+            # no explicit Windows voice. This lets opted-in cloud providers
+            # survive loading the desktop identity profile.
+            tts_engine = settings.tts_engine
+            voice_id = settings.tts_voice_name
         phrases = list(dict.fromkeys([name.casefold(), *settings.wake_phrases]))
-        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine="sapi", tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index, stt_device_identity=profile.microphone_identity, stt_device_endpoint_identity=endpoint_identity)
+        settings = replace(settings, action_permissions=tuple(profile.allowed_scopes), assistant_name=name, assistant_gender=AVATAR_PROFILES[profile.avatar_id]["gender"], assistant_avatar_id=profile.avatar_id, wake_phrases=phrases, tts_engine=tts_engine, tts_voice_name=voice_id, tts_rate=profile.voice_rate, tts_volume=profile.voice_volume, stt_device_index=profile.microphone_index, stt_device_identity=profile.microphone_identity, stt_device_endpoint_identity=endpoint_identity)
         if profile.provider == "env":
             return settings
         if profile.provider == "disabled":

@@ -121,6 +121,8 @@ class QtDesktopTests(unittest.TestCase):
         self.window.scale_choice.setCurrentIndex(2)
         with patch("src.desktop_settings.audio_input_identities_for_index", return_value=("a" * 64, "b" * 64)):
             self.window.save_settings()
+        self.wait_until(lambda: not self.window.busy)
+        self.assertEqual(self.window.bridge.mode, "text")
         saved = qt.DesktopSettings().load()
         self.assertEqual((saved.avatar_id, saved.assistant_name, saved.ui_scale), ("male_kai", "Кайто", 125))
         self.assertEqual(self.window.character.name, "Кайто")

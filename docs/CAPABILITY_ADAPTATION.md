@@ -166,12 +166,14 @@ enabled as specific low-risk actions when user overrides load successfully.
 automatic action (`browser`, `system`). Invalid overrides disable automatic
 mode. Screenshots, URL opening, file access and other actions are not granted
 by this mode. Runtime confirmation now covers closing an application,
-connecting/disconnecting VPN and closing Yandex Music. Replacing the remaining
+connecting/disconnecting VPN, closing Yandex Music, forgetting a personal-memory
+note and cancelling a reminder. Replacing the remaining
 fixed scope catalog and reviewing risk classification for every action are
 still open.
 
 The runtime separately marks closing an application, connecting/disconnecting
-VPN, and closing Yandex Music as actions that need one-time confirmation. The
+VPN, closing Yandex Music, forgetting a personal-memory note and cancelling a
+reminder as actions that need one-time confirmation. The
 exact typed action is held for at most 20 seconds; a changed command cancels
 the pending request, and the action scope is checked again when the user says
 yes. VPN status and ordinary media transport controls remain read-only or

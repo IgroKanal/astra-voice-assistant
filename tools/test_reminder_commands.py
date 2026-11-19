@@ -91,7 +91,7 @@ class ReminderCommandTests(unittest.TestCase):
     def test_voice_cancel_by_title_fragment_requires_wake_and_permission(self):
         from tools.smoke_test_v11_daily_workflow import make_context
         from main import process_turn
-        ctx, _, ai, *_ = make_context()
+        ctx, responses, ai, *_ = make_context()
         with patch("src.reminders.ReminderStore") as store:
             process_turn("отмени напоминание про встречу", ctx)
             store.assert_not_called()
@@ -99,12 +99,16 @@ class ReminderCommandTests(unittest.TestCase):
             self.assertEqual(ai.route_calls, 0)
 
             process_turn("Астра, отмени напоминание про встречу", ctx)
+            store.assert_not_called()
+            self.assertEqual(ctx.state.pending_kind, "action_confirmation")
+            process_turn("да", ctx)
             store.return_value.cancel_matching.assert_called_once_with("про встречу")
 
             ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))
             store.reset_mock()
             process_turn("Астра, отмени напоминание про встречу", ctx)
             store.assert_not_called()
+            self.assertIn("отключён", responses[-1])
 
     def test_explicit_list_phrases_are_local_reminder_queries(self):
         from src.command_parser import LIST_UPCOMING_REMINDERS_TARGET, is_command_like_text
@@ -189,6 +193,9 @@ class ReminderCommandTests(unittest.TestCase):
             process_turn("отмени ближайшее напоминание", ctx)
             store.assert_not_called()
             process_turn("Астра, отмени ближайшее напоминание", ctx)
+            store.return_value.cancel_next.assert_not_called()
+            self.assertEqual(ctx.state.pending_kind, "action_confirmation")
+            process_turn("да", ctx)
             store.return_value.cancel_next.assert_called_once_with()
             self.assertEqual(ai.ask_calls, 0)
             ctx = replace(ctx, settings=replace(ctx.settings, action_permissions=()))

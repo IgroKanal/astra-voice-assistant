@@ -2,6 +2,11 @@
 from dataclasses import dataclass
 import math
 
+from src.command_parser import (
+    CANCEL_NEXT_REMINDER_TARGET,
+    CANCEL_REMINDER_MATCH_PREFIX,
+    MEMORY_FORGET_PREFIX,
+)
 from src.task_router import ActionType, AssistantAction
 
 
@@ -108,6 +113,13 @@ def action_requires_confirmation(action: AssistantAction) -> bool:
         return (action.target or action.query).strip().casefold() in {"connect", "disconnect"}
     if action.type == ActionType.MEDIA_CONTROL:
         return (action.target or action.query).split(":", 1)[0].strip().casefold() == "shutdown_yandex_music"
+    if action.type == ActionType.MEMORY_NOTE:
+        return (action.target or "").strip().startswith(MEMORY_FORGET_PREFIX)
+    if action.type == ActionType.REMINDER:
+        target = (action.target or "").strip()
+        return target == CANCEL_NEXT_REMINDER_TARGET or target.startswith(
+            CANCEL_REMINDER_MATCH_PREFIX
+        )
     return False
 
 
@@ -124,6 +136,12 @@ def action_confirmation_prompt(action: AssistantAction) -> str:
         return f"Подтверди {verb} VPN. Скажи да или нет."
     if action.type == ActionType.MEDIA_CONTROL:
         return "Подтверди закрытие Яндекс Музыки. Скажи да или нет."
+    if action.type == ActionType.MEMORY_NOTE:
+        return "Подтверди удаление заметки из личной памяти. Скажи да или нет."
+    if action.type == ActionType.REMINDER:
+        if (action.target or "").strip() == CANCEL_NEXT_REMINDER_TARGET:
+            return "Подтверди отмену ближайшего напоминания. Скажи да или нет."
+        return "Подтверди отмену напоминания. Скажи да или нет."
     return "Подтверди это действие. Скажи да или нет."
 
 

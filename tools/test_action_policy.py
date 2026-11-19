@@ -15,6 +15,11 @@ from src.action_policy import (
     action_requires_confirmation,
     capability_catalog,
 )
+from src.command_parser import (
+    CANCEL_NEXT_REMINDER_TARGET,
+    CANCEL_REMINDER_MATCH_PREFIX,
+    MEMORY_FORGET_PREFIX,
+)
 from src.task_router import ActionType, AssistantAction
 
 
@@ -161,6 +166,11 @@ class ActionPolicyTests(unittest.TestCase):
             (AssistantAction(ActionType.VPN_CONTROL, target="status"), False),
             (AssistantAction(ActionType.MEDIA_CONTROL, target="shutdown_yandex_music"), True),
             (AssistantAction(ActionType.MEDIA_CONTROL, target="media_next"), False),
+            (AssistantAction(ActionType.MEMORY_NOTE, target=MEMORY_FORGET_PREFIX + "secret"), True),
+            (AssistantAction(ActionType.MEMORY_NOTE, target="__memory_search__:secret"), False),
+            (AssistantAction(ActionType.REMINDER, target=CANCEL_REMINDER_MATCH_PREFIX + "meeting"), True),
+            (AssistantAction(ActionType.REMINDER, target=CANCEL_NEXT_REMINDER_TARGET), True),
+            (AssistantAction(ActionType.REMINDER, target="__list_upcoming_reminders__"), False),
             (AssistantAction(ActionType.OPEN_APP, target="telegram"), False),
         )
         for action, required in cases:

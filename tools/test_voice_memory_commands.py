@@ -161,9 +161,14 @@ class VoiceMemoryRuntimeTests(unittest.TestCase):
             store.return_value.search.side_effect = [[first], [first, second]]
             store.return_value.forget.return_value = True
             process_turn("Астра, забудь заметку про русский язык интерфейса", ctx)
+            self.assertEqual(ctx.state.pending_kind, "action_confirmation")
+            store.assert_not_called()
+            process_turn("да", ctx)
             store.return_value.forget.assert_called_once_with("one")
             self.assertIn("забыта", responses[-1])
             process_turn("Астра, забудь заметку про русский язык интерфейса", ctx)
+            self.assertEqual(ctx.state.pending_kind, "action_confirmation")
+            process_turn("да", ctx)
             self.assertIn("ничего не удалено", responses[-1])
             self.assertEqual(store.return_value.forget.call_count, 1)
 

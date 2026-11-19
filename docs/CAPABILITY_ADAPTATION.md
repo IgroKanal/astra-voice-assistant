@@ -165,7 +165,14 @@ enabled as specific low-risk actions when user overrides load successfully.
 `disabled_auto_scopes` in `capability_overrides.json` can disable either
 automatic action (`browser`, `system`). Invalid overrides disable automatic
 mode. Screenshots, URL opening, file access and other actions are not granted
-by this mode. Runtime confirmation now covers closing an application,
+by this mode. The startup discovery result is now passed into both voice and
+text runtime policy checks: automatic web search is available only when the
+Windows HTTPS default resolves to a discovered existing browser executable;
+system information is available because its controller is instantiated for
+the runtime. A missing or incomplete browser result blocks the automatic search
+with an explicit availability message instead of trying an unknown handler.
+This availability fact does not create a user grant, and it does not broaden
+ordinary browser actions. Runtime confirmation now covers closing an application,
 connecting/disconnecting VPN, closing Yandex Music, forgetting a personal-memory
 note, cancelling reminders and clearing the current dialogue. Replacing the
 remaining fixed scope catalog and reviewing risk classification for every

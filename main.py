@@ -214,6 +214,7 @@ class TurnContext:
     web_answer: Callable[[str], object] | None = None
     web_sources: Callable[[tuple], None] | None = None
     file_mutation: object | None = None
+    available_auto_scopes: frozenset[str] | None = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -978,6 +979,16 @@ def _open_web_url(url: str, logger: logging.Logger) -> bool:
         return False
 
 
+def _action_policy(ctx: TurnContext) -> ActionPolicy:
+    """Build the action policy from grants, user overrides and current discovery."""
+    return ActionPolicy(
+        ctx.settings.action_permissions,
+        automatic_safe_actions=ctx.settings.automatic_safe_actions,
+        denied_auto_scopes=ctx.settings.denied_auto_scopes,
+        available_auto_scopes=getattr(ctx, "available_auto_scopes", None),
+    )
+
+
 def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int, int]:
     """Execute only the controller-validated local steps in a routine."""
     succeeded = 0
@@ -985,7 +996,7 @@ def _execute_routine(routine: RoutineDefinition, ctx: TurnContext) -> tuple[int,
         ok = False
         detail = ""
         step_type = {"open_app": ActionType.OPEN_APP, "open_url": ActionType.OPEN_URL, "open_folder": ActionType.OPEN_FOLDER}.get(step.action)
-        if step_type is None or not ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(AssistantAction(type=step_type, target=step.target, source="routine")).allowed:
+        if step_type is None or not _action_policy(ctx).check(AssistantAction(type=step_type, target=step.target, source="routine")).allowed:
             ctx.logger.info("policy routine step denied: action=%s", step.action)
             continue
 
@@ -1273,7 +1284,7 @@ def handle_action(
 
     Возвращает False, если нужно завершить приложение.
     """
-    decision = ActionPolicy(ctx.settings.action_permissions, automatic_safe_actions=ctx.settings.automatic_safe_actions, denied_auto_scopes=ctx.settings.denied_auto_scopes).check(action)
+    decision = _action_policy(ctx).check(action)
     vpn_selection_required: tuple[str, ...] = ()
     vpn_setup_error = ""
     selected_vpn_before = ""
@@ -2488,6 +2499,7 @@ def run_text_mode(
     routines: RoutineController | None = None,
     media: MediaController | None = None,
     background_tasks: BackgroundTaskManager | None = None,
+    available_auto_scopes: frozenset[str] | None = None,
 ) -> None:
     print("Текстовый режим. Пиши команды так же, как сказал бы голосом.")
     print(f"Пример с именем: {settings.assistant_name}, открой блокнот")
@@ -2545,6 +2557,7 @@ def run_text_mode(
         background_tasks=background_tasks,
         web_answer=lambda query: _voice_web_answer(settings, query),
         web_sources=_publish_web_sources,
+        available_auto_scopes=available_auto_scopes,
     )
 
     while True:
@@ -2645,6 +2658,7 @@ def _run_voice_mode_impl(
     media: MediaController | None = None,
     background_tasks: BackgroundTaskManager | None = None,
     file_mutation: object | None = None,
+    available_auto_scopes: frozenset[str] | None = None,
 ) -> None:
     from src.desktop_file_search import DesktopFileSearchChannel
 
@@ -2753,6 +2767,7 @@ def _run_voice_mode_impl(
         web_answer=lambda query: _voice_web_answer(settings, query),
         web_sources=_publish_web_sources,
         file_mutation=file_mutation,
+        available_auto_scopes=available_auto_scopes,
     )
 
     if _wake_only_voice_enabled(settings):
@@ -2904,6 +2919,7 @@ def run_voice_mode(
     background_tasks: BackgroundTaskManager | None = None,
     *,
     file_mutation: object | None = None,
+    available_auto_scopes: frozenset[str] | None = None,
 ) -> None:
     """Run voice mode and always discard an unfinished file-action preview."""
     try:
@@ -2911,6 +2927,7 @@ def run_voice_mode(
             settings, apps, app_manager, keyboard, folders, system, vpn,
             windows, ai_client, logger, routines, media, background_tasks,
             file_mutation,
+            available_auto_scopes,
         )
     finally:
         cancel = getattr(file_mutation, "cancel", None)
@@ -2991,6 +3008,16 @@ def main() -> int:
         ",".join(sorted(browser_discovery.apps)) or "none",
         browser_discovery.default_browser or "none",
     )
+    available_auto_scopes = {"system"}
+    if (
+        browser_discovery.default_browser
+        and browser_discovery.default_browser in browser_discovery.apps
+    ):
+        available_auto_scopes.add("browser")
+    logger.info(
+        "System discovery: automatic_action_scopes=%s",
+        ",".join(sorted(available_auto_scopes)),
+    )
     registered_apps = ()
     try:
         registered_apps = discover_registered_applications()
@@ -3056,11 +3083,13 @@ def main() -> int:
             run_text_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
                 windows, ai_client, logger, routines, media, background_tasks,
+                frozenset(available_auto_scopes),
             )
         else:
             run_voice_mode(
                 settings, apps, app_manager, keyboard, folders, system, vpn,
                 windows, ai_client, logger, routines, media, background_tasks,
+                available_auto_scopes=frozenset(available_auto_scopes),
             )
     except KeyboardInterrupt:
         print("\nАстра: Завершаю работу.")

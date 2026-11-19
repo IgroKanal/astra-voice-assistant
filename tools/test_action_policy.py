@@ -89,6 +89,49 @@ class ActionPolicyTests(unittest.TestCase):
             self.assertFalse(policy.check(AssistantAction(kind)).allowed)
         self.assertFalse(policy.check(AssistantAction(ActionType.SYSTEM_INFO, source='webpage')).allowed)
 
+    def test_adaptive_actions_follow_detected_runtime_capabilities(self):
+        policy = ActionPolicy(
+            (),
+            automatic_safe_actions=True,
+            available_auto_scopes={"system"},
+        )
+        self.assertTrue(policy.check(AssistantAction(ActionType.SYSTEM_INFO)).allowed)
+        web_search = policy.check(AssistantAction(ActionType.WEB_SEARCH, query="погода"))
+        self.assertFalse(web_search.allowed)
+        self.assertEqual(web_search.scope, "browser")
+        self.assertIn("не обнаружена", web_search.reason)
+
+        browser_ready = ActionPolicy(
+            (),
+            automatic_safe_actions=True,
+            available_auto_scopes={"system", "browser"},
+        )
+        self.assertTrue(
+            browser_ready.check(
+                AssistantAction(ActionType.WEB_SEARCH, query="погода")
+            ).allowed
+        )
+
+    def test_missing_executor_blocks_auto_action_even_with_default_scope(self):
+        policy = ActionPolicy(
+            DEFAULT_SCOPES,
+            automatic_safe_actions=True,
+            available_auto_scopes={"system"},
+        )
+        self.assertFalse(
+            policy.check(AssistantAction(ActionType.WEB_SEARCH, query="погода")).allowed
+        )
+        # The inventory gates only the auto-safe executor. A separately granted
+        # ordinary browser action still reaches its own runtime adapter.
+        self.assertTrue(
+            policy.check(AssistantAction(ActionType.OPEN_URL, target="example.org")).allowed
+        )
+
+    def test_malformed_detected_capabilities_fail_closed(self):
+        for scopes in ("browser", ("unknown",), (None,), ([],)):
+            with self.subTest(scopes=scopes), self.assertRaises(ValueError):
+                ActionPolicy((), available_auto_scopes=scopes)
+
     def test_explicit_automatic_override_denies_even_with_legacy_scope(self):
         policy = ActionPolicy(('browser',), automatic_safe_actions=True, denied_auto_scopes=('browser',))
         self.assertFalse(policy.check(AssistantAction(ActionType.WEB_SEARCH, query='погода')).allowed)
@@ -199,6 +242,26 @@ class ActionPolicyTests(unittest.TestCase):
         handle_action(AssistantAction(ActionType.OPEN_APP, target="telegram"), ctx)
         self.assertEqual(apps.opened, [])
         self.assertIn("отключён", responses[-1])
+
+    def test_runtime_auto_web_search_requires_discovered_browser(self):
+        from tools.smoke_test_v11_daily_workflow import make_context
+        from main import handle_action
+
+        ctx, responses, _ai, _apps, *_ = make_context()
+        ctx = replace(
+            ctx,
+            settings=replace(
+                ctx.settings,
+                automatic_safe_actions=True,
+                action_permissions=(),
+            ),
+            available_auto_scopes=frozenset({"system"}),
+        )
+        handle_action(
+            AssistantAction(ActionType.WEB_SEARCH, query="погода"),
+            ctx,
+        )
+        self.assertIn("не обнаружена", responses[-1])
 
 
 if __name__ == "__main__":

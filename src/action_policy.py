@@ -153,7 +153,14 @@ def action_confirmation_prompt(action: AssistantAction) -> str:
 
 
 class ActionPolicy:
-    def __init__(self, allowed_scopes=DEFAULT_SCOPES, *, automatic_safe_actions=False, denied_auto_scopes=()):
+    def __init__(
+        self,
+        allowed_scopes=DEFAULT_SCOPES,
+        *,
+        automatic_safe_actions=False,
+        denied_auto_scopes=(),
+        available_auto_scopes=None,
+    ):
         if isinstance(allowed_scopes, (str, bytes)) or not isinstance(
             allowed_scopes, (tuple, list, set, frozenset)
         ):
@@ -170,6 +177,22 @@ class ActionPolicy:
             raise ValueError("Неизвестное разрешение навыка")
         self.automatic_safe_actions = automatic_safe_actions
         self.denied_auto_scopes = frozenset(denied_auto_scopes)
+        if available_auto_scopes is None:
+            self.available_auto_scopes = None
+        else:
+            if isinstance(available_auto_scopes, (str, bytes)) or not isinstance(
+                available_auto_scopes, (tuple, list, set, frozenset)
+            ):
+                raise ValueError("Доступные возможности должны быть списком навыков")
+            try:
+                self.available_auto_scopes = frozenset(available_auto_scopes)
+            except TypeError:
+                raise ValueError("Доступные возможности должны быть простыми именами") from None
+            if any(
+                not isinstance(scope, str) or scope not in ALL_SCOPES
+                for scope in self.available_auto_scopes
+            ):
+                raise ValueError("Неизвестная обнаруженная возможность")
 
     def check(self, action: AssistantAction) -> PolicyDecision:
         if not isinstance(action, AssistantAction) or not isinstance(action.type, ActionType):
@@ -200,10 +223,22 @@ class ActionPolicy:
             return PolicyDecision(False, "Для этого действия не настроено разрешение")
         if scope and action.source not in TRUSTED_LOCAL and action.source != "llm_router":
             return PolicyDecision(False, "Недоверенный источник действия", scope)
-        if self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS and scope in self.denied_auto_scopes:
+        automatic_action = (
+            self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS
+        )
+        if automatic_action and scope in self.denied_auto_scopes:
             return PolicyDecision(False, "Это действие отключено пользователем", scope)
-        auto_allowed = (self.automatic_safe_actions and action.type in AUTOMATIC_SAFE_ACTIONS
-                        and scope not in self.denied_auto_scopes)
+        if (
+            automatic_action
+            and self.available_auto_scopes is not None
+            and scope not in self.available_auto_scopes
+        ):
+            return PolicyDecision(
+                False,
+                "На этом компьютере не обнаружена необходимая возможность",
+                scope,
+            )
+        auto_allowed = automatic_action and scope not in self.denied_auto_scopes
         if scope and scope not in self.allowed and not auto_allowed:
             return PolicyDecision(False, "Этот навык отключён в разрешениях Astra", scope)
         if action.type == ActionType.MEDIA_CONTROL and (action.target or action.query).split(":", 1)[0] in {"open_play_local", "shutdown_yandex_music"} and "apps" not in self.allowed:

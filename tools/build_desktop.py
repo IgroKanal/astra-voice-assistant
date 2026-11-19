@@ -19,32 +19,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tools.build_desktop_environment import isolated_pyinstaller_environment
 from tools.build_paths import cleanup_build_work, configure_temp_directory, resolve_build_paths
 
 
 def build() -> Path:
-    inputs = [ROOT / name for name in ("main.py", "astra_desktop_qt.py", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "docs/DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", "licenses/QT_LGPL_LICENSE.txt", "licenses/QT_GPL_LICENSE.txt", ".env.example", "src/version.py", "tools/build_paths.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
+    inputs = [ROOT / name for name in ("main.py", "astra_desktop_qt.py", "astra_runtime.py", "requirements.txt", "requirements-desktop.txt", "requirements-build.txt", "docs/DESKTOP_PREVIEW.md", "THIRD_PARTY_NOTICES.md", "licenses/QT_LGPL_LICENSE.txt", "licenses/QT_GPL_LICENSE.txt", ".env.example", "src/version.py", "tools/build_paths.py", "tools/build_desktop_environment.py", "tools/edge_tts_entry.py", "tools/edge_playback_entry.py")]
     inputs += list((ROOT / "src").glob("*.py")) + list((ROOT / "config").glob("*.json")) + list((ROOT / "assets" / "avatars").glob("*.png"))
-    avatar_project = ROOT / "prototypes" / "3d_avatar"
     icon = ROOT / "assets" / "branding" / "astra.ico"
     inputs += list((ROOT / "assets" / "branding").glob("*"))
-    inputs += [path for path in avatar_project.rglob("*") if path.is_file() and ".godot" not in path.parts]
-    godot_value = os.environ.get("ASTRA_GODOT_EXECUTABLE", "").strip()
-    if not godot_value:
-        raise RuntimeError("Set ASTRA_GODOT_EXECUTABLE to the verified Godot 4.7.2 Windows binary before building the portable app")
-    godot_executable = Path(godot_value).resolve(strict=True)
-    version_result = subprocess.run([str(godot_executable), "--headless", "--version"], capture_output=True, text=True, timeout=20)
-    if version_result.returncode != 0 or not version_result.stdout.strip().startswith("4.7.2."):
-        raise RuntimeError("The packaged 3D preview requires Godot 4.7.2 stable")
-    signature_script = "$sig = Get-AuthenticodeSignature -LiteralPath $env:ASTRA_GODOT_EXECUTABLE; if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike '*Prehensile Tales B.V.*') { exit 1 }; $sig.SignerCertificate.Subject"
-    powershell_environment = {**os.environ, "ASTRA_GODOT_EXECUTABLE": str(godot_executable)}
-    powershell_environment["PSModulePath"] = str(Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "Modules")
-    signature_result = subprocess.run(["powershell.exe", "-NoProfile", "-Command", signature_script],
-                                      env=powershell_environment,
-                                      capture_output=True, text=True, timeout=30)
-    if signature_result.returncode != 0:
-        raise RuntimeError("Godot Authenticode signature is invalid or not from Prehensile Tales B.V.")
-    inputs += [ROOT / "licenses/GODOT_LICENSE.txt", ROOT / "licenses/GODOT_COPYRIGHT.txt", godot_executable]
     pyside_version = importlib.metadata.version("PySide6-Essentials")
     pyside_parts = tuple(int(value) for value in pyside_version.split(".")[:2])
     if not (6, 9) <= pyside_parts < (7, 0):
@@ -67,7 +50,7 @@ def build() -> Path:
         try:
             return str(path.relative_to(ROOT)).replace("\\", "/")
         except ValueError:
-            return "third_party/godot/" + path.name
+            return "external/" + path.name
     fingerprint = {input_key(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
     paths = resolve_build_paths(ROOT)
     paths.output_root.mkdir(parents=True, exist_ok=True)
@@ -98,15 +81,22 @@ def build() -> Path:
     configure_temp_directory(work)
     pyinstaller_config = work / "pyinstaller-config"
     pyinstaller_config.mkdir()
-    os.environ["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_config)
+    pyinstaller_env = isolated_pyinstaller_environment()
+    pyinstaller_env["PYINSTALLER_CONFIG_DIR"] = str(pyinstaller_config)
     common = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--noupx", "--clean", "--specpath", str(work), "--icon", str(icon)]
-    subprocess.run(common + ["--name", "Astra", "--onefile", "--windowed", "--distpath", str(output), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", "--hidden-import", "src.avatar_preview", str(ROOT / "astra_desktop_qt.py")], cwd=ROOT, check=True)
-    subprocess.run(common + ["--name", "AstraRuntime", "--onedir", "--console", "--distpath", str(output / "runtime"), "--workpath", str(work / "runtime"), "--collect-submodules", "pyttsx3.drivers", "--add-data", str(ROOT / "config") + ":config", str(ROOT / "astra_runtime.py")], cwd=ROOT, check=True)
+    ui_stage = work / "ui-dist"
+    subprocess.run(common + ["--name", "Astra", "--onedir", "--contents-directory", "_internal", "--windowed", "--distpath", str(ui_stage), "--workpath", str(work / "ui"), "--add-data", str(ROOT / "assets" / "avatars") + ":assets/avatars", str(ROOT / "astra_desktop_qt.py")], cwd=ROOT, env=pyinstaller_env, check=True)
+    ui_payload = ui_stage / "Astra"
+    if not (ui_payload / "Astra.exe").is_file():
+        raise RuntimeError("PyInstaller did not produce the onedir desktop application")
+    for path in ui_payload.iterdir():
+        shutil.move(str(path), str(output / path.name))
+    subprocess.run(common + ["--name", "AstraRuntime", "--onedir", "--console", "--distpath", str(output / "runtime"), "--workpath", str(work / "runtime"), "--collect-submodules", "pyttsx3.drivers", "--add-data", str(ROOT / "config") + ":config", str(ROOT / "astra_runtime.py")], cwd=ROOT, env=pyinstaller_env, check=True)
     runtime_dir = output / "runtime" / "AstraRuntime"
-    subprocess.run(common + ["--name", "edge-tts", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-tts"), "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_tts_entry.py")], cwd=ROOT, check=True)
-    subprocess.run(common + ["--name", "edge-playback", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-playback"), "--collect-all", "edge_playback", "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_playback_entry.py")], cwd=ROOT, check=True)
+    subprocess.run(common + ["--name", "edge-tts", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-tts"), "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_tts_entry.py")], cwd=ROOT, env=pyinstaller_env, check=True)
+    subprocess.run(common + ["--name", "edge-playback", "--onefile", "--console", "--distpath", str(runtime_dir), "--workpath", str(work / "edge-playback"), "--collect-all", "edge_playback", "--collect-all", "edge_tts", str(ROOT / "tools" / "edge_playback_entry.py")], cwd=ROOT, env=pyinstaller_env, check=True)
 
-    edge_env = {**os.environ, "PATH": str(runtime_dir) + os.pathsep + os.environ.get("PATH", "")}
+    edge_env = {**pyinstaller_env, "PATH": str(runtime_dir) + os.pathsep + pyinstaller_env.get("PATH", "")}
     edge_version = subprocess.run([str(runtime_dir / "edge-tts.exe"), "--version"], env=edge_env, capture_output=True, text=True, timeout=20)
     playback_help = subprocess.run([str(runtime_dir / "edge-playback.exe"), "--help"], env=edge_env, capture_output=True, text=True, timeout=20)
     if edge_version.returncode != 0 or not edge_version.stdout.strip().startswith("edge-tts 7.3."):
@@ -125,20 +115,14 @@ def build() -> Path:
     shutil.copytree(edge_playback_package, third_party_sources / "edge_playback", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(ROOT / "config", output / "config")
     shutil.copytree(ROOT / "assets", output / "assets")
-    shutil.copytree(avatar_project, output / "assets" / "3d_avatar", ignore=shutil.ignore_patterns(".godot", "*.tmp"))
-    godot_target = output / "third_party" / "godot" / "Godot_v4.7.2-stable_win64.exe"
-    godot_target.parent.mkdir(parents=True)
-    shutil.copy2(godot_executable, godot_target)
-    shutil.copy2(ROOT / "licenses/GODOT_LICENSE.txt", output / "GODOT_LICENSE.txt")
-    shutil.copy2(ROOT / "licenses/GODOT_COPYRIGHT.txt", output / "GODOT_COPYRIGHT.txt")
     shutil.copy2(ROOT / ".env.example", output / ".env.example")
     shutil.copy2(ROOT / "docs/DESKTOP_PREVIEW.md", output / "README.md")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
     for path in inputs:
         if hashlib.sha256(path.read_bytes()).hexdigest() != fingerprint[input_key(path)]:
-            raise RuntimeError("Source or Godot runtime changed during build; discard this preview and rebuild")
+            raise RuntimeError("Source changed during build; discard this preview and rebuild")
     from src.version import PRODUCT_VERSION
-    manifest = {"product": "Astra Desktop", "version": PRODUCT_VERSION, "built_at": datetime.now().isoformat(), "python": sys.version.split()[0], "bundled_dependencies": {"edge-tts": edge_tts_version, "PySide6-Essentials": pyside_version}, "source_sha256": fingerprint, "contains_personal_env": False}
+    manifest = {"product": "Astra Desktop", "version": PRODUCT_VERSION, "built_at": datetime.now().isoformat(), "python": sys.version.split()[0], "bundled_dependencies": {"edge-tts": edge_tts_version, "PySide6-Essentials": pyside_version}, "bundled_components": {"3d_avatar_preview": False}, "source_sha256": fingerprint, "contains_personal_env": False}
     (output / "build_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         cleanup_state["archive_created"] = True

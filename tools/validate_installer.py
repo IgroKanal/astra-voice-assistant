@@ -108,7 +108,7 @@ def validate(installer: Path) -> None:
             env=runtime_env,
             timeout=60,
             cwd=install_root,
-            input_data="Астра, сколько времени\nАстра, начни новый диалог\nАстра, стоп\n",
+            input_data="Астра, сколько времени\nАстра, начни новый диалог\nда\nАстра, стоп\n",
         )
         if (
             launch.returncode != 0

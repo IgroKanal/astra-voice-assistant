@@ -38,7 +38,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="astra-runtime-check-") as temp:
         env["LOCALAPPDATA"] = temp
         private_marker = "astra-package-private-value"
-        result = subprocess.run([str(runtime), "--text"], input=f"Астра, сколько времени\nАстра, начни новый диалог\nАстра, что значит api_key={private_marker}\nАстра, стоп\n", cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        result = subprocess.run([str(runtime), "--text"], input=f"Астра, сколько времени\nАстра, начни новый диалог\nда\nАстра, что значит api_key={private_marker}\nАстра, стоп\n", cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         audit = Path(temp) / "AstraVoiceAssistant" / "actions.sqlite"
         assert audit.is_file(), "Frozen runtime did not create isolated action audit"
         with closing(sqlite3.connect(audit)) as db:

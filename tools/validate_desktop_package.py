@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -33,6 +34,24 @@ def validate_voice_core_modules(modules):
         )
 
 
+def validate_deferred_3d_contract(manifest, archive_names, folder):
+    if manifest.get("bundled_components", {}).get("3d_avatar_preview") is not False:
+        raise ValueError("Portable desktop packages must leave the unapproved 3D preview out")
+    prefix = folder + "/"
+    forbidden = (
+        prefix + "assets/3d_avatar/",
+        prefix + "third_party/godot/",
+        prefix + "GODOT_LICENSE.txt",
+        prefix + "GODOT_COPYRIGHT.txt",
+    )
+    included = sorted(
+        name for name in archive_names
+        if any(name.startswith(path) for path in forbidden)
+    )
+    if included:
+        raise ValueError("Portable package contains the deferred 3D preview: " + included[0])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("archive", type=Path)
@@ -57,15 +76,20 @@ def main():
             raise ValueError("Expected one portable root")
         folder = roots.pop()
         names = set(archive.namelist())
+        manifest_path = folder + "/build_manifest.json"
+        if manifest_path not in names:
+            raise ValueError("Missing package file: build_manifest.json")
+        manifest = json.loads(archive.read(manifest_path).decode("utf-8"))
+        validate_deferred_3d_contract(manifest, names, folder)
         avatar_assets = ("anime_female.png", "anime_female_speaking.png", "anime_male.png", "anime_male_speaking.png",
                          "anime_female_saya.png", "anime_female_saya_speaking.png", "anime_male_kai.png", "anime_male_kai_speaking.png",
                          "full_female.png", "full_female_speaking.png", "full_male.png", "full_male_speaking.png",
                          "full_female_saya.png", "full_female_saya_speaking.png", "full_male_kai.png", "full_male_kai_speaking.png")
         required_files = ("Astra.exe", "runtime/AstraRuntime/AstraRuntime.exe", "config/apps.json", "config/routines.json",
+                          "_internal/PySide6/QtCore.pyd", "_internal/PySide6/Qt6Core.dll",
+                          "_internal/PySide6/plugins/platforms/qwindows.dll",
                           "assets/branding/astra.ico", "assets/branding/astra.png", "assets/branding/astra.svg",
-                          *("assets/avatars/" + name for name in avatar_assets), "assets/3d_avatar/project.godot",
-                          "assets/3d_avatar/main.tscn", "assets/3d_avatar/scripts/avatar_viewer.gd",
-                          "third_party/godot/Godot_v4.7.2-stable_win64.exe", "GODOT_LICENSE.txt", "GODOT_COPYRIGHT.txt",
+                          *("assets/avatars/" + name for name in avatar_assets),
                           "third_party_licenses/Qt-LGPL-3.0-only.txt", "third_party_licenses/Qt-GPL-3.0-only.txt",
                           "build_manifest.json", ".env.example", "THIRD_PARTY_NOTICES.md")
         for required in required_files:
@@ -95,7 +119,7 @@ def main():
             required_modules = {
                 "pypdf", "PIL.Image", "PIL.ImageOps",
                 "src.file_workspace", "src.file_transactions", "src.file_rag", "src.skill_executor",
-                "src.plan_interpreter", "src.avatar_preview", "src.audio_device_discovery", "src.windows_audio_endpoint", "src.onboarding_state",
+                "src.plan_interpreter", "src.audio_device_discovery", "src.windows_audio_endpoint", "src.onboarding_state",
                 "src.profile_backup", "src.backup_crypto", "src.portable_memory_backup",
                 "src.portable_reminder_backup", "src.action_audit", "src.command_catalog",
                 "src.desktop_file_search", "src.desktop_tray", "src.qt_theme", "src.qt_widgets",
@@ -104,21 +128,19 @@ def main():
             missing_modules = sorted(required_modules.difference(modules))
             if missing_modules:
                 raise ValueError("Required Qt desktop modules are missing from Astra.exe: " + ", ".join(missing_modules))
-            embedded_names = {name.replace("\\", "/").casefold() for name in embedded.toc}
-            qt_binaries = ("pyside6/qtcore.pyd", "pyside6/qtgui.pyd", "pyside6/qtwidgets.pyd")
+            qt_binaries = (
+                "_internal/PySide6/QtCore.pyd",
+                "_internal/PySide6/QtGui.pyd",
+                "_internal/PySide6/QtWidgets.pyd",
+                "_internal/PySide6/Qt6Core.dll",
+                "_internal/PySide6/Qt6Gui.dll",
+                "_internal/PySide6/Qt6Widgets.dll",
+            )
             missing_binaries = [
                 required for required in qt_binaries
-                if not any(name.endswith(required) for name in embedded_names)
+                if not (destination / folder / required).is_file()
             ]
-            qt_plugin_locations = (
-                "pyside6/qt/plugins/platforms/qwindows.dll",
-                "pyside6/plugins/platforms/qwindows.dll",
-            )
-            if not any(
-                name.endswith(location)
-                for location in qt_plugin_locations
-                for name in embedded_names
-            ):
+            if not (destination / folder / "_internal/PySide6/plugins/platforms/qwindows.dll").is_file():
                 missing_binaries.append("Qt Windows platform plugin (qwindows.dll)")
             if missing_binaries:
                 raise ValueError("Required Qt binaries or Windows platform plugin are missing from Astra.exe: " + ", ".join(missing_binaries))
@@ -137,7 +159,6 @@ def main():
             print("PACKAGED_VOICE_FILE_ACCESS_PASS: bounded voice search/open/read IPC and workspace checks are embedded in AstraRuntime.exe")
             print("PACKAGED_DOCUMENT_READERS_PASS: file workspace, PDF and Office Open XML readers are embedded in Astra.exe")
             print("PACKAGED_PLAN_UI_PASS: local interpreter and bounded Qt preview/execution UI are embedded in Astra.exe")
-            print("PACKAGED_AVATAR_LAUNCHER_PASS: the packaged UI includes the isolated 3D preview launcher")
             print("PACKAGED_ONBOARDING_PASS: first-run setup wizard is embedded in Astra.exe")
             print("PACKAGED_ONBOARDING_STATE_PASS: DPAPI-backed first-run choice is embedded in Astra.exe")
             print("PACKAGED_PROFILE_BACKUP_PASS: encrypted portable profile migration is embedded in Astra.exe")
@@ -146,20 +167,12 @@ def main():
             print("PACKAGED_IMAGE_PREVIEW_PASS: bounded local image decoder and Qt viewer are embedded in Astra.exe")
             print("PACKAGED_QT_PLATFORM_PASS: Qt widgets and the native Windows platform plugin are embedded in Astra.exe")
             for name in avatar_assets:
-                internal = "assets\\avatars\\" + name
-                payload = embedded.extract(internal)
+                bundled = destination / folder / "_internal" / "assets" / "avatars" / name
                 packaged = (destination / folder / "assets" / "avatars" / name).read_bytes()
-                if hashlib.sha256(payload).digest() != hashlib.sha256(packaged).digest():
+                if not bundled.is_file() or hashlib.sha256(bundled.read_bytes()).digest() != hashlib.sha256(packaged).digest():
                     raise ValueError("Embedded and portable avatar assets differ: " + name)
             print("PACKAGED_AVATARS_PASS: four idle and four speaking character PNGs are embedded in Astra.exe and match portable assets")
-            godot = destination / folder / "third_party" / "godot" / "Godot_v4.7.2-stable_win64.exe"
-            project = destination / folder / "assets" / "3d_avatar"
-            version = subprocess.run([str(godot), "--headless", "--version"], capture_output=True, text=True, timeout=30)
-            if version.returncode != 0 or not version.stdout.strip().startswith("4.7.2."):
-                raise ValueError("Relocated Godot runtime did not report the expected stable version")
-            from tools.validate_3d_avatar import validate_runtime_ipc
-            validate_runtime_ipc(godot, project)
-            print("PACKAGED_3D_AVATAR_PASS: relocated Godot runtime receives authenticated live state")
+            print("PACKAGED_2D_ONLY_PASS: unapproved procedural 3D assets/runtime are not in the user package")
             subprocess.run([sys.executable, str(ROOT / "tools" / "test_packaged_runtime.py"), str(destination / folder)], check=True)
             subprocess.run([sys.executable, str(ROOT / "tools" / "test_packaged_policy.py"), str(destination / folder)], check=True)
             print("RELOCATED_PREVIEW=" + str(destination / folder))
